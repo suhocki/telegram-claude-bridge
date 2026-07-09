@@ -1,0 +1,8 @@
+{
+  "name": "telegram-claude-bridge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}

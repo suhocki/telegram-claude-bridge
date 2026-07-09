@@ -1,0 +1,44 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { chunk, sanitizeAttr } from '../lib.mjs'
+
+test('chunk: text under the limit is returned as a single part', () => {
+  assert.deepEqual(chunk('hello', 10), ['hello'])
+})
+
+test('chunk: text exactly at the limit is not split', () => {
+  const text = 'a'.repeat(10)
+  assert.deepEqual(chunk(text, 10), [text])
+})
+
+test('chunk: splits on the last newline before the limit when one exists past half the limit', () => {
+  const text = 'a'.repeat(6) + '\n' + 'b'.repeat(6)
+  const parts = chunk(text, 10)
+  assert.deepEqual(parts, ['a'.repeat(6), 'b'.repeat(6)])
+})
+
+test('chunk: hard-cuts at the limit when no usable newline exists', () => {
+  const text = 'a'.repeat(25)
+  const parts = chunk(text, 10)
+  assert.deepEqual(parts, ['a'.repeat(10), 'a'.repeat(10), 'a'.repeat(5)])
+})
+
+test('chunk: default limit is 4096', () => {
+  const text = 'a'.repeat(5000)
+  const parts = chunk(text)
+  assert.equal(parts[0].length, 4096)
+  assert.equal(parts[1].length, 904)
+})
+
+test('sanitizeAttr: strips characters that could break out of an XML attribute', () => {
+  assert.equal(sanitizeAttr('a<b>c[d]e\r\nf"g'), 'a_b_c_d_e__f_g')
+})
+
+test('sanitizeAttr: passes through a plain username untouched', () => {
+  assert.equal(sanitizeAttr('suhocki'), 'suhocki')
+})
+
+test('sanitizeAttr: null/undefined become an empty string, not "null"/"undefined"', () => {
+  assert.equal(sanitizeAttr(undefined), '')
+  assert.equal(sanitizeAttr(null), '')
+})

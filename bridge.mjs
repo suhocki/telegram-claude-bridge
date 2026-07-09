@@ -6,6 +6,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
+import { chunk, sanitizeAttr } from './lib.mjs'
 
 const configPath = process.argv[2]
 if (!configPath) {
@@ -50,27 +51,10 @@ async function tg(method, params) {
   return data.result
 }
 
-function chunk(text, limit = 4096) {
-  const out = []
-  let rest = text
-  while (rest.length > limit) {
-    let cut = rest.lastIndexOf('\n', limit)
-    if (cut < limit / 2) cut = limit
-    out.push(rest.slice(0, cut))
-    rest = rest.slice(cut).replace(/^\n+/, '')
-  }
-  if (rest) out.push(rest)
-  return out
-}
-
 async function sendReply(chatId, text) {
   for (const part of chunk(text || '(empty response)')) {
     await tg('sendMessage', { chat_id: chatId, text: part })
   }
-}
-
-function sanitizeAttr(s) {
-  return String(s ?? '').replace(/[<>[\]\r\n"]/g, '_')
 }
 
 function runClaude(prompt, sessionId) {
