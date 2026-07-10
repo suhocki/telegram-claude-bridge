@@ -1,6 +1,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chunk, sanitizeAttr, buildSendMessageCalls, createKeyedQueue, classifyCommand, buildChannelPrompt } from '../lib.mjs'
+import {
+  chunk,
+  sanitizeAttr,
+  buildSendMessageCalls,
+  createKeyedQueue,
+  classifyCommand,
+  buildChannelPrompt,
+  normalizeSession,
+  accumulateSessionCost,
+  crossedCostThreshold,
+  buildCostWarning,
+  formatStatusText,
+} from '../lib.mjs'
 
 function deferred() {
   let resolve, reject
@@ -104,6 +116,10 @@ test('classifyCommand: "/compact" classifies as compact', () => {
   assert.equal(classifyCommand('/compact'), 'compact')
 })
 
+test('classifyCommand: "/status" classifies as status', () => {
+  assert.equal(classifyCommand('/status'), 'status')
+})
+
 test('classifyCommand: ordinary text is not a command', () => {
   assert.equal(classifyCommand('hello'), null)
   assert.equal(classifyCommand('/newfoo'), null)
@@ -119,6 +135,84 @@ test('classifyCommand: null/undefined/empty text is not a command', () => {
   assert.equal(classifyCommand(undefined), null)
   assert.equal(classifyCommand(null), null)
   assert.equal(classifyCommand(''), null)
+})
+
+test('normalizeSession: null/undefined stays null', () => {
+  assert.equal(normalizeSession(null), null)
+  assert.equal(normalizeSession(undefined), null)
+})
+
+test('normalizeSession: a bare string (old state format) becomes {id, costUsd: 0}', () => {
+  assert.deepEqual(normalizeSession('sess-abc'), { id: 'sess-abc', costUsd: 0 })
+})
+
+test('normalizeSession: an object is passed through, defaulting a missing costUsd to 0', () => {
+  assert.deepEqual(normalizeSession({ id: 'sess-abc' }), { id: 'sess-abc', costUsd: 0 })
+  assert.deepEqual(normalizeSession({ id: 'sess-abc', costUsd: 1.5 }), { id: 'sess-abc', costUsd: 1.5 })
+})
+
+test('accumulateSessionCost: starts a fresh session at the given delta when there is no prior session', () => {
+  assert.deepEqual(accumulateSessionCost(null, 'sess-1', 0.02), { id: 'sess-1', costUsd: 0.02 })
+})
+
+test('accumulateSessionCost: adds the delta on top of the previous cumulative cost', () => {
+  const prev = { id: 'sess-1', costUsd: 0.1 }
+  assert.deepEqual(accumulateSessionCost(prev, 'sess-1', 0.05), { id: 'sess-1', costUsd: 0.15 })
+})
+
+test('accumulateSessionCost: a missing/NaN delta is treated as 0', () => {
+  const prev = { id: 'sess-1', costUsd: 0.1 }
+  assert.deepEqual(accumulateSessionCost(prev, 'sess-1', undefined), { id: 'sess-1', costUsd: 0.1 })
+  assert.deepEqual(accumulateSessionCost(prev, 'sess-1', NaN), { id: 'sess-1', costUsd: 0.1 })
+})
+
+test('accumulateSessionCost: rounds away floating point drift', () => {
+  const prev = { id: 'sess-1', costUsd: 0.1 }
+  const result = accumulateSessionCost(prev, 'sess-1', 0.2)
+  assert.equal(result.costUsd, 0.3)
+})
+
+test('accumulateSessionCost: adopts the new session id even if it changed', () => {
+  const prev = { id: 'sess-old', costUsd: 0.1 }
+  assert.deepEqual(accumulateSessionCost(prev, 'sess-new', 0.05), { id: 'sess-new', costUsd: 0.15 })
+})
+
+test('crossedCostThreshold: false when no threshold is configured', () => {
+  assert.equal(crossedCostThreshold(0, 100, undefined), false)
+  assert.equal(crossedCostThreshold(0, 100, 0), false)
+})
+
+test('crossedCostThreshold: true only the turn the cumulative cost first reaches the threshold', () => {
+  assert.equal(crossedCostThreshold(4, 5, 5), true)
+  assert.equal(crossedCostThreshold(4.9, 6, 5), true)
+})
+
+test('crossedCostThreshold: false once already over threshold (fires once, not every turn)', () => {
+  assert.equal(crossedCostThreshold(5, 6, 5), false)
+  assert.equal(crossedCostThreshold(10, 11, 5), false)
+})
+
+test('crossedCostThreshold: false while still under the threshold', () => {
+  assert.equal(crossedCostThreshold(1, 2, 5), false)
+})
+
+test('buildCostWarning: formats cost and threshold with a suggestion to /new', () => {
+  assert.equal(
+    buildCostWarning(5.1234, 5),
+    '⚠️ this session has cost $5.1234, over your $5 warning threshold — consider /new to start fresh.',
+  )
+})
+
+test('formatStatusText: no session yet', () => {
+  assert.equal(formatStatusText(null), 'ℹ️ no active session yet — send a message to start one.')
+})
+
+test('formatStatusText: reports session id and accumulated cost', () => {
+  assert.equal(formatStatusText({ id: 'sess-1', costUsd: 0.1234 }), 'session: sess-1\ncost so far: $0.1234')
+})
+
+test('formatStatusText: defaults a missing costUsd to $0.0000', () => {
+  assert.equal(formatStatusText({ id: 'sess-1' }), 'session: sess-1\ncost so far: $0.0000')
 })
 
 test('buildChannelPrompt: wraps text in a <channel> tag with the given metadata', () => {
