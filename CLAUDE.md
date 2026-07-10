@@ -24,6 +24,31 @@ runner to keep the project dependency-free (matches the existing zero-dependency
 `bridge.mjs`, which only uses built-in `fetch`/`child_process`/`fs`). Only reach for an external
 test/lint dependency if a real need shows up.
 
+## Running as a launchd agent (macOS)
+
+Manually backgrounding `node bridge.mjs ...` dies on logout/reboot/terminal close. Instead,
+generate a `launchd` agent per bot/project (mirrors the pattern used for the yt-digest local
+worker: `KeepAlive`, a log file under `~/Library/Logs/`):
+
+```
+node scripts/gen-launchagent.mjs com.tgbridge.tldr tldr.config.json com.tgbridge.tldr.plist
+cp com.tgbridge.tldr.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.tgbridge.tldr.plist
+```
+
+This writes stdout/stderr to `~/Library/Logs/telegram-bridge-tldr.log` and restarts the bridge on
+crash (`KeepAlive: true`) or login (`RunAtLoad: true`). `WorkingDirectory` is set to the repo dir
+so the config/state paths in `tldr.config.json` resolve.
+
+To restart after editing the config or pulling new code:
+
+```
+launchctl kickstart -k gui/$UID/com.tgbridge.tldr
+```
+
+For a second bot/project, repeat with a different label, e.g. `com.tgbridge.ig` and
+`ig.config.json`.
+
 ## e2e testing constraint
 
 There is no MCP/API access to the human operator's personal Telegram account from a coding
