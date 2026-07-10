@@ -17,6 +17,8 @@ import {
   crossedCostThreshold,
   buildCostWarning,
   formatStatusText,
+  evaluateRiskyGuard,
+  buildRiskyCommandWarning,
 } from './lib.mjs'
 
 const configPath = process.argv[2]
@@ -35,11 +37,13 @@ function log(...args) {
 }
 
 function loadState() {
-  if (!existsSync(stateFile)) return { offset: 0, sessions: {} }
+  if (!existsSync(stateFile)) return { offset: 0, sessions: {}, pendingRisky: {} }
   try {
-    return JSON.parse(readFileSync(stateFile, 'utf8'))
+    const state = JSON.parse(readFileSync(stateFile, 'utf8'))
+    state.pendingRisky ??= {}
+    return state
   } catch {
-    return { offset: 0, sessions: {} }
+    return { offset: 0, sessions: {}, pendingRisky: {} }
   }
 }
 
@@ -110,6 +114,7 @@ async function handleMessage(msg) {
 
   if (command === 'reset') {
     delete state.sessions[chatId]
+    delete state.pendingRisky[chatId]
     saveState(state)
     await sendReply(chatId, '🔄 session reset — the next message starts a brand new conversation.', msg.message_id).catch(() => {})
     return
@@ -128,6 +133,22 @@ async function handleMessage(msg) {
     return
   }
 
+  let promptText = text
+  if (command === null) {
+    const decision = evaluateRiskyGuard(text, state.pendingRisky[chatId])
+    if (decision.action === 'needsConfirmation') {
+      state.pendingRisky[chatId] = { text: decision.text }
+      saveState(state)
+      await sendReply(chatId, buildRiskyCommandWarning(decision.match), msg.message_id).catch(() => {})
+      return
+    }
+    if (state.pendingRisky[chatId]) {
+      delete state.pendingRisky[chatId]
+      saveState(state)
+    }
+    promptText = decision.text
+  }
+
   let typingAlive = true
   const typing = setInterval(() => {
     if (typingAlive) tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {})
@@ -136,7 +157,7 @@ async function handleMessage(msg) {
 
   const user = sanitizeAttr(msg.from?.username ?? userId)
   const ts = new Date((msg.date ?? 0) * 1000).toISOString()
-  const prompt = command === 'compact' ? text : buildChannelPrompt(chatId, msg.message_id, user, ts, text)
+  const prompt = command === 'compact' ? text : buildChannelPrompt(chatId, msg.message_id, user, ts, promptText)
 
   try {
     const result = await runClaude(prompt, sessionId)
