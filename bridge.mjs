@@ -3,7 +3,7 @@
 // (blocked by org policy on the enterprise account) — just polls the Telegram
 // Bot API directly and shells out to `claude -p --resume <session>` per message.
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import {
@@ -20,6 +20,11 @@ import {
   evaluateRiskyGuard,
   buildRiskyCommandWarning,
   resolveMessageMeta,
+  extractAttachment,
+  buildAttachmentCaption,
+  exceedsAttachmentLimit,
+  buildInboxFilename,
+  MAX_ATTACHMENT_BYTES,
 } from './lib.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback } from './markdown-html.mjs'
 
@@ -32,6 +37,7 @@ if (!configPath) {
 const config = JSON.parse(readFileSync(configPath, 'utf8'))
 const { botToken, cwd, allowedUserIds, appendSystemPrompt, claudeArgs, costWarnUsd } = config
 const stateFile = path.resolve(path.dirname(configPath), config.stateFile ?? 'state.json')
+const inboxDir = path.join(path.dirname(stateFile), 'inbox')
 const API = `https://api.telegram.org/bot${botToken}`
 
 function log(...args) {
@@ -106,6 +112,26 @@ function runClaude(prompt, sessionId) {
   })
 }
 
+async function downloadAttachment(attachment) {
+  if (exceedsAttachmentLimit(attachment.size)) {
+    return { error: `attachment is ${attachment.size} bytes, over Telegram's ${MAX_ATTACHMENT_BYTES} byte bot-download cap` }
+  }
+  try {
+    const file = await tg('getFile', { file_id: attachment.fileId })
+    if (!file.file_path) return { error: 'Telegram returned no file_path for this attachment' }
+    const res = await fetch(`https://api.telegram.org/file/bot${botToken}/${file.file_path}`)
+    if (!res.ok) return { error: `download failed: HTTP ${res.status}` }
+    const buf = Buffer.from(await res.arrayBuffer())
+    mkdirSync(inboxDir, { recursive: true })
+    const filename = buildInboxFilename(Date.now(), file.file_unique_id, file.file_path, attachment.kind)
+    const filePath = path.join(inboxDir, filename)
+    writeFileSync(filePath, buf)
+    return { path: filePath }
+  } catch (e) {
+    return { error: e.message }
+  }
+}
+
 async function handleMessage(msg) {
   const chatId = String(msg.chat.id)
   const userId = String(msg.from?.id ?? '')
@@ -113,13 +139,18 @@ async function handleMessage(msg) {
     log('dropped message from non-allowed user', userId)
     return
   }
-  const text = msg.text
-  if (!text) {
-    await sendReply(chatId, '(bridge v1 only handles text messages — attachments not supported yet)', msg.message_id).catch(() => {})
+  const attachment = extractAttachment(msg)
+  const content = msg.text ?? msg.caption ?? null
+  if (content == null && !attachment) {
+    await sendReply(
+      chatId,
+      '(bridge v1 only handles text messages, photos, documents, voice, audio, and video — this message type is not supported yet)',
+      msg.message_id
+    ).catch(() => {})
     return
   }
 
-  const command = classifyCommand(text)
+  const command = classifyCommand(content)
 
   if (command === 'reset') {
     delete state.sessions[chatId]
@@ -148,11 +179,11 @@ async function handleMessage(msg) {
     ts: new Date((msg.date ?? 0) * 1000).toISOString(),
   }
 
-  let promptText = text
+  let promptText = content ?? ''
   let meta = fallbackMeta
   if (command === null) {
     const pendingEntry = state.pendingRisky[chatId]
-    const decision = evaluateRiskyGuard(text, pendingEntry)
+    const decision = evaluateRiskyGuard(content ?? '', pendingEntry)
     if (decision.action === 'needsConfirmation') {
       state.pendingRisky[chatId] = { text: decision.text, ...fallbackMeta }
       saveState(state)
@@ -166,6 +197,7 @@ async function handleMessage(msg) {
     meta = resolveMessageMeta(decision, pendingEntry, fallbackMeta)
     promptText = decision.text
   }
+  if (!promptText && attachment) promptText = buildAttachmentCaption(attachment)
 
   let typingAlive = true
   const typing = setInterval(() => {
@@ -173,7 +205,25 @@ async function handleMessage(msg) {
   }, 4000)
   await tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {})
 
-  const prompt = command === 'compact' ? text : buildChannelPrompt(chatId, meta.messageId, meta.user, meta.ts, promptText)
+  let attachmentResult = null
+  if (attachment) {
+    attachmentResult = await downloadAttachment(attachment)
+    if (attachmentResult.error) log('attachment download failed', attachment.kind, attachmentResult.error)
+  }
+  const attachmentAttrs = attachment
+    ? {
+        attachment_kind: attachment.kind,
+        attachment_name: attachment.name,
+        attachment_mime: attachment.mime,
+        attachment_path: attachmentResult?.path,
+        attachment_error: attachmentResult?.error,
+      }
+    : {}
+
+  const prompt =
+    command === 'compact'
+      ? content
+      : buildChannelPrompt(chatId, meta.messageId, meta.user, meta.ts, promptText, attachmentAttrs)
 
   try {
     const result = await runClaude(prompt, sessionId)
