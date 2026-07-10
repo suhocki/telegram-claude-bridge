@@ -16,6 +16,7 @@ import {
   isConfirmation,
   buildRiskyCommandWarning,
   evaluateRiskyGuard,
+  resolveMessageMeta,
 } from '../lib.mjs'
 
 function deferred() {
@@ -407,4 +408,33 @@ test('evaluateRiskyGuard: a new risky message while one is pending replaces it w
   const pending = { text: 'run rm -rf /tmp/foo' }
   const decision = evaluateRiskyGuard('git push --force origin main', pending)
   assert.deepEqual(decision, { action: 'needsConfirmation', match: 'git push --force', text: 'git push --force origin main' })
+})
+
+test('resolveMessageMeta: confirmed action replays the stashed pending entry\'s attribution', () => {
+  const pendingEntry = { text: 'rm -rf /tmp/foo', messageId: 100, user: 'alice', ts: 'T1' }
+  const fallbackMeta = { messageId: 101, user: 'alice', ts: 'T1' }
+  const decision = evaluateRiskyGuard('CONFIRM', pendingEntry)
+  assert.deepEqual(resolveMessageMeta(decision, pendingEntry, fallbackMeta), {
+    messageId: 100,
+    user: 'alice',
+    ts: 'T1',
+  })
+})
+
+test('resolveMessageMeta: cancelling a pending risky command uses the new message\'s own attribution, not the stashed one', () => {
+  const pendingEntry = { text: 'rm -rf /tmp/foo', messageId: 100, user: 'alice', ts: 'T1' }
+  const fallbackMeta = { messageId: 101, user: 'bob', ts: 'T2' }
+  const decision = evaluateRiskyGuard("what's 2+2?", pendingEntry)
+  assert.equal(decision.action, 'proceed')
+  assert.deepEqual(resolveMessageMeta(decision, pendingEntry, fallbackMeta), {
+    messageId: 101,
+    user: 'bob',
+    ts: 'T2',
+  })
+})
+
+test('resolveMessageMeta: no pending entry always uses the fallback attribution', () => {
+  const fallbackMeta = { messageId: 5, user: 'carol', ts: 'T3' }
+  const decision = evaluateRiskyGuard('hello there', undefined)
+  assert.deepEqual(resolveMessageMeta(decision, undefined, fallbackMeta), fallbackMeta)
 })

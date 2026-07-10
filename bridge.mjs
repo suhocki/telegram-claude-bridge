@@ -19,6 +19,7 @@ import {
   formatStatusText,
   evaluateRiskyGuard,
   buildRiskyCommandWarning,
+  resolveMessageMeta,
 } from './lib.mjs'
 
 const configPath = process.argv[2]
@@ -133,26 +134,28 @@ async function handleMessage(msg) {
     return
   }
 
+  const fallbackMeta = {
+    messageId: msg.message_id,
+    user: sanitizeAttr(msg.from?.username ?? userId),
+    ts: new Date((msg.date ?? 0) * 1000).toISOString(),
+  }
+
   let promptText = text
-  let originalMeta = null
+  let meta = fallbackMeta
   if (command === null) {
-    const decision = evaluateRiskyGuard(text, state.pendingRisky[chatId])
+    const pendingEntry = state.pendingRisky[chatId]
+    const decision = evaluateRiskyGuard(text, pendingEntry)
     if (decision.action === 'needsConfirmation') {
-      state.pendingRisky[chatId] = {
-        text: decision.text,
-        messageId: msg.message_id,
-        user: sanitizeAttr(msg.from?.username ?? userId),
-        ts: new Date((msg.date ?? 0) * 1000).toISOString(),
-      }
+      state.pendingRisky[chatId] = { text: decision.text, ...fallbackMeta }
       saveState(state)
       await sendReply(chatId, buildRiskyCommandWarning(decision.match), msg.message_id).catch(() => {})
       return
     }
-    if (state.pendingRisky[chatId]) {
-      originalMeta = state.pendingRisky[chatId]
+    if (pendingEntry) {
       delete state.pendingRisky[chatId]
       saveState(state)
     }
+    meta = resolveMessageMeta(decision, pendingEntry, fallbackMeta)
     promptText = decision.text
   }
 
@@ -162,10 +165,7 @@ async function handleMessage(msg) {
   }, 4000)
   await tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {})
 
-  const messageId = originalMeta?.messageId ?? msg.message_id
-  const user = originalMeta?.user ?? sanitizeAttr(msg.from?.username ?? userId)
-  const ts = originalMeta?.ts ?? new Date((msg.date ?? 0) * 1000).toISOString()
-  const prompt = command === 'compact' ? text : buildChannelPrompt(chatId, messageId, user, ts, promptText)
+  const prompt = command === 'compact' ? text : buildChannelPrompt(chatId, meta.messageId, meta.user, meta.ts, promptText)
 
   try {
     const result = await runClaude(prompt, sessionId)

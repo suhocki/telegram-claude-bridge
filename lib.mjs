@@ -117,6 +117,11 @@ export function evaluateRiskyGuard(text, pending) {
   return { action: 'proceed', text }
 }
 
+export function resolveMessageMeta(decision, pendingEntry, fallbackMeta) {
+  const meta = decision.action === 'confirmed' && pendingEntry ? pendingEntry : fallbackMeta
+  return { messageId: meta.messageId, user: meta.user, ts: meta.ts }
+}
+
 export function createKeyedQueue() {
   const tails = new Map()
 
