@@ -46,7 +46,7 @@ test('sanitizeAttr: null/undefined become an empty string, not "null"/"undefined
 test('buildSendMessageCalls: single chunk gets reply_parameters when a message id is given', () => {
   const calls = buildSendMessageCalls('123', 'hello', 42)
   assert.deepEqual(calls, [
-    { chat_id: '123', text: 'hello', reply_parameters: { message_id: 42 } },
+    { chat_id: '123', text: 'hello', reply_parameters: { message_id: 42, allow_sending_without_reply: true } },
   ])
 })
 
@@ -64,12 +64,24 @@ test('buildSendMessageCalls: only the first chunk threads under the triggering m
   const text = 'a'.repeat(6) + '\n' + 'b'.repeat(6)
   const calls = buildSendMessageCalls('123', text, 99, 10)
   assert.deepEqual(calls, [
-    { chat_id: '123', text: 'a'.repeat(6), reply_parameters: { message_id: 99 } },
+    { chat_id: '123', text: 'a'.repeat(6), reply_parameters: { message_id: 99, allow_sending_without_reply: true } },
     { chat_id: '123', text: 'b'.repeat(6) },
+  ])
+})
+
+test('buildSendMessageCalls: with three or more chunks, only the first threads and the rest do not', () => {
+  const text = 'a'.repeat(6) + '\n' + 'b'.repeat(6) + '\n' + 'c'.repeat(6)
+  const calls = buildSendMessageCalls('123', text, 99, 10)
+  assert.deepEqual(calls, [
+    { chat_id: '123', text: 'a'.repeat(6), reply_parameters: { message_id: 99, allow_sending_without_reply: true } },
+    { chat_id: '123', text: 'b'.repeat(6) },
+    { chat_id: '123', text: 'c'.repeat(6) },
   ])
 })
 
 test('buildSendMessageCalls: message id 0 is a valid id and still threads', () => {
   const calls = buildSendMessageCalls('123', 'hi', 0)
-  assert.deepEqual(calls, [{ chat_id: '123', text: 'hi', reply_parameters: { message_id: 0 } }])
+  assert.deepEqual(calls, [
+    { chat_id: '123', text: 'hi', reply_parameters: { message_id: 0, allow_sending_without_reply: true } },
+  ])
 })

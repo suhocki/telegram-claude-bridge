@@ -21,7 +21,7 @@ export function buildSendMessageCalls(chatId, text, replyToMessageId, limit = 40
   return chunk(text, limit).map((part, i) => {
     const params = { chat_id: chatId, text: part }
     if (i === 0 && replyToMessageId != null) {
-      params.reply_parameters = { message_id: replyToMessageId }
+      params.reply_parameters = { message_id: replyToMessageId, allow_sending_without_reply: true }
     }
     return params
   })
