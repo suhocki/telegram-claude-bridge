@@ -244,6 +244,56 @@ export function buildOutboundAttachmentInstructions() {
   ].join('\n')
 }
 
+export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, parseMode, editMessageId) {
+  return chunks.map((part, i) => {
+    const params = { chat_id: chatId, text: part }
+    if (parseMode) params.parse_mode = parseMode
+    if (i === 0 && editMessageId != null) {
+      return { method: 'editMessageText', params: { ...params, message_id: editMessageId } }
+    }
+    if (i === 0 && replyToMessageId != null) {
+      params.reply_parameters = { message_id: replyToMessageId, allow_sending_without_reply: true }
+    }
+    return { method: 'sendMessage', params }
+  })
+}
+
+const REACT_LINE_RE = /^REACT:\s*(.+?)\s*$/
+
+export function extractReactionMarker(text) {
+  const lines = String(text ?? '').split('\n')
+  const kept = []
+  let emoji = null
+  for (const line of lines) {
+    const m = line.match(REACT_LINE_RE)
+    if (m) emoji = m[1]
+    else kept.push(line)
+  }
+  return { text: kept.join('\n').trimEnd(), emoji }
+}
+
+export const RECEIPT_REACTION = '👀'
+export const SUCCESS_REACTION = '✅'
+export const ERROR_REACTION = '❌'
+
+export function buildSetMessageReactionParams(chatId, messageId, emoji) {
+  return {
+    chat_id: chatId,
+    message_id: messageId,
+    reaction: emoji ? [{ type: 'emoji', emoji }] : [],
+  }
+}
+
+export function buildReactionMarkerInstructions() {
+  return [
+    "You can put an emoji reaction on the user's triggering Telegram message.",
+    'To do so, include one line anywhere in your final answer, in exactly this form:',
+    'REACT: <emoji>',
+    'Use a single standard emoji (e.g. 👍, 🎉, 👀, ❌) that Telegram accepts as a message reaction.',
+    "This marker line is stripped from what the user sees on Telegram. If omitted, the bridge sets a default ✅/❌ reaction based on whether the run succeeded or failed.",
+  ].join('\n')
+}
+
 export function combineSystemPrompts(...parts) {
   return parts.filter(p => p != null && p !== '').join('\n\n')
 }
