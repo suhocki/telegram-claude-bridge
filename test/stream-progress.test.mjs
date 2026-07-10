@@ -13,6 +13,7 @@ import {
   formatTextPreviewStatus,
   formatRunOutcomeStatus,
   createProgressTracker,
+  createStatusUpdater,
 } from '../stream-progress.mjs'
 
 test('createLineSplitter yields complete lines and buffers partial ones', () => {
@@ -177,4 +178,39 @@ test('createProgressTracker ignores events with nothing new to report', () => {
   const tracker = createProgressTracker()
   assert.equal(tracker.ingest({ type: 'system', subtype: 'init' }), null)
   assert.equal(tracker.ingest({ type: 'result', result: 'done' }), null)
+})
+
+test('createStatusUpdater fires onUpdate on an interval while the status changes', t => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  let status = 'first'
+  const updates = []
+  const updater = createStatusUpdater({ getStatus: () => status, onUpdate: s => updates.push(s), initialStatus: status, intervalMs: 1000 })
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, [])
+  status = 'second'
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, ['second'])
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, ['second'])
+  updater.stop()
+})
+
+test('createStatusUpdater.stop clears the interval so onUpdate never fires again', t => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  let status = 'first'
+  const updates = []
+  const updater = createStatusUpdater({ getStatus: () => status, onUpdate: s => updates.push(s), initialStatus: status, intervalMs: 1000 })
+  updater.stop()
+  status = 'second'
+  t.mock.timers.tick(5000)
+  assert.deepEqual(updates, [])
+  assert.equal(updater.alive, false)
+})
+
+test('createStatusUpdater.stop is idempotent and safe to call from multiple code paths (e.g. both the success path and a shared cleanup finally)', t => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  const updater = createStatusUpdater({ getStatus: () => 'x', onUpdate: () => {}, intervalMs: 1000 })
+  updater.stop()
+  assert.doesNotThrow(() => updater.stop())
+  assert.equal(updater.alive, false)
 })

@@ -1,7 +1,3 @@
-// Turns `claude --output-format stream-json --include-partial-messages` JSONL
-// output into short "what's happening now" status lines the bridge can push
-// to Telegram via editMessageText while a run is in progress.
-
 import path from 'node:path'
 
 export const DEFAULT_WORKING_STATUS = '⏳ working…'
@@ -124,4 +120,27 @@ export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS) {
   }
 
   return { ingest, current }
+}
+
+export function createStatusUpdater({ getStatus, onUpdate, initialStatus = DEFAULT_WORKING_STATUS, intervalMs = 3000 }) {
+  let alive = true
+  let lastSent = initialStatus
+  const timer = setInterval(() => {
+    if (!alive) return
+    const latest = getStatus()
+    if (latest === lastSent) return
+    lastSent = latest
+    onUpdate(latest)
+  }, intervalMs)
+
+  return {
+    stop() {
+      if (!alive) return
+      alive = false
+      clearInterval(timer)
+    },
+    get alive() {
+      return alive
+    },
+  }
 }

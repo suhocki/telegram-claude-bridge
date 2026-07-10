@@ -68,6 +68,7 @@ import {
   isResultEvent,
   createProgressTracker,
   formatRunOutcomeStatus,
+  createStatusUpdater,
 } from './stream-progress.mjs'
 
 const configPath = process.argv[2]
@@ -426,18 +427,15 @@ async function handleMessage(msg) {
   }
 
   const progress = createProgressTracker()
-  let lastEditedStatus = DEFAULT_WORKING_STATUS
-  let statusAlive = true
-  const statusTimer = setInterval(() => {
-    if (!statusAlive || placeholderId == null) return
-    const latestStatus = progress.current()
-    if (latestStatus === lastEditedStatus) return
-    lastEditedStatus = latestStatus
-    tg('editMessageText', { chat_id: chatId, message_id: placeholderId, text: latestStatus }).catch(() => {})
-  }, 3000)
+  const statusUpdater = createStatusUpdater({
+    getStatus: () => progress.current(),
+    onUpdate: latestStatus => {
+      if (placeholderId == null) return
+      tg('editMessageText', { chat_id: chatId, message_id: placeholderId, text: latestStatus }).catch(() => {})
+    },
+  })
   const stopStatusUpdates = async finalStatus => {
-    statusAlive = false
-    clearInterval(statusTimer)
+    statusUpdater.stop()
     if (placeholderId == null) return
     await tg('editMessageText', { chat_id: chatId, message_id: placeholderId, text: finalStatus }).catch(() => {})
   }
@@ -512,6 +510,7 @@ async function handleMessage(msg) {
   } finally {
     typingAlive = false
     clearInterval(typing)
+    statusUpdater.stop()
   }
 }
 
