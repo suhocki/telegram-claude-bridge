@@ -65,13 +65,21 @@ export function buildChannelPrompt(chatId, messageId, user, ts, text) {
   return `<channel source="telegram" chat_id="${chatId}" message_id="${messageId}" user="${user}" ts="${ts}">\n${text}\n</channel>`
 }
 
+const RM_SHORT_FLAG_CHARS = 'rfvid'
+const rmFlagLookahead = (letter, long) =>
+  `(?=[^\\n;]*?(?:\\s-[${RM_SHORT_FLAG_CHARS}]*${letter}[${RM_SHORT_FLAG_CHARS}]*\\b|\\s--${long}\\b))`
+const RM_RF_RE = new RegExp(
+  `\\brm\\b${rmFlagLookahead('r', 'recursive')}${rmFlagLookahead('f', 'force')}`,
+  'i'
+)
+
 const RISKY_COMMAND_PATTERNS = [
-  { name: 'rm -rf', re: /\brm\s+(-\w*r\w*f\w*|-\w*f\w*r\w*|--recursive\s+--force|--force\s+--recursive)\b/i },
+  { name: 'rm -rf', re: RM_RF_RE },
   { name: 'git push --force', re: /\bgit\s+push\b[^\n]*\s(--force(-with-lease)?|-f)\b/i },
   { name: 'git reset --hard', re: /\bgit\s+reset\s+--hard\b/i },
   { name: 'git clean -f', re: /\bgit\s+clean\s+-\w*f\w*\b/i },
   { name: 'DROP TABLE/DATABASE', re: /\bDROP\s+(TABLE|DATABASE|SCHEMA)\b/i },
-  { name: 'DELETE FROM without WHERE', re: /\bDELETE\s+FROM\s+\S+\s*;?\s*$/im },
+  { name: 'DELETE FROM without WHERE', re: /\bDELETE\s+FROM\s+\S+\b(?![^\n;]*\bWHERE\b)/i },
   { name: 'mkfs', re: /\bmkfs(\.\w+)?\b/i },
   { name: 'dd to a device', re: /\bdd\s+[^\n]*\bof=\/dev\//i },
   { name: 'chmod -R 777', re: /\bchmod\s+-R\s+777\b/i },

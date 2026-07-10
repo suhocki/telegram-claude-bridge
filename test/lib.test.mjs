@@ -304,6 +304,19 @@ test('matchRiskyCommand: detects rm -rf regardless of flag order', () => {
   assert.equal(matchRiskyCommand('rm --recursive --force ./build'), 'rm -rf')
 })
 
+test('matchRiskyCommand: detects rm -rf with split short flags', () => {
+  assert.equal(matchRiskyCommand('rm -r -f /tmp/x'), 'rm -rf')
+  assert.equal(matchRiskyCommand('rm -f -r /tmp/x'), 'rm -rf')
+  assert.equal(matchRiskyCommand('rm -r --force /tmp/x'), 'rm -rf')
+  assert.equal(matchRiskyCommand('rm --recursive -f /tmp/x'), 'rm -rf')
+})
+
+test('matchRiskyCommand: rm with only one of recursive/force is not flagged as rm -rf', () => {
+  assert.equal(matchRiskyCommand('rm -f /tmp/x'), null)
+  assert.equal(matchRiskyCommand('rm -r /tmp/x'), null)
+  assert.equal(matchRiskyCommand('rm somefile-r somefile-f'), null)
+})
+
 test('matchRiskyCommand: detects git push --force and --force-with-lease', () => {
   assert.equal(matchRiskyCommand('git push --force origin main'), 'git push --force')
   assert.equal(matchRiskyCommand('git push origin main -f'), 'git push --force')
@@ -323,6 +336,11 @@ test('matchRiskyCommand: detects destructive SQL', () => {
 
 test('matchRiskyCommand: DELETE FROM with a WHERE clause is not flagged', () => {
   assert.equal(matchRiskyCommand('DELETE FROM users WHERE id = 1'), null)
+})
+
+test('matchRiskyCommand: detects DELETE FROM without WHERE inside natural-language prose', () => {
+  assert.equal(matchRiskyCommand('can you DELETE FROM the sessions table for me'), 'DELETE FROM without WHERE')
+  assert.equal(matchRiskyCommand('DELETE FROM users; then confirm'), 'DELETE FROM without WHERE')
 })
 
 test('matchRiskyCommand: detects other destructive shapes', () => {
