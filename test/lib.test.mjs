@@ -908,6 +908,12 @@ test('buildTranscriptQuoteHtml: truncates a transcript longer than TRANSCRIPT_QU
   assert.ok(result.length < longTranscript.length)
 })
 
+test('buildTranscriptQuoteHtml: bounds the final size even when escaping expands a transcript past the cap', () => {
+  const longTranscript = '&'.repeat(TRANSCRIPT_QUOTE_MAX_CHARS)
+  const result = buildTranscriptQuoteHtml(longTranscript)
+  assert.ok(result.length <= TRANSCRIPT_QUOTE_MAX_CHARS + '<blockquote></blockquote>'.length)
+})
+
 test('buildPlaceholderEditParams: without a quote, passes the status through unchanged', () => {
   assert.deepEqual(buildPlaceholderEditParams('123', 456, '⏳ working…', null), {
     chat_id: '123',

@@ -437,6 +437,7 @@ async function handleMessage(msg) {
     try {
       await tg('editMessageText', params)
     } catch (e) {
+      if (/message is not modified/i.test(e.message)) return
       if (!params.parse_mode) {
         log('editMessageText failed', e.message)
         return

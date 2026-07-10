@@ -343,7 +343,9 @@ export function buildVoiceTranscriptText(transcript) {
 export function buildTranscriptQuoteHtml(transcript) {
   const trimmed = String(transcript ?? '').trim()
   if (!trimmed) return null
-  return `<blockquote>${escapeHtml(truncateStatus(trimmed, TRANSCRIPT_QUOTE_MAX_CHARS))}</blockquote>`
+  const escaped = escapeHtml(truncateStatus(trimmed, TRANSCRIPT_QUOTE_MAX_CHARS))
+  // escaping can expand length (e.g. "&" -> "&amp;"); truncate again to bound the final size regardless of expansion
+  return `<blockquote>${truncateStatus(escaped, TRANSCRIPT_QUOTE_MAX_CHARS)}</blockquote>`
 }
 
 export function buildPlaceholderEditParams(chatId, messageId, status, quoteHtml) {
