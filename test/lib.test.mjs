@@ -48,6 +48,14 @@ import {
   buildVoiceToggleReply,
   buildSpeechText,
   truncateForSpeech,
+  isGroupChatType,
+  resolveGroupPolicy,
+  isSenderAllowedInGroup,
+  isBotMentioned,
+  isReplyToBot,
+  isMentioned,
+  shouldHandleGroupMessage,
+  buildBotIdentity,
   buildTtsRequestOptions,
   buildOutboxFilename,
   DEFAULT_WHISPER_LANGUAGE,
@@ -958,4 +966,128 @@ test('buildOutboxFilename: combines timestamp and sanitized chat id with an mp3 
 
 test('buildOutboxFilename: sanitizes unsafe characters in the chat id', () => {
   assert.equal(buildOutboxFilename(123, '-100/456'), '123--100456.mp3')
+})
+
+test('isGroupChatType: true for group and supergroup, false for private and channel', () => {
+  assert.equal(isGroupChatType('group'), true)
+  assert.equal(isGroupChatType('supergroup'), true)
+  assert.equal(isGroupChatType('private'), false)
+  assert.equal(isGroupChatType('channel'), false)
+})
+
+test('resolveGroupPolicy: looks up by chat id, coercing to string', () => {
+  const groups = { '-100123': { requireMention: true, allowFrom: [] } }
+  assert.deepEqual(resolveGroupPolicy(groups, -100123), { requireMention: true, allowFrom: [] })
+  assert.deepEqual(resolveGroupPolicy(groups, '-100123'), { requireMention: true, allowFrom: [] })
+})
+
+test('resolveGroupPolicy: returns null for an unconfigured group', () => {
+  assert.equal(resolveGroupPolicy({}, '-100999'), null)
+  assert.equal(resolveGroupPolicy(undefined, '-100999'), null)
+})
+
+test('isSenderAllowedInGroup: empty allowFrom means any group member is allowed', () => {
+  assert.equal(isSenderAllowedInGroup({ allowFrom: [] }, '58639685'), true)
+  assert.equal(isSenderAllowedInGroup({}, '58639685'), true)
+})
+
+test('isSenderAllowedInGroup: non-empty allowFrom restricts to listed senders', () => {
+  const policy = { allowFrom: ['58639685'] }
+  assert.equal(isSenderAllowedInGroup(policy, '58639685'), true)
+  assert.equal(isSenderAllowedInGroup(policy, 58639685), true)
+  assert.equal(isSenderAllowedInGroup(policy, '99999999'), false)
+})
+
+test('isBotMentioned: detects an @username mention entity', () => {
+  const msg = { text: 'hey @mybot help me', entities: [{ type: 'mention', offset: 4, length: 6 }] }
+  assert.equal(isBotMentioned(msg, 'mybot', '111'), true)
+})
+
+test('isBotMentioned: mention comparison is case-insensitive', () => {
+  const msg = { text: 'hey @MyBot help me', entities: [{ type: 'mention', offset: 4, length: 6 }] }
+  assert.equal(isBotMentioned(msg, 'mybot', '111'), true)
+})
+
+test('isBotMentioned: ignores a mention of someone else', () => {
+  const msg = { text: 'hey @someoneelse help', entities: [{ type: 'mention', offset: 4, length: 12 }] }
+  assert.equal(isBotMentioned(msg, 'mybot', '111'), false)
+})
+
+test('isBotMentioned: detects a text_mention entity by bot id', () => {
+  const msg = { text: 'hey there', entities: [{ type: 'text_mention', offset: 0, length: 3, user: { id: 111 } }] }
+  assert.equal(isBotMentioned(msg, 'mybot', '111'), true)
+})
+
+test('isBotMentioned: falls back to caption/caption_entities for media messages', () => {
+  const msg = { caption: 'hey @mybot', caption_entities: [{ type: 'mention', offset: 4, length: 6 }] }
+  assert.equal(isBotMentioned(msg, 'mybot', '111'), true)
+})
+
+test('isBotMentioned: no entities means no mention', () => {
+  assert.equal(isBotMentioned({ text: 'hey @mybot' }, 'mybot', '111'), false)
+})
+
+test('isReplyToBot: true when replying to a message sent by the bot', () => {
+  const msg = { reply_to_message: { from: { id: 111 } } }
+  assert.equal(isReplyToBot(msg, '111'), true)
+})
+
+test('isReplyToBot: false when replying to a message from someone else', () => {
+  const msg = { reply_to_message: { from: { id: 222 } } }
+  assert.equal(isReplyToBot(msg, '111'), false)
+})
+
+test('isReplyToBot: false when there is no reply', () => {
+  assert.equal(isReplyToBot({}, '111'), false)
+})
+
+test('isMentioned: true via either @mention or reply-to-bot', () => {
+  const viaMention = { text: '@mybot hi', entities: [{ type: 'mention', offset: 0, length: 6 }] }
+  const viaReply = { text: 'hi', reply_to_message: { from: { id: 111 } } }
+  assert.equal(isMentioned(viaMention, 'mybot', '111'), true)
+  assert.equal(isMentioned(viaReply, 'mybot', '111'), true)
+  assert.equal(isMentioned({ text: 'hi' }, 'mybot', '111'), false)
+})
+
+test('shouldHandleGroupMessage: no policy for this group means drop', () => {
+  const msg = { from: { id: 1 }, text: 'hi' }
+  assert.equal(shouldHandleGroupMessage(msg, null, 'mybot', '111'), false)
+})
+
+test('shouldHandleGroupMessage: requireMention false lets any allowed sender through without a mention', () => {
+  const policy = { requireMention: false, allowFrom: [] }
+  const msg = { from: { id: 1 }, text: 'hi' }
+  assert.equal(shouldHandleGroupMessage(msg, policy, 'mybot', '111'), true)
+})
+
+test('shouldHandleGroupMessage: requireMention true blocks messages without a mention or reply', () => {
+  const policy = { requireMention: true, allowFrom: [] }
+  const msg = { from: { id: 1 }, text: 'hi' }
+  assert.equal(shouldHandleGroupMessage(msg, policy, 'mybot', '111'), false)
+})
+
+test('shouldHandleGroupMessage: requireMention true allows a message that mentions the bot', () => {
+  const policy = { requireMention: true, allowFrom: [] }
+  const msg = { from: { id: 1 }, text: '@mybot hi', entities: [{ type: 'mention', offset: 0, length: 6 }] }
+  assert.equal(shouldHandleGroupMessage(msg, policy, 'mybot', '111'), true)
+})
+
+test('shouldHandleGroupMessage: requireMention true allows a reply to the bot without an explicit mention', () => {
+  const policy = { requireMention: true, allowFrom: [] }
+  const msg = { from: { id: 1 }, text: 'thanks', reply_to_message: { from: { id: 111 } } }
+  assert.equal(shouldHandleGroupMessage(msg, policy, 'mybot', '111'), true)
+})
+
+test('shouldHandleGroupMessage: allowFrom restricts to listed senders even when mentioned', () => {
+  const policy = { requireMention: true, allowFrom: ['2'] }
+  const msg = { from: { id: 1 }, text: '@mybot hi', entities: [{ type: 'mention', offset: 0, length: 6 }] }
+  assert.equal(shouldHandleGroupMessage(msg, policy, 'mybot', '111'), false)
+})
+
+test('buildBotIdentity: extracts id and username from a getMe result', () => {
+  assert.deepEqual(buildBotIdentity({ id: 111, username: 'mybot', is_bot: true }), { id: '111', username: 'mybot' })
+})
+
+test('buildBotIdentity: tolerates a missing username', () => {
+  assert.deepEqual(buildBotIdentity({ id: 111 }), { id: '111', username: null })
 })

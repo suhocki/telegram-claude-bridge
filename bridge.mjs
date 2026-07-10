@@ -55,6 +55,10 @@ import {
   DEFAULT_TTS_MODEL_ID,
   buildTtsRequestOptions,
   buildOutboxFilename,
+  isGroupChatType,
+  resolveGroupPolicy,
+  shouldHandleGroupMessage,
+  buildBotIdentity,
 } from './lib.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback } from './markdown-html.mjs'
 
@@ -65,7 +69,8 @@ if (!configPath) {
 }
 
 const config = JSON.parse(readFileSync(configPath, 'utf8'))
-const { botToken, cwd, allowedUserIds, appendSystemPrompt, claudeArgs, costWarnUsd } = config
+const { botToken, cwd, allowedUserIds, appendSystemPrompt, claudeArgs, costWarnUsd, groups } = config
+const groupsConfig = groups ?? {}
 const stateFile = path.resolve(path.dirname(configPath), config.stateFile ?? 'state.json')
 const stateDir = path.dirname(stateFile)
 const inboxDir = path.join(stateDir, 'inbox')
@@ -292,7 +297,13 @@ async function sendVoiceReply(chatId, text, replyToMessageId) {
 async function handleMessage(msg) {
   const chatId = String(msg.chat.id)
   const userId = String(msg.from?.id ?? '')
-  if (!allowedUserIds.includes(userId)) {
+  if (isGroupChatType(msg.chat.type)) {
+    const policy = resolveGroupPolicy(groupsConfig, chatId)
+    if (!shouldHandleGroupMessage(msg, policy, botIdentity.username, botIdentity.id)) {
+      log('dropped group message', chatId, 'policy not satisfied for user', userId)
+      return
+    }
+  } else if (!allowedUserIds.includes(userId)) {
     log('dropped message from non-allowed user', userId)
     return
   }
@@ -455,8 +466,15 @@ async function handleMessage(msg) {
   }
 }
 
+let botIdentity = { id: null, username: null }
+
 async function poll() {
-  log('bridge started, cwd=', cwd, 'offset=', state.offset)
+  try {
+    botIdentity = buildBotIdentity(await tg('getMe', {}))
+  } catch (e) {
+    log('getMe failed, group mention-gating will not resolve @mentions or reply-to-bot', e.message)
+  }
+  log('bridge started, cwd=', cwd, 'offset=', state.offset, 'bot=', botIdentity.username)
   for (;;) {
     try {
       const updates = await tg('getUpdates', { offset: state.offset, timeout: 30 })

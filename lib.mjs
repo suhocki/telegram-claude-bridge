@@ -390,6 +390,55 @@ export function buildOutboxFilename(timestampMs, chatId) {
   return `${timestampMs}-${sanitizeIdForFilename(chatId)}.mp3`
 }
 
+export function isGroupChatType(chatType) {
+  return chatType === 'group' || chatType === 'supergroup'
+}
+
+export function resolveGroupPolicy(groupsConfig, chatId) {
+  return groupsConfig?.[String(chatId)] ?? null
+}
+
+export function isSenderAllowedInGroup(policy, userId) {
+  if (!Array.isArray(policy?.allowFrom) || policy.allowFrom.length === 0) return true
+  return policy.allowFrom.includes(String(userId))
+}
+
+export function isBotMentioned(msg, botUsername, botId) {
+  const text = msg?.text ?? msg?.caption ?? ''
+  const entities = msg?.entities ?? msg?.caption_entities ?? []
+  if (!Array.isArray(entities)) return false
+  for (const e of entities) {
+    if (e.type === 'mention' && botUsername) {
+      const mention = text.slice(e.offset, e.offset + e.length)
+      if (mention.toLowerCase() === `@${botUsername}`.toLowerCase()) return true
+    }
+    if (e.type === 'text_mention' && e.user?.id != null && botId != null && String(e.user.id) === String(botId)) {
+      return true
+    }
+  }
+  return false
+}
+
+export function isReplyToBot(msg, botId) {
+  const replyFromId = msg?.reply_to_message?.from?.id
+  return replyFromId != null && botId != null && String(replyFromId) === String(botId)
+}
+
+export function isMentioned(msg, botUsername, botId) {
+  return isBotMentioned(msg, botUsername, botId) || isReplyToBot(msg, botId)
+}
+
+export function shouldHandleGroupMessage(msg, policy, botUsername, botId) {
+  if (!policy) return false
+  if (!isSenderAllowedInGroup(policy, msg?.from?.id)) return false
+  if (policy.requireMention && !isMentioned(msg, botUsername, botId)) return false
+  return true
+}
+
+export function buildBotIdentity(getMeResult) {
+  return { id: String(getMeResult?.id ?? ''), username: getMeResult?.username ?? null }
+}
+
 export function createKeyedQueue() {
   const tails = new Map()
 
