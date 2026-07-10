@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { markdownToTelegramHtml, htmlToPlainFallback } from '../markdown-html.mjs'
+import { markdownToTelegramHtml, markdownToTelegramHtmlChunks, htmlToPlainFallback } from '../markdown-html.mjs'
 
 test('markdownToTelegramHtml: escapes bare &, <, > outside any markdown construct', () => {
   assert.equal(markdownToTelegramHtml('1 < 2 && 3 > 1'), '1 &lt; 2 &amp;&amp; 3 &gt; 1')
@@ -52,6 +52,21 @@ test('markdownToTelegramHtml: converts a fenced code block without a language to
   assert.equal(markdownToTelegramHtml('```\nplain block\n```'), '<pre>plain block</pre>')
 })
 
+test('markdownToTelegramHtml: a single-line fenced block with no trailing newline keeps its content, with no language guessed from the leading text', () => {
+  assert.equal(
+    markdownToTelegramHtml("run ```printf('%d', x)``` now"),
+    "run <pre>printf('%d', x)</pre> now",
+  )
+  assert.equal(markdownToTelegramHtml('run ```ls -la``` now'), 'run <pre>ls -la</pre> now')
+})
+
+test('markdownToTelegramHtml: a real language tag is still recognized when followed by a newline', () => {
+  assert.equal(
+    markdownToTelegramHtml('```python\nprint(1)\n```'),
+    '<pre><code class="language-python">print(1)</code></pre>',
+  )
+})
+
 test('markdownToTelegramHtml: markdown syntax inside a code span/block is not converted', () => {
   assert.equal(markdownToTelegramHtml('`**not bold**`'), '<code>**not bold**</code>')
   assert.equal(markdownToTelegramHtml('```\n**not bold**\n```'), '<pre>**not bold**</pre>')
@@ -99,4 +114,70 @@ test('htmlToPlainFallback: unescapes &quot;', () => {
 test('htmlToPlainFallback: round-trips markdownToTelegramHtml output back to readable plain text', () => {
   const html = markdownToTelegramHtml('**bold** and `code` and 1 < 2')
   assert.equal(htmlToPlainFallback(html), 'bold and code and 1 < 2')
+})
+
+test('markdownToTelegramHtmlChunks: empty/null/undefined input yields no chunks', () => {
+  assert.deepEqual(markdownToTelegramHtmlChunks(''), [])
+  assert.deepEqual(markdownToTelegramHtmlChunks(null), [])
+  assert.deepEqual(markdownToTelegramHtmlChunks(undefined), [])
+})
+
+test('markdownToTelegramHtmlChunks: short text under the limit renders as a single chunk identical to markdownToTelegramHtml', () => {
+  const text = 'hello **world**'
+  assert.deepEqual(markdownToTelegramHtmlChunks(text, 4096), [markdownToTelegramHtml(text)])
+})
+
+test('markdownToTelegramHtmlChunks: every chunk stays within the given limit', () => {
+  const bigCode = Array.from({ length: 300 }, (_, i) => `const line${i} = ${i};`).join('\n')
+  const md = `intro text\n\n\`\`\`js\n${bigCode}\n\`\`\`\n\nend text`
+  const chunks = markdownToTelegramHtmlChunks(md, 500)
+  assert.ok(chunks.length > 1)
+  for (const c of chunks) assert.ok(c.length <= 500, `chunk of length ${c.length} exceeds limit`)
+})
+
+test('markdownToTelegramHtmlChunks: a fenced code block split across chunks keeps balanced <pre>/<code> tags in every chunk', () => {
+  const bigCode = Array.from({ length: 300 }, (_, i) => `const line${i} = ${i};`).join('\n')
+  const md = `intro text\n\n\`\`\`js\n${bigCode}\n\`\`\`\n\nend text`
+  const chunks = markdownToTelegramHtmlChunks(md, 500)
+  for (const c of chunks) {
+    const opens = (c.match(/<pre>/g) || []).length
+    const closes = (c.match(/<\/pre>/g) || []).length
+    assert.equal(opens, closes, `unbalanced <pre> in chunk: ${c}`)
+    const codeOpens = (c.match(/<code[ >]/g) || []).length
+    const codeCloses = (c.match(/<\/code>/g) || []).length
+    assert.equal(codeOpens, codeCloses, `unbalanced <code> in chunk: ${c}`)
+  }
+})
+
+test('markdownToTelegramHtmlChunks: reassembling the code content across chunks (ignoring the reopened fence markers) preserves every source line', () => {
+  const bigCode = Array.from({ length: 300 }, (_, i) => `const line${i} = ${i};`).join('\n')
+  const md = `\`\`\`js\n${bigCode}\n\`\`\``
+  const chunks = markdownToTelegramHtmlChunks(md, 500)
+  const combined = chunks.join('')
+  for (let i = 0; i < 300; i++) assert.ok(combined.includes(`const line${i} = ${i};`), `missing line${i}`)
+})
+
+test('markdownToTelegramHtmlChunks: content split at a plain-text boundary matches chunk-then-render behavior', () => {
+  const text = Array.from({ length: 50 }, (_, i) => `paragraph number ${i} of plain text here.`).join('\n')
+  const chunks = markdownToTelegramHtmlChunks(text, 200)
+  assert.ok(chunks.length > 1)
+  for (const c of chunks) assert.ok(c.length <= 200)
+  const combinedText = chunks.join('\n')
+  for (let i = 0; i < 50; i++) assert.ok(combinedText.includes(`paragraph number ${i} of plain text here.`))
+})
+
+test('markdownToTelegramHtmlChunks: a single line whose rendered form alone exceeds the limit is hard-split without exceeding it', () => {
+  const longLine = 'x'.repeat(9000)
+  const md = `\`\`\`js\n${longLine}\n\`\`\``
+  const chunks = markdownToTelegramHtmlChunks(md, 4096)
+  assert.ok(chunks.length > 1)
+  for (const c of chunks) assert.ok(c.length <= 4096)
+  assert.equal(chunks.join('').replace(/<[^>]*>/g, '').length, longLine.length)
+})
+
+test('markdownToTelegramHtmlChunks: worst-case HTML-escaping content (all "&") never overflows the limit', () => {
+  const amp = '&'.repeat(4000)
+  const md = `\`\`\`\n${amp}\n\`\`\``
+  const chunks = markdownToTelegramHtmlChunks(md, 4096)
+  for (const c of chunks) assert.ok(c.length <= 4096)
 })

@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import {
-  buildSendMessageCalls,
+  buildSendMessageCallsFromChunks,
   sanitizeAttr,
   createKeyedQueue,
   classifyCommand,
@@ -21,7 +21,7 @@ import {
   buildRiskyCommandWarning,
   resolveMessageMeta,
 } from './lib.mjs'
-import { markdownToTelegramHtml, htmlToPlainFallback } from './markdown-html.mjs'
+import { markdownToTelegramHtmlChunks, htmlToPlainFallback } from './markdown-html.mjs'
 
 const configPath = process.argv[2]
 if (!configPath) {
@@ -70,8 +70,8 @@ async function tg(method, params) {
 }
 
 async function sendReply(chatId, text, replyToMessageId) {
-  const html = markdownToTelegramHtml(text || '(empty response)')
-  for (const params of buildSendMessageCalls(chatId, html, replyToMessageId, 4096, 'HTML')) {
+  const chunks = markdownToTelegramHtmlChunks(text || '(empty response)')
+  for (const params of buildSendMessageCallsFromChunks(chatId, chunks, replyToMessageId, 'HTML')) {
     try {
       await tg('sendMessage', params)
     } catch (e) {

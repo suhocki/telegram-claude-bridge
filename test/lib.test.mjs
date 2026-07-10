@@ -4,6 +4,7 @@ import {
   chunk,
   sanitizeAttr,
   buildSendMessageCalls,
+  buildSendMessageCallsFromChunks,
   createKeyedQueue,
   classifyCommand,
   buildChannelPrompt,
@@ -126,6 +127,19 @@ test('buildSendMessageCalls: no parse_mode key when omitted (back-compat)', () =
   assert.deepEqual(calls, [
     { chat_id: '123', text: 'hello', reply_parameters: { message_id: 42, allow_sending_without_reply: true } },
   ])
+})
+
+test('buildSendMessageCallsFromChunks: builds params straight from pre-chunked parts, no re-chunking', () => {
+  const calls = buildSendMessageCallsFromChunks('123', ['<b>a</b>', '<i>b</i>'], 99, 'HTML')
+  assert.deepEqual(calls, [
+    { chat_id: '123', text: '<b>a</b>', parse_mode: 'HTML', reply_parameters: { message_id: 99, allow_sending_without_reply: true } },
+    { chat_id: '123', text: '<i>b</i>', parse_mode: 'HTML' },
+  ])
+})
+
+test('buildSendMessageCallsFromChunks: no parse_mode key when omitted, no reply_parameters when message id omitted', () => {
+  const calls = buildSendMessageCallsFromChunks('123', ['hello'])
+  assert.deepEqual(calls, [{ chat_id: '123', text: 'hello' }])
 })
 
 test('classifyCommand: "/new" and "/reset" both classify as reset', () => {

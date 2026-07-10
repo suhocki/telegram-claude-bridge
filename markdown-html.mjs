@@ -1,6 +1,3 @@
-// Converts Claude's markdown-ish replies into the small HTML subset Telegram's
-// Bot API accepts with parse_mode: 'HTML' (https://core.telegram.org/bots/api#formatting-options).
-
 const STASH_MARK = '\x00'
 
 function escapeHtml(s) {
@@ -41,7 +38,7 @@ export function markdownToTelegramHtml(text) {
     return token
   }
 
-  let work = String(text ?? '').replace(/```([a-zA-Z0-9_+-]*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+  let work = String(text ?? '').replace(/```(?:([a-zA-Z0-9_+-]+)\n|\n)?([\s\S]*?)```/g, (_, lang, code) => {
     const escaped = escapeHtml(code.replace(/\n$/, ''))
     const html = lang ? `<pre><code class="language-${escapeHtml(lang)}">${escaped}</code></pre>` : `<pre>${escaped}</pre>`
     return stashHtml(html)
@@ -66,6 +63,70 @@ export function markdownToTelegramHtml(text) {
   work = work.replace(new RegExp(`${STASH_MARK}(\\d+)${STASH_MARK}`, 'g'), (_, i) => stash[Number(i)])
 
   return work
+}
+
+export function markdownToTelegramHtmlChunks(text, limit = 4096) {
+  const src = String(text ?? '')
+  if (!src) return []
+
+  const fenceLangOf = line => {
+    const m = line.match(/^```([a-zA-Z0-9_+-]*)\s*$/)
+    return m ? m[1] : null
+  }
+  const render = (lns, openLang) =>
+    markdownToTelegramHtml(openLang !== null ? [...lns, '```'].join('\n') : lns.join('\n'))
+  const renderAlone = (piece, lang) => (lang !== null ? render([`\`\`\`${lang}`, piece], lang) : render([piece], null))
+
+  const splitToFit = (line, lang) => {
+    if (renderAlone(line, lang).length <= limit) return [line]
+    let lo = 1
+    let hi = line.length
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2)
+      if (renderAlone(line.slice(0, mid), lang).length <= limit) lo = mid
+      else hi = mid - 1
+    }
+    const head = line.slice(0, lo)
+    const rest = line.slice(lo)
+    return rest ? [head, ...splitToFit(rest, lang)] : [head]
+  }
+
+  const queue = src.split('\n')
+  const chunks = []
+  let bufLines = []
+  let fenceLang = null
+
+  const flush = () => {
+    chunks.push(render(bufLines, fenceLang))
+    bufLines = fenceLang !== null ? [`\`\`\`${fenceLang}`] : []
+  }
+
+  while (queue.length) {
+    const line = queue.shift()
+    const isFenceMarker = fenceLangOf(line) !== null
+    const nextFenceLang = isFenceMarker ? (fenceLang === null ? fenceLangOf(line) : null) : fenceLang
+
+    if (renderAlone(line, nextFenceLang).length > limit) {
+      if (bufLines.length) flush()
+      fenceLang = nextFenceLang
+      for (const piece of splitToFit(line, fenceLang)) chunks.push(renderAlone(piece, fenceLang))
+      bufLines = fenceLang !== null ? [`\`\`\`${fenceLang}`] : []
+      continue
+    }
+
+    const candidate = [...bufLines, line]
+    if (bufLines.length && render(candidate, nextFenceLang).length > limit) {
+      flush()
+      queue.unshift(line)
+      continue
+    }
+
+    bufLines = candidate
+    fenceLang = nextFenceLang
+  }
+
+  if (bufLines.length) chunks.push(render(bufLines, fenceLang))
+  return chunks
 }
 
 export function htmlToPlainFallback(html) {
