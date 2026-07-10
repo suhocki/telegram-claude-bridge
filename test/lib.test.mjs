@@ -37,6 +37,22 @@ import {
   RECEIPT_REACTION,
   SUCCESS_REACTION,
   ERROR_REACTION,
+  expandHome,
+  buildFfmpegConvertArgs,
+  buildWhisperArgs,
+  parseWhisperTranscript,
+  buildVoiceTranscriptText,
+  parseVoiceToggleCommand,
+  setVoiceReplyPreference,
+  isVoiceReplyEnabled,
+  buildVoiceToggleReply,
+  buildSpeechText,
+  truncateForSpeech,
+  buildTtsRequestOptions,
+  buildOutboxFilename,
+  DEFAULT_WHISPER_LANGUAGE,
+  DEFAULT_TTS_MODEL_ID,
+  DEFAULT_TTS_VOICE_SETTINGS,
 } from '../lib.mjs'
 import path from 'node:path'
 
@@ -798,4 +814,148 @@ test('buildReactionMarkerInstructions: documents the REACT marker protocol', () 
 test('reaction constants: receipt, success, and error emoji are distinct', () => {
   const emojis = new Set([RECEIPT_REACTION, SUCCESS_REACTION, ERROR_REACTION])
   assert.equal(emojis.size, 3)
+})
+
+test('expandHome: expands a leading ~/ using the given home dir', () => {
+  assert.equal(expandHome('~/models/model.bin', '/home/max'), '/home/max/models/model.bin')
+})
+
+test('expandHome: expands a bare ~', () => {
+  assert.equal(expandHome('~', '/home/max'), '/home/max')
+})
+
+test('expandHome: leaves absolute paths untouched', () => {
+  assert.equal(expandHome('/opt/models/model.bin', '/home/max'), '/opt/models/model.bin')
+})
+
+test('expandHome: leaves non-string input untouched', () => {
+  assert.equal(expandHome(undefined, '/home/max'), undefined)
+})
+
+test('buildFfmpegConvertArgs: converts to 16kHz mono wav, overwriting existing output', () => {
+  assert.deepEqual(buildFfmpegConvertArgs('/in.oga', '/out.wav'), ['-y', '-i', '/in.oga', '-ar', '16000', '-ac', '1', '/out.wav'])
+})
+
+test('buildWhisperArgs: builds whisper-cli args with no-timestamps text output', () => {
+  assert.deepEqual(buildWhisperArgs('/tmp/a.wav', '/models/m.bin', 'ru', '/tmp/a'), [
+    '-m', '/models/m.bin', '-f', '/tmp/a.wav', '-l', 'ru', '-otxt', '-of', '/tmp/a', '-nt',
+  ])
+})
+
+test('buildWhisperArgs: falls back to the default language when none given', () => {
+  const args = buildWhisperArgs('/tmp/a.wav', '/models/m.bin', null, '/tmp/a')
+  assert.equal(args[args.indexOf('-l') + 1], DEFAULT_WHISPER_LANGUAGE)
+})
+
+test('parseWhisperTranscript: trims whitespace and normalizes line endings', () => {
+  assert.equal(parseWhisperTranscript('\r\n  hello world  \r\n'), 'hello world')
+})
+
+test('parseWhisperTranscript: null/undefined becomes an empty string', () => {
+  assert.equal(parseWhisperTranscript(undefined), '')
+  assert.equal(parseWhisperTranscript(null), '')
+})
+
+test('buildVoiceTranscriptText: tags a successful transcript', () => {
+  assert.equal(buildVoiceTranscriptText('hello there'), '(voice message transcript)\nhello there')
+})
+
+test('buildVoiceTranscriptText: trims the transcript before tagging', () => {
+  assert.equal(buildVoiceTranscriptText('  hi  '), '(voice message transcript)\nhi')
+})
+
+test('buildVoiceTranscriptText: empty/whitespace-only transcript yields an unavailable marker', () => {
+  assert.equal(buildVoiceTranscriptText(''), '(voice message transcript unavailable)')
+  assert.equal(buildVoiceTranscriptText('   '), '(voice message transcript unavailable)')
+})
+
+test('parseVoiceToggleCommand: recognizes /voice on and /voice off case-insensitively', () => {
+  assert.equal(parseVoiceToggleCommand('/voice on'), 'on')
+  assert.equal(parseVoiceToggleCommand('/voice OFF'), 'off')
+  assert.equal(parseVoiceToggleCommand('  /voice On  '), 'on')
+})
+
+test('parseVoiceToggleCommand: returns null for anything else', () => {
+  assert.equal(parseVoiceToggleCommand('/voice'), null)
+  assert.equal(parseVoiceToggleCommand('/voice maybe'), null)
+  assert.equal(parseVoiceToggleCommand('hello'), null)
+  assert.equal(parseVoiceToggleCommand(undefined), null)
+})
+
+test('setVoiceReplyPreference: enabling sets the chat key without mutating the input', () => {
+  const before = { a: true }
+  const after = setVoiceReplyPreference(before, 'b', true)
+  assert.deepEqual(before, { a: true })
+  assert.deepEqual(after, { a: true, b: true })
+})
+
+test('setVoiceReplyPreference: disabling removes the chat key', () => {
+  const before = { a: true, b: true }
+  const after = setVoiceReplyPreference(before, 'b', false)
+  assert.deepEqual(after, { a: true })
+})
+
+test('isVoiceReplyEnabled: true only for chats explicitly enabled', () => {
+  assert.equal(isVoiceReplyEnabled({ a: true }, 'a'), true)
+  assert.equal(isVoiceReplyEnabled({ a: true }, 'b'), false)
+  assert.equal(isVoiceReplyEnabled(undefined, 'a'), false)
+})
+
+test('buildVoiceToggleReply: distinct on/off confirmation text', () => {
+  assert.match(buildVoiceToggleReply(true), /ON/)
+  assert.match(buildVoiceToggleReply(false), /OFF/)
+  assert.notEqual(buildVoiceToggleReply(true), buildVoiceToggleReply(false))
+})
+
+test('buildSpeechText: strips markdown emphasis and code markup down to plain words', () => {
+  assert.equal(buildSpeechText('**hello** _world_ `code`'), 'hello world code')
+})
+
+test('buildSpeechText: unescapes HTML entities produced by the markdown pass', () => {
+  assert.equal(buildSpeechText('a < b && c > d'), 'a < b && c > d')
+})
+
+test('buildSpeechText: null/undefined becomes an empty string', () => {
+  assert.equal(buildSpeechText(undefined), '')
+  assert.equal(buildSpeechText(null), '')
+})
+
+test('truncateForSpeech: text at or under the limit is unchanged', () => {
+  assert.equal(truncateForSpeech('hello', 10), 'hello')
+})
+
+test('truncateForSpeech: longer text is cut with an ellipsis', () => {
+  const result = truncateForSpeech('a'.repeat(20), 10)
+  assert.equal(result, `${'a'.repeat(9)}…`)
+})
+
+test('truncateForSpeech: no limit configured leaves text untouched', () => {
+  assert.equal(truncateForSpeech('a'.repeat(20), 0), 'a'.repeat(20))
+})
+
+test('buildTtsRequestOptions: builds the ElevenLabs request shape', () => {
+  const { url, headers, body } = buildTtsRequestOptions('hello', { voiceId: 'v1', apiKey: 'key123' })
+  assert.equal(url, 'https://api.elevenlabs.io/v1/text-to-speech/v1?output_format=mp3_44100_128')
+  assert.equal(headers['xi-api-key'], 'key123')
+  assert.equal(headers.accept, 'audio/mpeg')
+  const parsed = JSON.parse(body)
+  assert.equal(parsed.text, 'hello')
+  assert.equal(parsed.model_id, DEFAULT_TTS_MODEL_ID)
+  assert.deepEqual(parsed.voice_settings, DEFAULT_TTS_VOICE_SETTINGS)
+})
+
+test('buildTtsRequestOptions: honors an explicit modelId and voiceSettings override', () => {
+  const settings = { stability: 1 }
+  const { body } = buildTtsRequestOptions('hi', { voiceId: 'v1', apiKey: 'k', modelId: 'm2', voiceSettings: settings })
+  const parsed = JSON.parse(body)
+  assert.equal(parsed.model_id, 'm2')
+  assert.deepEqual(parsed.voice_settings, settings)
+})
+
+test('buildOutboxFilename: combines timestamp and sanitized chat id with an mp3 extension', () => {
+  assert.equal(buildOutboxFilename(123, '456'), '123-456.mp3')
+})
+
+test('buildOutboxFilename: sanitizes unsafe characters in the chat id', () => {
+  assert.equal(buildOutboxFilename(123, '-100/456'), '123--100456.mp3')
 })
