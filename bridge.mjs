@@ -61,6 +61,15 @@ import {
   buildBotIdentity,
 } from './lib.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback } from './markdown-html.mjs'
+import {
+  DEFAULT_WORKING_STATUS,
+  createLineSplitter,
+  parseJsonlLine,
+  isResultEvent,
+  createProgressTracker,
+  formatRunOutcomeStatus,
+  createStatusUpdater,
+} from './stream-progress.mjs'
 
 const configPath = process.argv[2]
 if (!configPath) {
@@ -179,9 +188,18 @@ async function sendAttachment(chatId, filePath, replyToMessageId) {
   }
 }
 
-function runClaude(prompt, sessionId) {
+function runClaude(prompt, sessionId, onEvent) {
   return new Promise((resolve, reject) => {
-    const args = ['-p', prompt, '--output-format', 'json', '--permission-mode', 'bypassPermissions']
+    const args = [
+      '-p',
+      prompt,
+      '--output-format',
+      'stream-json',
+      '--include-partial-messages',
+      '--verbose',
+      '--permission-mode',
+      'bypassPermissions',
+    ]
     if (sessionId) args.push('--resume', sessionId)
     args.push(
       '--append-system-prompt',
@@ -190,18 +208,31 @@ function runClaude(prompt, sessionId) {
     if (Array.isArray(claudeArgs)) args.push(...claudeArgs)
 
     const child = spawn('claude', args, { cwd, env: process.env })
-    let out = ''
+    const pushChunk = createLineSplitter()
+    let result = null
     let err = ''
-    child.stdout.on('data', d => (out += d))
+    let stdoutTail = ''
+    child.stdout.on('data', d => {
+      const text = d.toString()
+      stdoutTail = (stdoutTail + text).slice(-2000)
+      for (const line of pushChunk(text)) {
+        const event = parseJsonlLine(line)
+        if (!event) continue
+        if (isResultEvent(event)) result = event
+        if (onEvent) {
+          try {
+            onEvent(event)
+          } catch (e) {
+            log('progress onEvent handler failed', e.message)
+          }
+        }
+      }
+    })
     child.stderr.on('data', d => (err += d))
     child.on('error', reject)
     child.on('close', code => {
-      if (!out.trim()) return reject(new Error(err || `claude exited ${code} with no output`))
-      try {
-        resolve(JSON.parse(out))
-      } catch (e) {
-        reject(new Error(`bad JSON from claude: ${e.message}\n${out}\n${err}`))
-      }
+      if (result) return resolve(result)
+      reject(new Error(err || `claude exited ${code} with no result event\n${stdoutTail}`))
     })
   })
 }
@@ -387,12 +418,26 @@ async function handleMessage(msg) {
   try {
     const placeholder = await tg('sendMessage', {
       chat_id: chatId,
-      text: '⏳ working…',
+      text: DEFAULT_WORKING_STATUS,
       reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
     })
     placeholderId = placeholder.message_id
   } catch (e) {
     log('failed to send working placeholder', e.message)
+  }
+
+  const progress = createProgressTracker()
+  const statusUpdater = createStatusUpdater({
+    getStatus: () => progress.current(),
+    onUpdate: latestStatus => {
+      if (placeholderId == null) return
+      tg('editMessageText', { chat_id: chatId, message_id: placeholderId, text: latestStatus }).catch(() => {})
+    },
+  })
+  const stopStatusUpdates = async finalStatus => {
+    statusUpdater.stop()
+    if (placeholderId == null) return
+    await tg('editMessageText', { chat_id: chatId, message_id: placeholderId, text: finalStatus }).catch(() => {})
   }
 
   let attachmentResult = null
@@ -429,7 +474,8 @@ async function handleMessage(msg) {
       : buildChannelPrompt(chatId, meta.messageId, meta.user, meta.ts, promptText, attachmentAttrs)
 
   try {
-    const result = await runClaude(prompt, sessionId)
+    const result = await runClaude(prompt, sessionId, event => progress.ingest(event))
+    await stopStatusUpdates(formatRunOutcomeStatus(result.is_error))
     let newSession = session
     if (result.session_id) {
       newSession = accumulateSessionCost(session, result.session_id, result.total_cost_usd)
@@ -446,7 +492,8 @@ async function handleMessage(msg) {
     if (newSession && crossedCostThreshold(session?.costUsd ?? 0, newSession.costUsd, costWarnUsd)) {
       replyText = `${buildCostWarning(newSession.costUsd, costWarnUsd)}\n\n${replyText}`
     }
-    await sendReply(chatId, replyText, msg.message_id, placeholderId)
+    // new message, not an edit of the placeholder, so Telegram pushes a notification
+    await sendReply(chatId, replyText, msg.message_id)
     if (!result.is_error) {
       for (const attachPath of attachPaths) {
         await sendAttachment(chatId, attachPath, msg.message_id)
@@ -458,11 +505,13 @@ async function handleMessage(msg) {
     await setReaction(chatId, msg.message_id, reactionEmoji || (result.is_error ? ERROR_REACTION : SUCCESS_REACTION))
   } catch (e) {
     log('handleMessage error', e)
+    statusUpdater.stop()
     await sendReply(chatId, `⚠️ bridge error: ${e.message}`, msg.message_id, placeholderId).catch(() => {})
     await setReaction(chatId, msg.message_id, ERROR_REACTION)
   } finally {
     typingAlive = false
     clearInterval(typing)
+    statusUpdater.stop()
   }
 }
 
