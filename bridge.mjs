@@ -6,7 +6,18 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
-import { buildSendMessageCalls, sanitizeAttr, createKeyedQueue, classifyCommand, buildChannelPrompt } from './lib.mjs'
+import {
+  buildSendMessageCalls,
+  sanitizeAttr,
+  createKeyedQueue,
+  classifyCommand,
+  buildChannelPrompt,
+  normalizeSession,
+  accumulateSessionCost,
+  crossedCostThreshold,
+  buildCostWarning,
+  formatStatusText,
+} from './lib.mjs'
 
 const configPath = process.argv[2]
 if (!configPath) {
@@ -15,7 +26,7 @@ if (!configPath) {
 }
 
 const config = JSON.parse(readFileSync(configPath, 'utf8'))
-const { botToken, cwd, allowedUserIds, appendSystemPrompt, claudeArgs } = config
+const { botToken, cwd, allowedUserIds, appendSystemPrompt, claudeArgs, costWarnUsd } = config
 const stateFile = path.resolve(path.dirname(configPath), config.stateFile ?? 'state.json')
 const API = `https://api.telegram.org/bot${botToken}`
 
@@ -104,7 +115,13 @@ async function handleMessage(msg) {
     return
   }
 
-  const sessionId = state.sessions[chatId]
+  const session = normalizeSession(state.sessions[chatId])
+  const sessionId = session?.id
+
+  if (command === 'status') {
+    await sendReply(chatId, formatStatusText(session), msg.message_id).catch(() => {})
+    return
+  }
 
   if (command === 'compact' && !sessionId) {
     await sendReply(chatId, 'ℹ️ no active session to compact yet.', msg.message_id).catch(() => {})
@@ -123,15 +140,20 @@ async function handleMessage(msg) {
 
   try {
     const result = await runClaude(prompt, sessionId)
+    let newSession = session
     if (result.session_id) {
-      state.sessions[chatId] = result.session_id
+      newSession = accumulateSessionCost(session, result.session_id, result.total_cost_usd)
+      state.sessions[chatId] = newSession
       saveState(state)
     }
-    const replyText = result.is_error
+    let replyText = result.is_error
       ? `⚠️ ${result.result ?? 'error'}`
       : command === 'compact'
         ? `✅ conversation compacted.${result.result ? `\n\n${result.result}` : ''}`
         : (result.result ?? '(empty response)')
+    if (newSession && crossedCostThreshold(session?.costUsd ?? 0, newSession.costUsd, costWarnUsd)) {
+      replyText = `${buildCostWarning(newSession.costUsd, costWarnUsd)}\n\n${replyText}`
+    }
     await sendReply(chatId, replyText, msg.message_id)
   } catch (e) {
     log('handleMessage error', e)

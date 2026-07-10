@@ -31,7 +31,34 @@ export function classifyCommand(text) {
   const t = String(text ?? '').trim()
   if (t === '/new' || t === '/reset') return 'reset'
   if (t === '/compact') return 'compact'
+  if (t === '/status') return 'status'
   return null
+}
+
+export function normalizeSession(raw) {
+  if (raw == null) return null
+  if (typeof raw === 'string') return { id: raw, costUsd: 0 }
+  return { id: raw.id, costUsd: raw.costUsd ?? 0 }
+}
+
+export function accumulateSessionCost(session, sessionId, deltaUsd) {
+  const prevCost = session?.costUsd ?? 0
+  const cost = Math.round((prevCost + (Number(deltaUsd) || 0)) * 1e6) / 1e6
+  return { id: sessionId, costUsd: cost }
+}
+
+export function crossedCostThreshold(prevCostUsd, newCostUsd, thresholdUsd) {
+  if (!thresholdUsd) return false
+  return prevCostUsd < thresholdUsd && newCostUsd >= thresholdUsd
+}
+
+export function buildCostWarning(costUsd, thresholdUsd) {
+  return `⚠️ this session has cost $${costUsd.toFixed(4)}, over your $${thresholdUsd} warning threshold — consider /new to start fresh.`
+}
+
+export function formatStatusText(session) {
+  if (!session) return 'ℹ️ no active session yet — send a message to start one.'
+  return `session: ${session.id}\ncost so far: $${(session.costUsd ?? 0).toFixed(4)}`
 }
 
 export function buildChannelPrompt(chatId, messageId, user, ts, text) {
