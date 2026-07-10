@@ -6,7 +6,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
-import { buildSendMessageCalls, sanitizeAttr, createKeyedQueue } from './lib.mjs'
+import { buildSendMessageCalls, sanitizeAttr, createKeyedQueue, classifyCommand, buildChannelPrompt } from './lib.mjs'
 
 const configPath = process.argv[2]
 if (!configPath) {
@@ -95,6 +95,22 @@ async function handleMessage(msg) {
     return
   }
 
+  const command = classifyCommand(text)
+
+  if (command === 'reset') {
+    delete state.sessions[chatId]
+    saveState(state)
+    await sendReply(chatId, '🔄 session reset — the next message starts a brand new conversation.', msg.message_id).catch(() => {})
+    return
+  }
+
+  const sessionId = state.sessions[chatId]
+
+  if (command === 'compact' && !sessionId) {
+    await sendReply(chatId, 'ℹ️ no active session to compact yet.', msg.message_id).catch(() => {})
+    return
+  }
+
   let typingAlive = true
   const typing = setInterval(() => {
     if (typingAlive) tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {})
@@ -103,19 +119,19 @@ async function handleMessage(msg) {
 
   const user = sanitizeAttr(msg.from?.username ?? userId)
   const ts = new Date((msg.date ?? 0) * 1000).toISOString()
-  const prompt =
-    `<channel source="telegram" chat_id="${chatId}" message_id="${msg.message_id}" user="${user}" ts="${ts}">\n` +
-    `${text}\n` +
-    `</channel>`
+  const prompt = command === 'compact' ? text : buildChannelPrompt(chatId, msg.message_id, user, ts, text)
 
-  const sessionId = state.sessions[chatId]
   try {
     const result = await runClaude(prompt, sessionId)
     if (result.session_id) {
       state.sessions[chatId] = result.session_id
       saveState(state)
     }
-    const replyText = result.is_error ? `⚠️ ${result.result ?? 'error'}` : (result.result ?? '(empty response)')
+    const replyText = result.is_error
+      ? `⚠️ ${result.result ?? 'error'}`
+      : command === 'compact'
+        ? `✅ conversation compacted.${result.result ? `\n\n${result.result}` : ''}`
+        : (result.result ?? '(empty response)')
     await sendReply(chatId, replyText, msg.message_id)
   } catch (e) {
     log('handleMessage error', e)
