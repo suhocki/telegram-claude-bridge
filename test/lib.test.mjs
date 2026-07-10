@@ -1,6 +1,15 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chunk, sanitizeAttr, buildSendMessageCalls } from '../lib.mjs'
+import { chunk, sanitizeAttr, buildSendMessageCalls, createKeyedQueue } from '../lib.mjs'
+
+function deferred() {
+  let resolve, reject
+  const promise = new Promise((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
 
 test('chunk: text under the limit is returned as a single part', () => {
   assert.deepEqual(chunk('hello', 10), ['hello'])
@@ -84,4 +93,73 @@ test('buildSendMessageCalls: message id 0 is a valid id and still threads', () =
   assert.deepEqual(calls, [
     { chat_id: '123', text: 'hi', reply_parameters: { message_id: 0, allow_sending_without_reply: true } },
   ])
+})
+
+test('createKeyedQueue: same key runs tasks strictly in order, one at a time', async () => {
+  const queue = createKeyedQueue()
+  const order = []
+  const first = deferred()
+
+  const p1 = queue.enqueue('chat1', async () => {
+    order.push('start1')
+    await first.promise
+    order.push('end1')
+  })
+  const p2 = queue.enqueue('chat1', async () => {
+    order.push('start2')
+  })
+
+  await new Promise(r => setTimeout(r, 0))
+  assert.deepEqual(order, ['start1'])
+
+  first.resolve()
+  await Promise.all([p1, p2])
+  assert.deepEqual(order, ['start1', 'end1', 'start2'])
+})
+
+test('createKeyedQueue: different keys run concurrently, not serialized', async () => {
+  const queue = createKeyedQueue()
+  const order = []
+  const blockA = deferred()
+
+  const pA = queue.enqueue('chatA', async () => {
+    order.push('startA')
+    await blockA.promise
+    order.push('endA')
+  })
+  const pB = queue.enqueue('chatB', async () => {
+    order.push('startB')
+    order.push('endB')
+  })
+
+  await pB
+  assert.deepEqual(order, ['startA', 'startB', 'endB'])
+
+  blockA.resolve()
+  await pA
+  assert.deepEqual(order, ['startA', 'startB', 'endB', 'endA'])
+})
+
+test('createKeyedQueue: a rejected task does not block later tasks for the same key', async () => {
+  const queue = createKeyedQueue()
+  const order = []
+
+  const p1 = queue.enqueue('chat1', async () => {
+    order.push('task1')
+    throw new Error('boom')
+  })
+  const p2 = queue.enqueue('chat1', async () => {
+    order.push('task2')
+    return 'ok'
+  })
+
+  await assert.rejects(p1, /boom/)
+  assert.equal(await p2, 'ok')
+  assert.deepEqual(order, ['task1', 'task2'])
+})
+
+test('createKeyedQueue: enqueue resolves/rejects with the task\'s own outcome', async () => {
+  const queue = createKeyedQueue()
+  assert.equal(await queue.enqueue('k', () => 'value'), 'value')
+  await assert.rejects(queue.enqueue('k', () => { throw new Error('nope') }), /nope/)
 })
