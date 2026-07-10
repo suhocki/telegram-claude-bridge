@@ -26,3 +26,20 @@ export function buildSendMessageCalls(chatId, text, replyToMessageId, limit = 40
     return params
   })
 }
+
+export function createKeyedQueue() {
+  const tails = new Map()
+
+  function enqueue(key, task) {
+    const prevTail = tails.get(key) ?? Promise.resolve()
+    const result = prevTail.then(task)
+    const tail = result.then(() => {}, () => {})
+    tails.set(key, tail)
+    tail.then(() => {
+      if (tails.get(key) === tail) tails.delete(key)
+    })
+    return result
+  }
+
+  return { enqueue }
+}

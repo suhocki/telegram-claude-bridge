@@ -6,7 +6,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
-import { buildSendMessageCalls, sanitizeAttr } from './lib.mjs'
+import { buildSendMessageCalls, sanitizeAttr, createKeyedQueue } from './lib.mjs'
 
 const configPath = process.argv[2]
 if (!configPath) {
@@ -39,6 +39,7 @@ function saveState(state) {
 }
 
 const state = loadState()
+const chatQueue = createKeyedQueue()
 
 async function tg(method, params) {
   const res = await fetch(`${API}/${method}`, {
@@ -133,7 +134,10 @@ async function poll() {
       for (const u of updates) {
         state.offset = u.update_id + 1
         saveState(state)
-        if (u.message) await handleMessage(u.message)
+        if (u.message) {
+          const chatId = String(u.message.chat.id)
+          chatQueue.enqueue(chatId, () => handleMessage(u.message)).catch(e => log('queued handleMessage rejected', e))
+        }
       }
     } catch (e) {
       log('poll error', e)
