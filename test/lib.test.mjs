@@ -44,6 +44,7 @@ import {
   parseWhisperTranscript,
   buildVoiceTranscriptText,
   buildTranscriptQuoteHtml,
+  TRANSCRIPT_QUOTE_MAX_CHARS,
   buildPlaceholderEditParams,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
@@ -897,6 +898,14 @@ test('buildTranscriptQuoteHtml: escapes HTML-significant characters', () => {
 test('buildTranscriptQuoteHtml: empty/whitespace-only transcript yields null', () => {
   assert.equal(buildTranscriptQuoteHtml(''), null)
   assert.equal(buildTranscriptQuoteHtml('   '), null)
+})
+
+test('buildTranscriptQuoteHtml: truncates a transcript longer than TRANSCRIPT_QUOTE_MAX_CHARS', () => {
+  const longTranscript = 'a'.repeat(TRANSCRIPT_QUOTE_MAX_CHARS + 500)
+  const result = buildTranscriptQuoteHtml(longTranscript)
+  assert.ok(result.startsWith('<blockquote>'))
+  assert.ok(result.endsWith('…</blockquote>'))
+  assert.ok(result.length < longTranscript.length)
 })
 
 test('buildPlaceholderEditParams: without a quote, passes the status through unchanged', () => {

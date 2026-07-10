@@ -2,6 +2,9 @@
 
 import path from 'node:path'
 import { markdownToTelegramHtml, htmlToPlainFallback, escapeHtml } from './markdown-html.mjs'
+import { truncateStatus } from './stream-progress.mjs'
+
+export const TRANSCRIPT_QUOTE_MAX_CHARS = 3000
 
 export function chunk(text, limit = 4096) {
   const out = []
@@ -339,7 +342,8 @@ export function buildVoiceTranscriptText(transcript) {
 
 export function buildTranscriptQuoteHtml(transcript) {
   const trimmed = String(transcript ?? '').trim()
-  return trimmed ? `<blockquote>${escapeHtml(trimmed)}</blockquote>` : null
+  if (!trimmed) return null
+  return `<blockquote>${escapeHtml(truncateStatus(trimmed, TRANSCRIPT_QUOTE_MAX_CHARS))}</blockquote>`
 }
 
 export function buildPlaceholderEditParams(chatId, messageId, status, quoteHtml) {

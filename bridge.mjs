@@ -430,17 +430,30 @@ async function handleMessage(msg) {
 
   let transcriptQuoteHtml = null
   const progress = createProgressTracker()
+
+  async function editPlaceholder(status) {
+    if (placeholderId == null) return
+    const params = buildPlaceholderEditParams(chatId, placeholderId, status, transcriptQuoteHtml)
+    try {
+      await tg('editMessageText', params)
+    } catch (e) {
+      if (!params.parse_mode) {
+        log('editMessageText failed', e.message)
+        return
+      }
+      await tg('editMessageText', { chat_id: chatId, message_id: placeholderId, text: htmlToPlainFallback(params.text) }).catch(e2 =>
+        log('editMessageText fallback failed', e2.message)
+      )
+    }
+  }
+
   const statusUpdater = createStatusUpdater({
     getStatus: () => progress.current(),
-    onUpdate: latestStatus => {
-      if (placeholderId == null) return
-      tg('editMessageText', buildPlaceholderEditParams(chatId, placeholderId, latestStatus, transcriptQuoteHtml)).catch(() => {})
-    },
+    onUpdate: latestStatus => editPlaceholder(latestStatus),
   })
   const stopStatusUpdates = async finalStatus => {
     statusUpdater.stop()
-    if (placeholderId == null) return
-    await tg('editMessageText', buildPlaceholderEditParams(chatId, placeholderId, finalStatus, transcriptQuoteHtml)).catch(() => {})
+    await editPlaceholder(finalStatus)
   }
 
   let attachmentResult = null
@@ -458,12 +471,7 @@ async function handleMessage(msg) {
     } else {
       promptText = buildVoiceTranscriptText(transcription.text)
       transcriptQuoteHtml = buildTranscriptQuoteHtml(transcription.text)
-      if (transcriptQuoteHtml && placeholderId != null) {
-        await tg(
-          'editMessageText',
-          buildPlaceholderEditParams(chatId, placeholderId, progress.current(), transcriptQuoteHtml)
-        ).catch(e => log('failed to attach transcript quote to placeholder', e.message))
-      }
+      if (transcriptQuoteHtml) editPlaceholder(progress.current())
     }
   }
 
