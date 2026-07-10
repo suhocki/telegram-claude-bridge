@@ -214,3 +214,14 @@ test('createStatusUpdater.stop is idempotent and safe to call from multiple code
   assert.doesNotThrow(() => updater.stop())
   assert.equal(updater.alive, false)
 })
+
+test('regression: stopping before writing an error message prevents a later stale tick from clobbering it (bridge.mjs catch-path ordering)', t => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  let status = '⏳ Bash: some stale progress line'
+  const writes = []
+  const updater = createStatusUpdater({ getStatus: () => status, onUpdate: s => writes.push(s), initialStatus: status, intervalMs: 3000 })
+  updater.stop()
+  writes.push('⚠️ bridge error: boom')
+  t.mock.timers.tick(10000)
+  assert.deepEqual(writes, ['⚠️ bridge error: boom'])
+})

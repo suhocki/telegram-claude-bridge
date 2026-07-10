@@ -505,6 +505,7 @@ async function handleMessage(msg) {
     await setReaction(chatId, msg.message_id, reactionEmoji || (result.is_error ? ERROR_REACTION : SUCCESS_REACTION))
   } catch (e) {
     log('handleMessage error', e)
+    statusUpdater.stop()
     await sendReply(chatId, `⚠️ bridge error: ${e.message}`, msg.message_id, placeholderId).catch(() => {})
     await setReaction(chatId, msg.message_id, ERROR_REACTION)
   } finally {
