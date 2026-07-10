@@ -439,6 +439,26 @@ export function buildBotIdentity(getMeResult) {
   return { id: String(getMeResult?.id ?? ''), username: getMeResult?.username ?? null }
 }
 
+export function validateNotifyConfig(config) {
+  if (!config || typeof config.botToken !== 'string' || !config.botToken.trim()) {
+    return 'config is missing "botToken"'
+  }
+  return null
+}
+
+export function resolveNotifyChatId(config, explicitChatId) {
+  if (explicitChatId != null && String(explicitChatId).trim()) return String(explicitChatId).trim()
+  if (config?.notifyChatId != null && String(config.notifyChatId).trim()) return String(config.notifyChatId).trim()
+  const first = Array.isArray(config?.allowedUserIds) ? config.allowedUserIds[0] : null
+  return first != null && String(first).trim() ? String(first).trim() : null
+}
+
+export function pickNotifyText(argText, stdinText) {
+  const fromArg = String(argText ?? '').trim()
+  if (fromArg) return fromArg
+  return String(stdinText ?? '').trim()
+}
+
 export function createKeyedQueue() {
   const tails = new Map()
 

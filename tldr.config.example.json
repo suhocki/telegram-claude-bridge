@@ -2,6 +2,7 @@
   "botToken": "PUT_YOUR_TELEGRAM_BOT_TOKEN_HERE",
   "cwd": "/absolute/path/to/project/this/bot/should/act-in",
   "allowedUserIds": ["YOUR_TELEGRAM_NUMERIC_USER_ID"],
+  "notifyChatId": "YOUR_TELEGRAM_NUMERIC_USER_ID",
   "stateFile": "state/tldr.json",
   "groups": {
     "-1001234567890": {
