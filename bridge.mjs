@@ -62,6 +62,7 @@ import {
   shouldHandleGroupMessage,
   buildBotIdentity,
   createTelegramClient,
+  fetchWithTimeout,
 } from './lib.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback } from './markdown-html.mjs'
 import {
@@ -90,7 +91,9 @@ const tmpDir = path.join(stateDir, 'tmp')
 const outboxDir = path.join(stateDir, 'outbox')
 const API = `https://api.telegram.org/bot${botToken}`
 const GET_UPDATES_POLL_TIMEOUT_S = 30
-const GET_UPDATES_FETCH_TIMEOUT_MS = 40000
+const GET_UPDATES_FETCH_TIMEOUT_MS = 50000
+const FILE_TRANSFER_TIMEOUT_MS = 60000
+const TTS_REQUEST_TIMEOUT_MS = 30000
 
 const voiceTranscriptionConfig = {
   whisperBin: DEFAULT_WHISPER_BIN,
@@ -175,7 +178,7 @@ async function sendAttachment(chatId, filePath, replyToMessageId) {
     form.append('reply_parameters', JSON.stringify({ message_id: replyToMessageId, allow_sending_without_reply: true }))
   }
   try {
-    const res = await fetch(`${API}/${method}`, { method: 'POST', body: form })
+    const res = await fetchWithTimeout(fetch, `${API}/${method}`, { method: 'POST', body: form }, FILE_TRANSFER_TIMEOUT_MS)
     const data = await res.json()
     if (!data.ok) throw new Error(data.description)
   } catch (e) {
@@ -240,7 +243,12 @@ async function downloadAttachment(attachment) {
   try {
     const file = await tg('getFile', { file_id: attachment.fileId })
     if (!file.file_path) return { error: 'Telegram returned no file_path for this attachment' }
-    const res = await fetch(`https://api.telegram.org/file/bot${botToken}/${file.file_path}`)
+    const res = await fetchWithTimeout(
+      fetch,
+      `https://api.telegram.org/file/bot${botToken}/${file.file_path}`,
+      {},
+      FILE_TRANSFER_TIMEOUT_MS
+    )
     if (!res.ok) return { error: `download failed: HTTP ${res.status}` }
     const buf = Buffer.from(await res.arrayBuffer())
     mkdirSync(inboxDir, { recursive: true })
@@ -301,7 +309,7 @@ async function sendVoiceReply(chatId, text, replyToMessageId) {
       modelId: voiceReplyConfig.modelId,
       voiceSettings: voiceReplyConfig.voiceSettings,
     })
-    const res = await fetch(url, { method: 'POST', headers, body })
+    const res = await fetchWithTimeout(fetch, url, { method: 'POST', headers, body }, TTS_REQUEST_TIMEOUT_MS)
     if (!res.ok) throw new Error(`TTS request failed: HTTP ${res.status}`)
     const buf = Buffer.from(await res.arrayBuffer())
     mkdirSync(outboxDir, { recursive: true })
@@ -313,7 +321,7 @@ async function sendVoiceReply(chatId, text, replyToMessageId) {
     if (replyToMessageId != null) {
       form.append('reply_parameters', JSON.stringify({ message_id: replyToMessageId, allow_sending_without_reply: true }))
     }
-    const sendRes = await fetch(`${API}/sendVoice`, { method: 'POST', body: form })
+    const sendRes = await fetchWithTimeout(fetch, `${API}/sendVoice`, { method: 'POST', body: form }, FILE_TRANSFER_TIMEOUT_MS)
     const data = await sendRes.json()
     if (!data.ok) throw new Error(data.description)
   } catch (e) {

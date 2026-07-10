@@ -66,6 +66,7 @@ import {
   DEFAULT_TTS_MODEL_ID,
   DEFAULT_TTS_VOICE_SETTINGS,
   createTelegramClient,
+  fetchWithTimeout,
 } from '../lib.mjs'
 import path from 'node:path'
 
@@ -1147,13 +1148,36 @@ test('buildBotIdentity: tolerates a missing username', () => {
   assert.deepEqual(buildBotIdentity({ id: 111 }), { id: '111', username: null })
 })
 
+test('fetchWithTimeout: passes url/options through and resolves normally when fetch settles in time', async () => {
+  const calls = []
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options })
+    return { ok: true }
+  }
+  const res = await fetchWithTimeout(fetchImpl, 'https://example.com/x', { method: 'POST' }, 1000)
+  assert.equal(res.ok, true)
+  assert.equal(calls[0].url, 'https://example.com/x')
+  assert.equal(calls[0].options.method, 'POST')
+  assert.ok(calls[0].options.signal instanceof AbortSignal)
+})
+
+test('fetchWithTimeout: aborts and rejects instead of hanging forever when fetch never settles', async () => {
+  const fetchImpl = (url, options) =>
+    new Promise((resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(new Error('aborted')))
+    })
+  const start = Date.now()
+  await assert.rejects(() => fetchWithTimeout(fetchImpl, 'https://example.com/x', {}, 20), /aborted/)
+  assert.ok(Date.now() - start < 5000)
+})
+
 test('createTelegramClient: posts method+params and returns result on success', async () => {
   const calls = []
   const fetchImpl = async (url, options) => {
     calls.push({ url, options })
     return { json: async () => ({ ok: true, result: { id: 42 } }) }
   }
-  const tg = createTelegramClient('https://api.telegram.org/botTOKEN', { fetchImpl, defaultTimeoutMs: 1000 })
+  const tg = createTelegramClient('https://api.telegram.org/botTOKEN', { fetchImpl })
   const result = await tg('getMe', { foo: 'bar' })
   assert.deepEqual(result, { id: 42 })
   assert.equal(calls.length, 1)
@@ -1164,26 +1188,17 @@ test('createTelegramClient: posts method+params and returns result on success', 
 
 test('createTelegramClient: throws with the Telegram-reported description when ok is false', async () => {
   const fetchImpl = async () => ({ json: async () => ({ ok: false, description: 'Bad Request: chat not found' }) })
-  const tg = createTelegramClient('https://api.telegram.org/botTOKEN', { fetchImpl, defaultTimeoutMs: 1000 })
+  const tg = createTelegramClient('https://api.telegram.org/botTOKEN', { fetchImpl })
   await assert.rejects(() => tg('sendMessage', {}), /sendMessage failed: Bad Request: chat not found/)
 })
 
-test('createTelegramClient: aborts and rejects instead of hanging forever when fetch never settles', async () => {
+test('createTelegramClient: a per-call timeoutMs aborts and rejects instead of hanging forever', async () => {
   const fetchImpl = (url, options) =>
     new Promise((resolve, reject) => {
       options.signal.addEventListener('abort', () => reject(new Error('aborted')))
     })
-  const tg = createTelegramClient('https://api.telegram.org/botTOKEN', { fetchImpl, defaultTimeoutMs: 20 })
-  await assert.rejects(() => tg('getUpdates', {}), /aborted/)
-})
-
-test('createTelegramClient: a per-call timeoutMs overrides the client default', async () => {
-  const fetchImpl = (url, options) =>
-    new Promise((resolve, reject) => {
-      options.signal.addEventListener('abort', () => reject(new Error('aborted')))
-    })
-  const tg = createTelegramClient('https://api.telegram.org/botTOKEN', { fetchImpl, defaultTimeoutMs: 100000 })
+  const tg = createTelegramClient('https://api.telegram.org/botTOKEN', { fetchImpl })
   const start = Date.now()
-  await assert.rejects(() => tg('getUpdates', {}, { timeoutMs: 20 }))
+  await assert.rejects(() => tg('getUpdates', {}, { timeoutMs: 20 }), /aborted/)
   assert.ok(Date.now() - start < 5000)
 })
