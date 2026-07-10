@@ -61,6 +61,7 @@ import {
   resolveGroupPolicy,
   shouldHandleGroupMessage,
   buildBotIdentity,
+  createTelegramClient,
 } from './lib.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback } from './markdown-html.mjs'
 import {
@@ -88,6 +89,8 @@ const inboxDir = path.join(stateDir, 'inbox')
 const tmpDir = path.join(stateDir, 'tmp')
 const outboxDir = path.join(stateDir, 'outbox')
 const API = `https://api.telegram.org/bot${botToken}`
+const GET_UPDATES_POLL_TIMEOUT_S = 30
+const GET_UPDATES_FETCH_TIMEOUT_MS = 40000
 
 const voiceTranscriptionConfig = {
   whisperBin: DEFAULT_WHISPER_BIN,
@@ -129,16 +132,7 @@ function saveState(state) {
 const state = loadState()
 const chatQueue = createKeyedQueue()
 
-async function tg(method, params) {
-  const res = await fetch(`${API}/${method}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(params),
-  })
-  const data = await res.json()
-  if (!data.ok) throw new Error(`${method} failed: ${data.description}`)
-  return data.result
-}
+const tg = createTelegramClient(API)
 
 async function sendReply(chatId, text, replyToMessageId, editMessageId) {
   const chunks = markdownToTelegramHtmlChunks(text || '(empty response)')
@@ -545,7 +539,11 @@ async function poll() {
   log('bridge started, cwd=', cwd, 'offset=', state.offset, 'bot=', botIdentity.username)
   for (;;) {
     try {
-      const updates = await tg('getUpdates', { offset: state.offset, timeout: 30 })
+      const updates = await tg(
+        'getUpdates',
+        { offset: state.offset, timeout: GET_UPDATES_POLL_TIMEOUT_S },
+        { timeoutMs: GET_UPDATES_FETCH_TIMEOUT_MS }
+      )
       for (const u of updates) {
         state.offset = u.update_id + 1
         saveState(state)

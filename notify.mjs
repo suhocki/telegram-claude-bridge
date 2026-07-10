@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from 'node:fs'
-import { validateNotifyConfig, resolveNotifyChatId, pickNotifyText, buildSendMessageCallsFromChunks } from './lib.mjs'
+import { validateNotifyConfig, resolveNotifyChatId, pickNotifyText, buildSendMessageCallsFromChunks, createTelegramClient } from './lib.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback } from './markdown-html.mjs'
 
 const [configPath, textArg, chatIdArg] = process.argv.slice(2)
@@ -51,16 +51,7 @@ if (!chatId) {
 
 const API = `https://api.telegram.org/bot${config.botToken}`
 
-async function tg(method, params) {
-  const res = await fetch(`${API}/${method}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(params),
-  })
-  const data = await res.json()
-  if (!data.ok) throw new Error(`${method} failed: ${data.description}`)
-  return data.result
-}
+const tg = createTelegramClient(API)
 
 async function main() {
   const chunks = markdownToTelegramHtmlChunks(text)
