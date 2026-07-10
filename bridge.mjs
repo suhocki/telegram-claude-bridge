@@ -6,7 +6,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
-import { chunk, sanitizeAttr } from './lib.mjs'
+import { buildSendMessageCalls, sanitizeAttr } from './lib.mjs'
 
 const configPath = process.argv[2]
 if (!configPath) {
@@ -51,9 +51,9 @@ async function tg(method, params) {
   return data.result
 }
 
-async function sendReply(chatId, text) {
-  for (const part of chunk(text || '(empty response)')) {
-    await tg('sendMessage', { chat_id: chatId, text: part })
+async function sendReply(chatId, text, replyToMessageId) {
+  for (const params of buildSendMessageCalls(chatId, text || '(empty response)', replyToMessageId)) {
+    await tg('sendMessage', params)
   }
 }
 
@@ -90,7 +90,7 @@ async function handleMessage(msg) {
   }
   const text = msg.text
   if (!text) {
-    await sendReply(chatId, '(bridge v1 only handles text messages — attachments not supported yet)').catch(() => {})
+    await sendReply(chatId, '(bridge v1 only handles text messages — attachments not supported yet)', msg.message_id).catch(() => {})
     return
   }
 
@@ -115,10 +115,10 @@ async function handleMessage(msg) {
       saveState(state)
     }
     const replyText = result.is_error ? `⚠️ ${result.result ?? 'error'}` : (result.result ?? '(empty response)')
-    await sendReply(chatId, replyText)
+    await sendReply(chatId, replyText, msg.message_id)
   } catch (e) {
     log('handleMessage error', e)
-    await sendReply(chatId, `⚠️ bridge error: ${e.message}`).catch(() => {})
+    await sendReply(chatId, `⚠️ bridge error: ${e.message}`, msg.message_id).catch(() => {})
   } finally {
     typingAlive = false
     clearInterval(typing)
