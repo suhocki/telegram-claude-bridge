@@ -45,6 +45,8 @@ import {
   buildWhisperArgs,
   parseWhisperTranscript,
   buildVoiceTranscriptText,
+  buildTranscriptQuoteHtml,
+  buildPlaceholderEditParams,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
   isVoiceReplyEnabled,
@@ -426,18 +428,33 @@ async function handleMessage(msg) {
     log('failed to send working placeholder', e.message)
   }
 
+  let transcriptQuoteHtml = null
   const progress = createProgressTracker()
+
+  async function editPlaceholder(status) {
+    if (placeholderId == null) return
+    const params = buildPlaceholderEditParams(chatId, placeholderId, status, transcriptQuoteHtml)
+    try {
+      await tg('editMessageText', params)
+    } catch (e) {
+      if (/message is not modified/i.test(e.message)) return
+      if (!params.parse_mode) {
+        log('editMessageText failed', e.message)
+        return
+      }
+      await tg('editMessageText', { chat_id: chatId, message_id: placeholderId, text: htmlToPlainFallback(params.text) }).catch(e2 =>
+        log('editMessageText fallback failed', e2.message)
+      )
+    }
+  }
+
   const statusUpdater = createStatusUpdater({
     getStatus: () => progress.current(),
-    onUpdate: latestStatus => {
-      if (placeholderId == null) return
-      tg('editMessageText', { chat_id: chatId, message_id: placeholderId, text: latestStatus }).catch(() => {})
-    },
+    onUpdate: latestStatus => editPlaceholder(latestStatus),
   })
   const stopStatusUpdates = async finalStatus => {
     statusUpdater.stop()
-    if (placeholderId == null) return
-    await tg('editMessageText', { chat_id: chatId, message_id: placeholderId, text: finalStatus }).catch(() => {})
+    await editPlaceholder(finalStatus)
   }
 
   let attachmentResult = null
@@ -454,6 +471,8 @@ async function handleMessage(msg) {
       log('voice transcription failed', transcriptionError)
     } else {
       promptText = buildVoiceTranscriptText(transcription.text)
+      transcriptQuoteHtml = buildTranscriptQuoteHtml(transcription.text)
+      if (transcriptQuoteHtml) editPlaceholder(progress.current())
     }
   }
 
