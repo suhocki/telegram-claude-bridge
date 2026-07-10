@@ -66,8 +66,76 @@ export function formatStatusText(session) {
   return `session: ${session.id}\ncost so far: $${(session.costUsd ?? 0).toFixed(4)}`
 }
 
-export function buildChannelPrompt(chatId, messageId, user, ts, text) {
-  return `<channel source="telegram" chat_id="${chatId}" message_id="${messageId}" user="${user}" ts="${ts}">\n${text}\n</channel>`
+export function buildChannelPrompt(chatId, messageId, user, ts, text, attrs = {}) {
+  const extra = Object.entries(attrs)
+    .filter(([, v]) => v != null && v !== '')
+    .map(([k, v]) => ` ${k}="${sanitizeAttr(v)}"`)
+    .join('')
+  return `<channel source="telegram" chat_id="${chatId}" message_id="${messageId}" user="${user}" ts="${ts}"${extra}>\n${text}\n</channel>`
+}
+
+export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
+
+export function extractAttachment(msg) {
+  if (Array.isArray(msg?.photo) && msg.photo.length) {
+    const best = msg.photo[msg.photo.length - 1]
+    return { kind: 'photo', fileId: best.file_id, size: best.file_size }
+  }
+  if (msg?.document) {
+    const d = msg.document
+    return { kind: 'document', fileId: d.file_id, size: d.file_size, mime: d.mime_type, name: d.file_name }
+  }
+  if (msg?.voice) {
+    const v = msg.voice
+    return { kind: 'voice', fileId: v.file_id, size: v.file_size, mime: v.mime_type }
+  }
+  if (msg?.audio) {
+    const a = msg.audio
+    return { kind: 'audio', fileId: a.file_id, size: a.file_size, mime: a.mime_type, name: a.file_name }
+  }
+  if (msg?.video) {
+    const v = msg.video
+    return { kind: 'video', fileId: v.file_id, size: v.file_size, mime: v.mime_type, name: v.file_name }
+  }
+  return null
+}
+
+export function buildAttachmentCaption(attachment) {
+  if (!attachment) return ''
+  switch (attachment.kind) {
+    case 'photo':
+      return '(photo)'
+    case 'document':
+      return `(document: ${attachment.name ?? 'file'})`
+    case 'voice':
+      return '(voice message)'
+    case 'audio':
+      return `(audio: ${attachment.name ?? 'audio'})`
+    case 'video':
+      return '(video)'
+    default:
+      return '(attachment)'
+  }
+}
+
+export function exceedsAttachmentLimit(size) {
+  return typeof size === 'number' && size > MAX_ATTACHMENT_BYTES
+}
+
+export function sanitizeIdForFilename(id) {
+  return String(id ?? '').replace(/[^a-zA-Z0-9_-]/g, '') || 'dl'
+}
+
+export function resolveAttachmentExtension(filePath, kind) {
+  const fallback = kind === 'photo' ? 'jpg' : 'bin'
+  if (!filePath || !filePath.includes('.')) return fallback
+  const cleaned = filePath.split('.').pop().replace(/[^a-zA-Z0-9]/g, '')
+  return cleaned || fallback
+}
+
+export function buildInboxFilename(timestampMs, fileUniqueId, filePath, kind) {
+  const ext = resolveAttachmentExtension(filePath, kind)
+  return `${timestampMs}-${sanitizeIdForFilename(fileUniqueId)}.${ext}`
 }
 
 const RM_SHORT_FLAG_CHARS = 'rfvid'
