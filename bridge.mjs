@@ -7,7 +7,6 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'no
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import {
-  buildSendMessageCallsFromChunks,
   sanitizeAttr,
   createKeyedQueue,
   classifyCommand,
@@ -30,6 +29,13 @@ import {
   assertSendablePath,
   buildOutboundAttachmentInstructions,
   combineSystemPrompts,
+  buildReplyCallsFromChunks,
+  extractReactionMarker,
+  buildReactionMarkerInstructions,
+  buildSetMessageReactionParams,
+  RECEIPT_REACTION,
+  SUCCESS_REACTION,
+  ERROR_REACTION,
 } from './lib.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback } from './markdown-html.mjs'
 
@@ -81,16 +87,24 @@ async function tg(method, params) {
   return data.result
 }
 
-async function sendReply(chatId, text, replyToMessageId) {
+async function sendReply(chatId, text, replyToMessageId, editMessageId) {
   const chunks = markdownToTelegramHtmlChunks(text || '(empty response)')
-  for (const params of buildSendMessageCallsFromChunks(chatId, chunks, replyToMessageId, 'HTML')) {
+  for (const { method, params } of buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, 'HTML', editMessageId)) {
     try {
-      await tg('sendMessage', params)
+      await tg(method, params)
     } catch (e) {
-      log('HTML send failed, retrying as plain text', e.message)
+      log(`${method} failed, retrying as plain text`, e.message)
       const { parse_mode, ...plainParams } = params
-      await tg('sendMessage', { ...plainParams, text: htmlToPlainFallback(params.text) })
+      await tg(method, { ...plainParams, text: htmlToPlainFallback(params.text) })
     }
+  }
+}
+
+async function setReaction(chatId, messageId, emoji) {
+  try {
+    await tg('setMessageReaction', buildSetMessageReactionParams(chatId, messageId, emoji))
+  } catch (e) {
+    log('setMessageReaction failed', emoji, e.message)
   }
 }
 
@@ -127,7 +141,10 @@ function runClaude(prompt, sessionId) {
   return new Promise((resolve, reject) => {
     const args = ['-p', prompt, '--output-format', 'json', '--permission-mode', 'bypassPermissions']
     if (sessionId) args.push('--resume', sessionId)
-    args.push('--append-system-prompt', combineSystemPrompts(buildOutboundAttachmentInstructions(), appendSystemPrompt))
+    args.push(
+      '--append-system-prompt',
+      combineSystemPrompts(buildOutboundAttachmentInstructions(), buildReactionMarkerInstructions(), appendSystemPrompt)
+    )
     if (Array.isArray(claudeArgs)) args.push(...claudeArgs)
 
     const child = spawn('claude', args, { cwd, env: process.env })
@@ -234,11 +251,25 @@ async function handleMessage(msg) {
   }
   if (!promptText && attachment) promptText = buildAttachmentCaption(attachment)
 
+  await setReaction(chatId, msg.message_id, RECEIPT_REACTION)
+
   let typingAlive = true
   const typing = setInterval(() => {
     if (typingAlive) tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {})
   }, 4000)
   await tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {})
+
+  let placeholderId = null
+  try {
+    const placeholder = await tg('sendMessage', {
+      chat_id: chatId,
+      text: '⏳ working…',
+      reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
+    })
+    placeholderId = placeholder.message_id
+  } catch (e) {
+    log('failed to send working placeholder', e.message)
+  }
 
   let attachmentResult = null
   if (attachment) {
@@ -268,7 +299,8 @@ async function handleMessage(msg) {
       state.sessions[chatId] = newSession
       saveState(state)
     }
-    const { text: cleanedResult, paths: attachPaths } = extractAttachmentMarkers(result.result)
+    const { text: withoutAttach, paths: attachPaths } = extractAttachmentMarkers(result.result)
+    const { text: cleanedResult, emoji: reactionEmoji } = extractReactionMarker(withoutAttach)
     let replyText = result.is_error
       ? `⚠️ ${cleanedResult || 'error'}`
       : command === 'compact'
@@ -277,15 +309,17 @@ async function handleMessage(msg) {
     if (newSession && crossedCostThreshold(session?.costUsd ?? 0, newSession.costUsd, costWarnUsd)) {
       replyText = `${buildCostWarning(newSession.costUsd, costWarnUsd)}\n\n${replyText}`
     }
-    await sendReply(chatId, replyText, msg.message_id)
+    await sendReply(chatId, replyText, msg.message_id, placeholderId)
     if (!result.is_error) {
       for (const attachPath of attachPaths) {
         await sendAttachment(chatId, attachPath, msg.message_id)
       }
     }
+    await setReaction(chatId, msg.message_id, reactionEmoji || (result.is_error ? ERROR_REACTION : SUCCESS_REACTION))
   } catch (e) {
     log('handleMessage error', e)
-    await sendReply(chatId, `⚠️ bridge error: ${e.message}`, msg.message_id).catch(() => {})
+    await sendReply(chatId, `⚠️ bridge error: ${e.message}`, msg.message_id, placeholderId).catch(() => {})
+    await setReaction(chatId, msg.message_id, ERROR_REACTION)
   } finally {
     typingAlive = false
     clearInterval(typing)

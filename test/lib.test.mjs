@@ -30,6 +30,13 @@ import {
   assertSendablePath,
   buildOutboundAttachmentInstructions,
   combineSystemPrompts,
+  buildReplyCallsFromChunks,
+  extractReactionMarker,
+  buildSetMessageReactionParams,
+  buildReactionMarkerInstructions,
+  RECEIPT_REACTION,
+  SUCCESS_REACTION,
+  ERROR_REACTION,
 } from '../lib.mjs'
 import path from 'node:path'
 
@@ -702,4 +709,93 @@ test('combineSystemPrompts: skips null/undefined/empty parts', () => {
 
 test('combineSystemPrompts: a single part is returned as-is', () => {
   assert.equal(combineSystemPrompts('only'), 'only')
+})
+
+test('buildReplyCallsFromChunks: no editMessageId behaves like a plain sendMessage, unchanged across chunks', () => {
+  const calls = buildReplyCallsFromChunks('123', ['<b>a</b>', '<i>b</i>'], 99, 'HTML')
+  assert.deepEqual(calls, [
+    { method: 'sendMessage', params: { chat_id: '123', text: '<b>a</b>', parse_mode: 'HTML', reply_parameters: { message_id: 99, allow_sending_without_reply: true } } },
+    { method: 'sendMessage', params: { chat_id: '123', text: '<i>b</i>', parse_mode: 'HTML' } },
+  ])
+})
+
+test('buildReplyCallsFromChunks: with editMessageId, the first chunk becomes an editMessageText call', () => {
+  const calls = buildReplyCallsFromChunks('123', ['first', 'second'], 99, 'HTML', 777)
+  assert.deepEqual(calls, [
+    { method: 'editMessageText', params: { chat_id: '123', text: 'first', parse_mode: 'HTML', message_id: 777 } },
+    { method: 'sendMessage', params: { chat_id: '123', text: 'second', parse_mode: 'HTML' } },
+  ])
+})
+
+test('buildReplyCallsFromChunks: editMessageId takes precedence over replyToMessageId on the first chunk', () => {
+  const calls = buildReplyCallsFromChunks('123', ['only'], 99, undefined, 777)
+  assert.deepEqual(calls, [{ method: 'editMessageText', params: { chat_id: '123', text: 'only', message_id: 777 } }])
+})
+
+test('buildReplyCallsFromChunks: null editMessageId falls back to sendMessage with reply_parameters', () => {
+  const calls = buildReplyCallsFromChunks('123', ['only'], 99, undefined, null)
+  assert.deepEqual(calls, [
+    { method: 'sendMessage', params: { chat_id: '123', text: 'only', reply_parameters: { message_id: 99, allow_sending_without_reply: true } } },
+  ])
+})
+
+test('extractReactionMarker: no marker leaves text untouched and emoji null', () => {
+  assert.deepEqual(extractReactionMarker('just a plain reply'), { text: 'just a plain reply', emoji: null })
+})
+
+test('extractReactionMarker: strips a single trailing marker line and captures the emoji', () => {
+  const result = extractReactionMarker('all done\n\nREACT: 👍')
+  assert.deepEqual(result, { text: 'all done', emoji: '👍' })
+})
+
+test('extractReactionMarker: a marker line in the middle is removed, surrounding text kept', () => {
+  const result = extractReactionMarker('before\nREACT: 🎉\nafter')
+  assert.deepEqual(result, { text: 'before\nafter', emoji: '🎉' })
+})
+
+test('extractReactionMarker: multiple marker lines keep only the last one', () => {
+  const result = extractReactionMarker('REACT: 👀\nsome text\nREACT: ✅')
+  assert.deepEqual(result, { text: 'some text', emoji: '✅' })
+})
+
+test('extractReactionMarker: text that only contains the marker becomes an empty string', () => {
+  assert.deepEqual(extractReactionMarker('REACT: 👍'), { text: '', emoji: '👍' })
+})
+
+test('extractReactionMarker: null/undefined text yields no emoji and empty text', () => {
+  assert.deepEqual(extractReactionMarker(undefined), { text: '', emoji: null })
+  assert.deepEqual(extractReactionMarker(null), { text: '', emoji: null })
+})
+
+test('extractReactionMarker: a line only matches REACT: at the start, not mid-line mentions', () => {
+  const result = extractReactionMarker('please REACT: 👍 to this')
+  assert.deepEqual(result, { text: 'please REACT: 👍 to this', emoji: null })
+})
+
+test('extractReactionMarker: trims surrounding whitespace on the emoji', () => {
+  const result = extractReactionMarker('ok\nREACT:   👍   ')
+  assert.deepEqual(result, { text: 'ok', emoji: '👍' })
+})
+
+test('buildSetMessageReactionParams: wraps a given emoji as a single emoji reaction', () => {
+  assert.deepEqual(buildSetMessageReactionParams('123', 42, '👍'), {
+    chat_id: '123',
+    message_id: 42,
+    reaction: [{ type: 'emoji', emoji: '👍' }],
+  })
+})
+
+test('buildSetMessageReactionParams: null/empty emoji clears the reaction', () => {
+  assert.deepEqual(buildSetMessageReactionParams('123', 42, null), { chat_id: '123', message_id: 42, reaction: [] })
+  assert.deepEqual(buildSetMessageReactionParams('123', 42, ''), { chat_id: '123', message_id: 42, reaction: [] })
+})
+
+test('buildReactionMarkerInstructions: documents the REACT marker protocol', () => {
+  const text = buildReactionMarkerInstructions()
+  assert.match(text, /REACT: <emoji>/)
+})
+
+test('reaction constants: receipt, success, and error emoji are distinct', () => {
+  const emojis = new Set([RECEIPT_REACTION, SUCCESS_REACTION, ERROR_REACTION])
+  assert.equal(emojis.size, 3)
 })
