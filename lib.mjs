@@ -490,6 +490,32 @@ export function pickNotifyText(argText, stdinText) {
   return String(stdinText ?? '').trim()
 }
 
+export const DEFAULT_TELEGRAM_API_TIMEOUT_MS = 15000
+
+export function fetchWithTimeout(fetchImpl, url, options, timeoutMs) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(new Error(`fetch ${url} timed out after ${timeoutMs}ms`)), timeoutMs)
+  return fetchImpl(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer))
+}
+
+export function createTelegramClient(apiBase, { fetchImpl = fetch } = {}) {
+  return async function tg(method, params, { timeoutMs = DEFAULT_TELEGRAM_API_TIMEOUT_MS } = {}) {
+    const res = await fetchWithTimeout(
+      fetchImpl,
+      `${apiBase}/${method}`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(params),
+      },
+      timeoutMs
+    )
+    const data = await res.json()
+    if (!data.ok) throw new Error(`${method} failed: ${data.description}`)
+    return data.result
+  }
+}
+
 export function createKeyedQueue() {
   const tails = new Map()
 
