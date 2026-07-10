@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { writeFileSync } from 'node:fs'
+import { writeFileSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildBridgeLaunchAgentPlist, launchAgentNameFromLabel } from '../launchagent.mjs'
@@ -13,6 +13,10 @@ if (!label || !configArg) {
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const bridgeScriptPath = path.join(repoRoot, 'bridge.mjs')
 const configPath = path.resolve(process.cwd(), configArg)
+if (!existsSync(configPath)) {
+  console.error(`config not found: ${configPath} (the generated agent would crash-loop under KeepAlive)`)
+  process.exit(1)
+}
 const home = process.env.HOME
 if (!home) {
   console.error('HOME is not set in the environment')

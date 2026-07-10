@@ -40,6 +40,17 @@ test('buildLaunchAgentPlist: StandardOutPath and StandardErrorPath both point at
   assert.match(xml, /<key>StandardErrorPath<\/key>\s*<string>\/logs\/telegram-bridge-tldr\.log<\/string>/)
 })
 
+test('buildLaunchAgentPlist: env explicitly passed as null is treated the same as omitted', () => {
+  const xml = buildLaunchAgentPlist({
+    label: 'com.tgbridge.tldr',
+    programArguments: ['/usr/bin/node'],
+    workingDirectory: '/repo',
+    logPath: '/logs/telegram-bridge-tldr.log',
+    env: null,
+  })
+  assert.doesNotMatch(xml, /EnvironmentVariables/)
+})
+
 test('buildLaunchAgentPlist: omits EnvironmentVariables when env is not given', () => {
   const xml = buildLaunchAgentPlist({
     label: 'com.tgbridge.tldr',

@@ -19,7 +19,7 @@ export function buildLaunchAgentPlist({ label, programArguments, workingDirector
   if (!logPath) throw new Error('logPath is required')
 
   const argsXml = programArguments.map(a => `    ${stringEl(a)}`).join('\n')
-  const envEntries = Object.entries(env)
+  const envEntries = Object.entries(env ?? {})
   const envXml = envEntries.length
     ? `  <key>EnvironmentVariables</key>\n  <dict>\n${envEntries
         .map(([k, v]) => `    <key>${xmlEscape(k)}</key>\n    ${stringEl(v)}`)
