@@ -37,7 +37,7 @@ function readStdin() {
   }
 }
 
-const text = pickNotifyText(textArg, readStdin())
+const text = pickNotifyText(textArg, textArg && textArg.trim() ? '' : readStdin())
 if (!text) {
   console.error('no text to send: pass it as an argument or pipe it on stdin')
   process.exit(1)
