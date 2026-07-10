@@ -27,6 +27,17 @@ export function buildSendMessageCalls(chatId, text, replyToMessageId, limit = 40
   })
 }
 
+export function classifyCommand(text) {
+  const t = String(text ?? '').trim()
+  if (t === '/new' || t === '/reset') return 'reset'
+  if (t === '/compact') return 'compact'
+  return null
+}
+
+export function buildChannelPrompt(chatId, messageId, user, ts, text) {
+  return `<channel source="telegram" chat_id="${chatId}" message_id="${messageId}" user="${user}" ts="${ts}">\n${text}\n</channel>`
+}
+
 export function createKeyedQueue() {
   const tails = new Map()
 

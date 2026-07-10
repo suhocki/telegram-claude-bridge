@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { chunk, sanitizeAttr, buildSendMessageCalls, createKeyedQueue } from '../lib.mjs'
+import { chunk, sanitizeAttr, buildSendMessageCalls, createKeyedQueue, classifyCommand, buildChannelPrompt } from '../lib.mjs'
 
 function deferred() {
   let resolve, reject
@@ -93,6 +93,42 @@ test('buildSendMessageCalls: message id 0 is a valid id and still threads', () =
   assert.deepEqual(calls, [
     { chat_id: '123', text: 'hi', reply_parameters: { message_id: 0, allow_sending_without_reply: true } },
   ])
+})
+
+test('classifyCommand: "/new" and "/reset" both classify as reset', () => {
+  assert.equal(classifyCommand('/new'), 'reset')
+  assert.equal(classifyCommand('/reset'), 'reset')
+})
+
+test('classifyCommand: "/compact" classifies as compact', () => {
+  assert.equal(classifyCommand('/compact'), 'compact')
+})
+
+test('classifyCommand: ordinary text is not a command', () => {
+  assert.equal(classifyCommand('hello'), null)
+  assert.equal(classifyCommand('/newfoo'), null)
+  assert.equal(classifyCommand('/compact now'), null)
+})
+
+test('classifyCommand: surrounding whitespace is ignored', () => {
+  assert.equal(classifyCommand('  /new  '), 'reset')
+  assert.equal(classifyCommand('\n/compact\n'), 'compact')
+})
+
+test('classifyCommand: null/undefined/empty text is not a command', () => {
+  assert.equal(classifyCommand(undefined), null)
+  assert.equal(classifyCommand(null), null)
+  assert.equal(classifyCommand(''), null)
+})
+
+test('buildChannelPrompt: wraps text in a <channel> tag with the given metadata', () => {
+  const prompt = buildChannelPrompt('123', 42, 'suhocki', '2026-07-10T00:00:00.000Z', 'hi there')
+  assert.equal(
+    prompt,
+    '<channel source="telegram" chat_id="123" message_id="42" user="suhocki" ts="2026-07-10T00:00:00.000Z">\n' +
+      'hi there\n' +
+      '</channel>',
+  )
 })
 
 test('createKeyedQueue: same key runs tasks strictly in order, one at a time', async () => {
