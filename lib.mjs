@@ -17,9 +17,10 @@ export function sanitizeAttr(s) {
   return String(s ?? '').replace(/[<>[\]\r\n"]/g, '_')
 }
 
-export function buildSendMessageCalls(chatId, text, replyToMessageId, limit = 4096) {
+export function buildSendMessageCalls(chatId, text, replyToMessageId, limit = 4096, parseMode) {
   return chunk(text, limit).map((part, i) => {
     const params = { chat_id: chatId, text: part }
+    if (parseMode) params.parse_mode = parseMode
     if (i === 0 && replyToMessageId != null) {
       params.reply_parameters = { message_id: replyToMessageId, allow_sending_without_reply: true }
     }

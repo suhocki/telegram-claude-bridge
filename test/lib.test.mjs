@@ -112,6 +112,22 @@ test('buildSendMessageCalls: message id 0 is a valid id and still threads', () =
   ])
 })
 
+test('buildSendMessageCalls: adds parse_mode to every chunk when given', () => {
+  const text = 'a'.repeat(6) + '\n' + 'b'.repeat(6)
+  const calls = buildSendMessageCalls('123', text, 99, 10, 'HTML')
+  assert.deepEqual(calls, [
+    { chat_id: '123', text: 'a'.repeat(6), parse_mode: 'HTML', reply_parameters: { message_id: 99, allow_sending_without_reply: true } },
+    { chat_id: '123', text: 'b'.repeat(6), parse_mode: 'HTML' },
+  ])
+})
+
+test('buildSendMessageCalls: no parse_mode key when omitted (back-compat)', () => {
+  const calls = buildSendMessageCalls('123', 'hello', 42)
+  assert.deepEqual(calls, [
+    { chat_id: '123', text: 'hello', reply_parameters: { message_id: 42, allow_sending_without_reply: true } },
+  ])
+})
+
 test('classifyCommand: "/new" and "/reset" both classify as reset', () => {
   assert.equal(classifyCommand('/new'), 'reset')
   assert.equal(classifyCommand('/reset'), 'reset')

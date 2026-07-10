@@ -21,6 +21,7 @@ import {
   buildRiskyCommandWarning,
   resolveMessageMeta,
 } from './lib.mjs'
+import { markdownToTelegramHtml, htmlToPlainFallback } from './markdown-html.mjs'
 
 const configPath = process.argv[2]
 if (!configPath) {
@@ -69,8 +70,15 @@ async function tg(method, params) {
 }
 
 async function sendReply(chatId, text, replyToMessageId) {
-  for (const params of buildSendMessageCalls(chatId, text || '(empty response)', replyToMessageId)) {
-    await tg('sendMessage', params)
+  const html = markdownToTelegramHtml(text || '(empty response)')
+  for (const params of buildSendMessageCalls(chatId, html, replyToMessageId, 4096, 'HTML')) {
+    try {
+      await tg('sendMessage', params)
+    } catch (e) {
+      log('HTML send failed, retrying as plain text', e.message)
+      const { parse_mode, ...plainParams } = params
+      await tg('sendMessage', { ...plainParams, text: htmlToPlainFallback(params.text) })
+    }
   }
 }
 
