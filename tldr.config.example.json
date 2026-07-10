@@ -3,6 +3,12 @@
   "cwd": "/absolute/path/to/project/this/bot/should/act-in",
   "allowedUserIds": ["YOUR_TELEGRAM_NUMERIC_USER_ID"],
   "stateFile": "state/tldr.json",
+  "groups": {
+    "-1001234567890": {
+      "requireMention": true,
+      "allowFrom": []
+    }
+  },
   "costWarnUsd": 5,
   "voiceTranscription": {
     "whisperBin": "whisper-cli",
