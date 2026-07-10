@@ -181,3 +181,26 @@ test('markdownToTelegramHtmlChunks: worst-case HTML-escaping content (all "&") n
   const chunks = markdownToTelegramHtmlChunks(md, 4096)
   for (const c of chunks) assert.ok(c.length <= 4096)
 })
+
+test('markdownToTelegramHtmlChunks: hard-splitting an over-long first line of a fenced block does not emit a spurious empty leading chunk', () => {
+  const longLine = 'x'.repeat(9000)
+  const md = `\`\`\`js\n${longLine}\n\`\`\``
+  const chunks = markdownToTelegramHtmlChunks(md, 4096)
+  const isEmptyFence = c => /^<pre>(<code[^>]*>)?<\/code>?<\/pre>$/.test(c)
+  for (const c of chunks) assert.ok(!isEmptyFence(c), `chunk is an empty fenced block: ${c}`)
+  assert.ok(chunks[0].includes('xxx'), 'first chunk should carry real content, not just an empty fence')
+})
+
+test('markdownToTelegramHtmlChunks: hard-splitting an over-long last line of a fenced block does not emit a spurious empty trailing chunk', () => {
+  const longLine = 'x'.repeat(9000)
+  const md = `intro\n\`\`\`js\nconst a = 1;\n${longLine}\n\`\`\``
+  const chunks = markdownToTelegramHtmlChunks(md, 4096)
+  const isEmptyFence = c => /^<pre>(<code[^>]*>)?<\/code>?<\/pre>$/.test(c)
+  for (const c of chunks) assert.ok(!isEmptyFence(c), `chunk is an empty fenced block: ${c}`)
+  assert.ok(chunks[chunks.length - 1].includes('xxx'), 'last chunk should carry real content, not just an empty fence')
+})
+
+test('markdownToTelegramHtmlChunks: a message that is only an empty fenced code block still yields one chunk instead of none', () => {
+  const chunks = markdownToTelegramHtmlChunks('```\n```', 4096)
+  assert.deepEqual(chunks, ['<pre></pre>'])
+})

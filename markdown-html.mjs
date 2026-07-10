@@ -91,13 +91,15 @@ export function markdownToTelegramHtmlChunks(text, limit = 4096) {
     return rest ? [head, ...splitToFit(rest, lang)] : [head]
   }
 
+  const isEmptyFenceBuffer = lns => lns.length > 0 && lns.every(l => fenceLangOf(l) !== null)
+
   const queue = src.split('\n')
   const chunks = []
   let bufLines = []
   let fenceLang = null
 
   const flush = () => {
-    chunks.push(render(bufLines, fenceLang))
+    if (!isEmptyFenceBuffer(bufLines)) chunks.push(render(bufLines, fenceLang))
     bufLines = fenceLang !== null ? [`\`\`\`${fenceLang}`] : []
   }
 
@@ -125,7 +127,10 @@ export function markdownToTelegramHtmlChunks(text, limit = 4096) {
     fenceLang = nextFenceLang
   }
 
-  if (bufLines.length) chunks.push(render(bufLines, fenceLang))
+  if (bufLines.length) {
+    if (!isEmptyFenceBuffer(bufLines)) chunks.push(render(bufLines, fenceLang))
+    else if (!chunks.length) chunks.push(render(bufLines, fenceLang))
+  }
   return chunks
 }
 
