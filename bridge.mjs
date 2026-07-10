@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import {
-  buildSendMessageCalls,
+  buildSendMessageCallsFromChunks,
   sanitizeAttr,
   createKeyedQueue,
   classifyCommand,
@@ -21,6 +21,7 @@ import {
   buildRiskyCommandWarning,
   resolveMessageMeta,
 } from './lib.mjs'
+import { markdownToTelegramHtmlChunks, htmlToPlainFallback } from './markdown-html.mjs'
 
 const configPath = process.argv[2]
 if (!configPath) {
@@ -69,8 +70,15 @@ async function tg(method, params) {
 }
 
 async function sendReply(chatId, text, replyToMessageId) {
-  for (const params of buildSendMessageCalls(chatId, text || '(empty response)', replyToMessageId)) {
-    await tg('sendMessage', params)
+  const chunks = markdownToTelegramHtmlChunks(text || '(empty response)')
+  for (const params of buildSendMessageCallsFromChunks(chatId, chunks, replyToMessageId, 'HTML')) {
+    try {
+      await tg('sendMessage', params)
+    } catch (e) {
+      log('HTML send failed, retrying as plain text', e.message)
+      const { parse_mode, ...plainParams } = params
+      await tg('sendMessage', { ...plainParams, text: htmlToPlainFallback(params.text) })
+    }
   }
 }
 
