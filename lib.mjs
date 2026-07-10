@@ -1,5 +1,7 @@
 // Pure, testable helpers extracted out of bridge.mjs's imperative poll loop.
 
+import path from 'node:path'
+
 export function chunk(text, limit = 4096) {
   const out = []
   let rest = text
@@ -193,6 +195,57 @@ export function evaluateRiskyGuard(text, pending) {
 export function resolveMessageMeta(decision, pendingEntry, fallbackMeta) {
   const meta = decision.action === 'confirmed' && pendingEntry ? pendingEntry : fallbackMeta
   return { messageId: meta.messageId, user: meta.user, ts: meta.ts }
+}
+
+const ATTACH_LINE_RE = /^ATTACH:\s*(.+?)\s*$/
+
+export function extractAttachmentMarkers(text) {
+  const lines = String(text ?? '').split('\n')
+  const kept = []
+  const paths = []
+  for (const line of lines) {
+    const m = line.match(ATTACH_LINE_RE)
+    if (m) paths.push(m[1])
+    else kept.push(line)
+  }
+  return { text: kept.join('\n').trimEnd(), paths }
+}
+
+const OUTBOUND_PHOTO_EXTS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp'])
+
+export function pickOutboundSendMethod(filePath) {
+  const name = String(filePath ?? '')
+  const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : ''
+  return OUTBOUND_PHOTO_EXTS.has(ext) ? 'sendPhoto' : 'sendDocument'
+}
+
+export function assertSendablePath(filePath, protectedDir) {
+  if (typeof filePath !== 'string' || !filePath.trim()) {
+    return { ok: false, error: 'empty attachment path' }
+  }
+  if (!path.isAbsolute(filePath)) {
+    return { ok: false, error: `attachment path must be absolute: ${filePath}` }
+  }
+  const resolved = path.resolve(filePath)
+  const resolvedProtected = path.resolve(protectedDir)
+  if (resolved === resolvedProtected || resolved.startsWith(resolvedProtected + path.sep)) {
+    return { ok: false, error: `refusing to send a file from the bridge's own state directory: ${filePath}` }
+  }
+  return { ok: true }
+}
+
+export function buildOutboundAttachmentInstructions() {
+  return [
+    'You can attach files (images, documents, audio, video) to this reply.',
+    'To do so, end your final answer with one line per file, in exactly this form:',
+    'ATTACH: /absolute/path/to/file',
+    "Only reference files that already exist on disk and use absolute paths. Never reference a path inside the bridge's own state/session directory.",
+    'These marker lines are stripped from what the user sees on Telegram; each file is then sent to them as a photo (common image extensions) or a document (everything else).',
+  ].join('\n')
+}
+
+export function combineSystemPrompts(...parts) {
+  return parts.filter(p => p != null && p !== '').join('\n\n')
 }
 
 export function createKeyedQueue() {
