@@ -273,9 +273,19 @@ export function extractReactionMarker(text) {
   return { text: kept.join('\n').trimEnd(), emoji }
 }
 
+// Telegram's setMessageReaction only accepts a fixed emoji whitelist — not
+// the full list, just enough to document why ✅/❌ (tried first, both live
+// REACTION_INVALID) aren't valid choices for success/error below.
+export const ALLOWED_REACTION_EMOJI = new Set([
+  '👍', '👎', '❤', '🔥', '🥰', '👏', '😁', '🤔', '🤯', '😱', '🤬', '😢', '🎉',
+  '🤩', '🤮', '💩', '🙏', '👌', '🕊', '🤡', '🥱', '🥴', '😍', '🐳', '🌚', '🌭',
+  '💯', '🤣', '⚡', '🍌', '🏆', '💔', '🤨', '😐', '🍓', '🍾', '💋', '🖕', '😈',
+  '😴', '😭', '🤓', '👻', '👨‍💻', '👀', '🎃', '🙈', '😇', '😨',
+])
+
 export const RECEIPT_REACTION = '👀'
-export const SUCCESS_REACTION = '✅'
-export const ERROR_REACTION = '❌'
+export const SUCCESS_REACTION = '👍'
+export const ERROR_REACTION = '😢'
 
 export function buildSetMessageReactionParams(chatId, messageId, emoji) {
   return {
