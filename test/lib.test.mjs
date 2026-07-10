@@ -37,6 +37,7 @@ import {
   RECEIPT_REACTION,
   SUCCESS_REACTION,
   ERROR_REACTION,
+  ALLOWED_REACTION_EMOJI,
   expandHome,
   buildFfmpegConvertArgs,
   buildWhisperArgs,
@@ -822,6 +823,12 @@ test('buildReactionMarkerInstructions: documents the REACT marker protocol', () 
 test('reaction constants: receipt, success, and error emoji are distinct', () => {
   const emojis = new Set([RECEIPT_REACTION, SUCCESS_REACTION, ERROR_REACTION])
   assert.equal(emojis.size, 3)
+})
+
+test('reaction constants: all fall inside Telegram\'s setMessageReaction whitelist', () => {
+  for (const emoji of [RECEIPT_REACTION, SUCCESS_REACTION, ERROR_REACTION]) {
+    assert.ok(ALLOWED_REACTION_EMOJI.has(emoji), `${emoji} is not in Telegram's reaction whitelist (would 400 as REACTION_INVALID)`)
+  }
 })
 
 test('expandHome: expands a leading ~/ using the given home dir', () => {
