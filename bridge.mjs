@@ -3,7 +3,7 @@
 // (blocked by org policy on the enterprise account) — just polls the Telegram
 // Bot API directly and shells out to `claude -p --resume <session>` per message.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import {
@@ -25,6 +25,11 @@ import {
   exceedsAttachmentLimit,
   buildInboxFilename,
   MAX_ATTACHMENT_BYTES,
+  extractAttachmentMarkers,
+  pickOutboundSendMethod,
+  assertSendablePath,
+  buildOutboundAttachmentInstructions,
+  combineSystemPrompts,
 } from './lib.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback } from './markdown-html.mjs'
 
@@ -37,7 +42,8 @@ if (!configPath) {
 const config = JSON.parse(readFileSync(configPath, 'utf8'))
 const { botToken, cwd, allowedUserIds, appendSystemPrompt, claudeArgs, costWarnUsd } = config
 const stateFile = path.resolve(path.dirname(configPath), config.stateFile ?? 'state.json')
-const inboxDir = path.join(path.dirname(stateFile), 'inbox')
+const stateDir = path.dirname(stateFile)
+const inboxDir = path.join(stateDir, 'inbox')
 const API = `https://api.telegram.org/bot${botToken}`
 
 function log(...args) {
@@ -88,11 +94,40 @@ async function sendReply(chatId, text, replyToMessageId) {
   }
 }
 
+async function sendAttachment(chatId, filePath, replyToMessageId) {
+  const guard = assertSendablePath(filePath, stateDir)
+  if (!guard.ok) {
+    log('refusing to send attachment', filePath, guard.error)
+    await sendReply(chatId, `⚠️ ${guard.error}`, replyToMessageId).catch(() => {})
+    return
+  }
+  if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+    await sendReply(chatId, `⚠️ attachment not found: ${filePath}`, replyToMessageId).catch(() => {})
+    return
+  }
+  const method = pickOutboundSendMethod(filePath)
+  const field = method === 'sendPhoto' ? 'photo' : 'document'
+  const form = new FormData()
+  form.append('chat_id', chatId)
+  form.append(field, new Blob([readFileSync(filePath)]), path.basename(filePath))
+  if (replyToMessageId != null) {
+    form.append('reply_parameters', JSON.stringify({ message_id: replyToMessageId, allow_sending_without_reply: true }))
+  }
+  try {
+    const res = await fetch(`${API}/${method}`, { method: 'POST', body: form })
+    const data = await res.json()
+    if (!data.ok) throw new Error(data.description)
+  } catch (e) {
+    log('sendAttachment failed', filePath, e.message)
+    await sendReply(chatId, `⚠️ failed to send attachment ${path.basename(filePath)}: ${e.message}`, replyToMessageId).catch(() => {})
+  }
+}
+
 function runClaude(prompt, sessionId) {
   return new Promise((resolve, reject) => {
     const args = ['-p', prompt, '--output-format', 'json', '--permission-mode', 'bypassPermissions']
     if (sessionId) args.push('--resume', sessionId)
-    if (appendSystemPrompt) args.push('--append-system-prompt', appendSystemPrompt)
+    args.push('--append-system-prompt', combineSystemPrompts(buildOutboundAttachmentInstructions(), appendSystemPrompt))
     if (Array.isArray(claudeArgs)) args.push(...claudeArgs)
 
     const child = spawn('claude', args, { cwd, env: process.env })
@@ -233,15 +268,21 @@ async function handleMessage(msg) {
       state.sessions[chatId] = newSession
       saveState(state)
     }
+    const { text: cleanedResult, paths: attachPaths } = extractAttachmentMarkers(result.result)
     let replyText = result.is_error
-      ? `⚠️ ${result.result ?? 'error'}`
+      ? `⚠️ ${cleanedResult || 'error'}`
       : command === 'compact'
-        ? `✅ conversation compacted.${result.result ? `\n\n${result.result}` : ''}`
-        : (result.result ?? '(empty response)')
+        ? `✅ conversation compacted.${cleanedResult ? `\n\n${cleanedResult}` : ''}`
+        : (cleanedResult || '(empty response)')
     if (newSession && crossedCostThreshold(session?.costUsd ?? 0, newSession.costUsd, costWarnUsd)) {
       replyText = `${buildCostWarning(newSession.costUsd, costWarnUsd)}\n\n${replyText}`
     }
     await sendReply(chatId, replyText, msg.message_id)
+    if (!result.is_error) {
+      for (const attachPath of attachPaths) {
+        await sendAttachment(chatId, attachPath, msg.message_id)
+      }
+    }
   } catch (e) {
     log('handleMessage error', e)
     await sendReply(chatId, `⚠️ bridge error: ${e.message}`, msg.message_id).catch(() => {})

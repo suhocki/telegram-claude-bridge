@@ -25,7 +25,13 @@ import {
   sanitizeIdForFilename,
   buildInboxFilename,
   MAX_ATTACHMENT_BYTES,
+  extractAttachmentMarkers,
+  pickOutboundSendMethod,
+  assertSendablePath,
+  buildOutboundAttachmentInstructions,
+  combineSystemPrompts,
 } from '../lib.mjs'
+import path from 'node:path'
 
 function deferred() {
   let resolve, reject
@@ -588,4 +594,112 @@ test('resolveMessageMeta: no pending entry always uses the fallback attribution'
   const fallbackMeta = { messageId: 5, user: 'carol', ts: 'T3' }
   const decision = evaluateRiskyGuard('hello there', undefined)
   assert.deepEqual(resolveMessageMeta(decision, undefined, fallbackMeta), fallbackMeta)
+})
+
+test('extractAttachmentMarkers: no markers leaves text untouched', () => {
+  assert.deepEqual(extractAttachmentMarkers('just a plain reply'), { text: 'just a plain reply', paths: [] })
+})
+
+test('extractAttachmentMarkers: strips a single trailing marker line', () => {
+  const result = extractAttachmentMarkers('here you go\n\nATTACH: /tmp/out.png')
+  assert.deepEqual(result, { text: 'here you go', paths: ['/tmp/out.png'] })
+})
+
+test('extractAttachmentMarkers: strips multiple marker lines in order', () => {
+  const result = extractAttachmentMarkers('done\nATTACH: /tmp/a.png\nATTACH: /tmp/b.pdf')
+  assert.deepEqual(result, { text: 'done', paths: ['/tmp/a.png', '/tmp/b.pdf'] })
+})
+
+test('extractAttachmentMarkers: trims surrounding whitespace on the path', () => {
+  const result = extractAttachmentMarkers('ok\nATTACH:   /tmp/out.png   ')
+  assert.deepEqual(result, { text: 'ok', paths: ['/tmp/out.png'] })
+})
+
+test('extractAttachmentMarkers: a marker line in the middle is removed, surrounding text kept', () => {
+  const result = extractAttachmentMarkers('before\nATTACH: /tmp/a.png\nafter')
+  assert.deepEqual(result, { text: 'before\nafter', paths: ['/tmp/a.png'] })
+})
+
+test('extractAttachmentMarkers: text that only contains markers becomes an empty string', () => {
+  assert.deepEqual(extractAttachmentMarkers('ATTACH: /tmp/a.png'), { text: '', paths: ['/tmp/a.png'] })
+})
+
+test('extractAttachmentMarkers: null/undefined text yields no paths and empty text', () => {
+  assert.deepEqual(extractAttachmentMarkers(undefined), { text: '', paths: [] })
+  assert.deepEqual(extractAttachmentMarkers(null), { text: '', paths: [] })
+})
+
+test('extractAttachmentMarkers: a line only matches ATTACH: at the start, not mid-line mentions', () => {
+  const result = extractAttachmentMarkers('please see ATTACH: /tmp/a.png for details')
+  assert.deepEqual(result, { text: 'please see ATTACH: /tmp/a.png for details', paths: [] })
+})
+
+test('pickOutboundSendMethod: common image extensions send as photo', () => {
+  for (const ext of ['jpg', 'jpeg', 'png', 'gif', 'webp']) {
+    assert.equal(pickOutboundSendMethod(`/tmp/out.${ext}`), 'sendPhoto')
+  }
+})
+
+test('pickOutboundSendMethod: image extensions are case-insensitive', () => {
+  assert.equal(pickOutboundSendMethod('/tmp/out.PNG'), 'sendPhoto')
+})
+
+test('pickOutboundSendMethod: everything else sends as document', () => {
+  assert.equal(pickOutboundSendMethod('/tmp/report.pdf'), 'sendDocument')
+  assert.equal(pickOutboundSendMethod('/tmp/notes.txt'), 'sendDocument')
+})
+
+test('pickOutboundSendMethod: no extension falls back to document', () => {
+  assert.equal(pickOutboundSendMethod('/tmp/noext'), 'sendDocument')
+})
+
+test('assertSendablePath: rejects an empty or non-string path', () => {
+  assert.equal(assertSendablePath('', '/state').ok, false)
+  assert.equal(assertSendablePath('   ', '/state').ok, false)
+  assert.equal(assertSendablePath(undefined, '/state').ok, false)
+})
+
+test('assertSendablePath: rejects a relative path', () => {
+  const result = assertSendablePath('relative/file.png', '/state')
+  assert.equal(result.ok, false)
+  assert.match(result.error, /absolute/)
+})
+
+test('assertSendablePath: rejects a path inside the protected state directory', () => {
+  const result = assertSendablePath(path.join('/state', 'inbox', 'a.png'), '/state')
+  assert.equal(result.ok, false)
+  assert.match(result.error, /state directory/)
+})
+
+test('assertSendablePath: rejects the protected directory itself', () => {
+  const result = assertSendablePath('/state', '/state')
+  assert.equal(result.ok, false)
+})
+
+test('assertSendablePath: does not falsely match a sibling directory with a shared prefix', () => {
+  const result = assertSendablePath('/state-other/file.png', '/state')
+  assert.equal(result.ok, true)
+})
+
+test('assertSendablePath: accepts an absolute path outside the protected directory', () => {
+  const result = assertSendablePath('/tmp/out/report.pdf', '/state')
+  assert.deepEqual(result, { ok: true })
+})
+
+test('buildOutboundAttachmentInstructions: documents the ATTACH marker protocol', () => {
+  const text = buildOutboundAttachmentInstructions()
+  assert.match(text, /ATTACH: \/absolute\/path\/to\/file/)
+  assert.match(text, /state\/session directory/)
+})
+
+test('combineSystemPrompts: joins non-empty parts with a blank line between them', () => {
+  assert.equal(combineSystemPrompts('a', 'b'), 'a\n\nb')
+})
+
+test('combineSystemPrompts: skips null/undefined/empty parts', () => {
+  assert.equal(combineSystemPrompts('a', null, undefined, '', 'b'), 'a\n\nb')
+})
+
+test('combineSystemPrompts: a single part is returned as-is', () => {
+  assert.equal(combineSystemPrompts('only'), 'only')
 })
