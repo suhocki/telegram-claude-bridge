@@ -45,6 +45,8 @@ import {
   buildWhisperArgs,
   parseWhisperTranscript,
   buildVoiceTranscriptText,
+  buildTranscriptQuoteHtml,
+  buildPlaceholderEditParams,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
   isVoiceReplyEnabled,
@@ -426,18 +428,19 @@ async function handleMessage(msg) {
     log('failed to send working placeholder', e.message)
   }
 
+  let transcriptQuoteHtml = null
   const progress = createProgressTracker()
   const statusUpdater = createStatusUpdater({
     getStatus: () => progress.current(),
     onUpdate: latestStatus => {
       if (placeholderId == null) return
-      tg('editMessageText', { chat_id: chatId, message_id: placeholderId, text: latestStatus }).catch(() => {})
+      tg('editMessageText', buildPlaceholderEditParams(chatId, placeholderId, latestStatus, transcriptQuoteHtml)).catch(() => {})
     },
   })
   const stopStatusUpdates = async finalStatus => {
     statusUpdater.stop()
     if (placeholderId == null) return
-    await tg('editMessageText', { chat_id: chatId, message_id: placeholderId, text: finalStatus }).catch(() => {})
+    await tg('editMessageText', buildPlaceholderEditParams(chatId, placeholderId, finalStatus, transcriptQuoteHtml)).catch(() => {})
   }
 
   let attachmentResult = null
@@ -454,6 +457,13 @@ async function handleMessage(msg) {
       log('voice transcription failed', transcriptionError)
     } else {
       promptText = buildVoiceTranscriptText(transcription.text)
+      transcriptQuoteHtml = buildTranscriptQuoteHtml(transcription.text)
+      if (transcriptQuoteHtml && placeholderId != null) {
+        await tg(
+          'editMessageText',
+          buildPlaceholderEditParams(chatId, placeholderId, progress.current(), transcriptQuoteHtml)
+        ).catch(e => log('failed to attach transcript quote to placeholder', e.message))
+      }
     }
   }
 

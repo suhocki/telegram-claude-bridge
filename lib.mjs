@@ -1,7 +1,7 @@
 // Pure, testable helpers extracted out of bridge.mjs's imperative poll loop.
 
 import path from 'node:path'
-import { markdownToTelegramHtml, htmlToPlainFallback } from './markdown-html.mjs'
+import { markdownToTelegramHtml, htmlToPlainFallback, escapeHtml } from './markdown-html.mjs'
 
 export function chunk(text, limit = 4096) {
   const out = []
@@ -335,6 +335,21 @@ export function parseWhisperTranscript(raw) {
 export function buildVoiceTranscriptText(transcript) {
   const trimmed = String(transcript ?? '').trim()
   return trimmed ? `(voice message transcript)\n${trimmed}` : '(voice message transcript unavailable)'
+}
+
+export function buildTranscriptQuoteHtml(transcript) {
+  const trimmed = String(transcript ?? '').trim()
+  return trimmed ? `<blockquote>${escapeHtml(trimmed)}</blockquote>` : null
+}
+
+export function buildPlaceholderEditParams(chatId, messageId, status, quoteHtml) {
+  if (!quoteHtml) return { chat_id: chatId, message_id: messageId, text: status }
+  return {
+    chat_id: chatId,
+    message_id: messageId,
+    text: `${quoteHtml}\n${escapeHtml(status)}`,
+    parse_mode: 'HTML',
+  }
 }
 
 const VOICE_TOGGLE_RE = /^\/voice\s+(on|off)$/i

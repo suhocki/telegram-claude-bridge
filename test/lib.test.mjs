@@ -43,6 +43,8 @@ import {
   buildWhisperArgs,
   parseWhisperTranscript,
   buildVoiceTranscriptText,
+  buildTranscriptQuoteHtml,
+  buildPlaceholderEditParams,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
   isVoiceReplyEnabled,
@@ -882,6 +884,36 @@ test('buildVoiceTranscriptText: trims the transcript before tagging', () => {
 test('buildVoiceTranscriptText: empty/whitespace-only transcript yields an unavailable marker', () => {
   assert.equal(buildVoiceTranscriptText(''), '(voice message transcript unavailable)')
   assert.equal(buildVoiceTranscriptText('   '), '(voice message transcript unavailable)')
+})
+
+test('buildTranscriptQuoteHtml: wraps a trimmed transcript in a blockquote', () => {
+  assert.equal(buildTranscriptQuoteHtml('  what is the weather in Budapest?  '), '<blockquote>what is the weather in Budapest?</blockquote>')
+})
+
+test('buildTranscriptQuoteHtml: escapes HTML-significant characters', () => {
+  assert.equal(buildTranscriptQuoteHtml('<b>a & b</b>'), '<blockquote>&lt;b&gt;a &amp; b&lt;/b&gt;</blockquote>')
+})
+
+test('buildTranscriptQuoteHtml: empty/whitespace-only transcript yields null', () => {
+  assert.equal(buildTranscriptQuoteHtml(''), null)
+  assert.equal(buildTranscriptQuoteHtml('   '), null)
+})
+
+test('buildPlaceholderEditParams: without a quote, passes the status through unchanged', () => {
+  assert.deepEqual(buildPlaceholderEditParams('123', 456, '⏳ working…', null), {
+    chat_id: '123',
+    message_id: 456,
+    text: '⏳ working…',
+  })
+})
+
+test('buildPlaceholderEditParams: with a quote, prepends it and escapes the status as HTML', () => {
+  assert.deepEqual(buildPlaceholderEditParams('123', 456, '⏳ <working>…', '<blockquote>hi</blockquote>'), {
+    chat_id: '123',
+    message_id: 456,
+    text: '<blockquote>hi</blockquote>\n⏳ &lt;working&gt;…',
+    parse_mode: 'HTML',
+  })
 })
 
 test('parseVoiceToggleCommand: recognizes /voice on and /voice off case-insensitively', () => {

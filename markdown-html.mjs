@@ -1,6 +1,6 @@
 const STASH_MARK = '\x00'
 
-function escapeHtml(s) {
+export function escapeHtml(s) {
   return String(s ?? '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
