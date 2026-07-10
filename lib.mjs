@@ -1,6 +1,7 @@
 // Pure, testable helpers extracted out of bridge.mjs's imperative poll loop.
 
 import path from 'node:path'
+import { markdownToTelegramHtml, htmlToPlainFallback } from './markdown-html.mjs'
 
 export function chunk(text, limit = 4096) {
   const out = []
@@ -296,6 +297,97 @@ export function buildReactionMarkerInstructions() {
 
 export function combineSystemPrompts(...parts) {
   return parts.filter(p => p != null && p !== '').join('\n\n')
+}
+
+export function expandHome(filePath, homeDir) {
+  if (typeof filePath !== 'string') return filePath
+  if (filePath === '~') return homeDir
+  if (filePath.startsWith('~/')) return path.join(homeDir, filePath.slice(2))
+  return filePath
+}
+
+export const DEFAULT_WHISPER_BIN = 'whisper-cli'
+export const DEFAULT_WHISPER_MODEL_PATH = '~/.cache/whisper-models/ggml-large-v3-turbo-q5_0.bin'
+export const DEFAULT_WHISPER_LANGUAGE = 'auto'
+
+export function buildFfmpegConvertArgs(inputPath, outputWavPath) {
+  return ['-y', '-i', inputPath, '-ar', '16000', '-ac', '1', outputWavPath]
+}
+
+export function buildWhisperArgs(wavPath, modelPath, language, outputPrefix) {
+  return ['-m', modelPath, '-f', wavPath, '-l', language || DEFAULT_WHISPER_LANGUAGE, '-otxt', '-of', outputPrefix, '-nt']
+}
+
+export function parseWhisperTranscript(raw) {
+  return String(raw ?? '').replace(/\r\n/g, '\n').trim()
+}
+
+export function buildVoiceTranscriptText(transcript) {
+  const trimmed = String(transcript ?? '').trim()
+  return trimmed ? `(voice message transcript)\n${trimmed}` : '(voice message transcript unavailable)'
+}
+
+const VOICE_TOGGLE_RE = /^\/voice\s+(on|off)$/i
+
+export function parseVoiceToggleCommand(text) {
+  const m = String(text ?? '').trim().match(VOICE_TOGGLE_RE)
+  return m ? m[1].toLowerCase() : null
+}
+
+export function setVoiceReplyPreference(voiceReplyState, chatId, enabled) {
+  const next = { ...voiceReplyState }
+  if (enabled) next[chatId] = true
+  else delete next[chatId]
+  return next
+}
+
+export function isVoiceReplyEnabled(voiceReplyState, chatId) {
+  return Boolean(voiceReplyState?.[chatId])
+}
+
+export function buildVoiceToggleReply(enabled) {
+  return enabled
+    ? '🔊 voice replies are now ON — replies will also be sent as a voice note.'
+    : '🔇 voice replies are now OFF — replies will be text only.'
+}
+
+export function buildSpeechText(text) {
+  return htmlToPlainFallback(markdownToTelegramHtml(text ?? '')).trim()
+}
+
+export function truncateForSpeech(text, maxChars) {
+  const t = String(text ?? '')
+  if (!maxChars || t.length <= maxChars) return t
+  return `${t.slice(0, maxChars - 1).trimEnd()}…`
+}
+
+export const DEFAULT_TTS_VOICE_ID = 'txnCCHHGKmYIwrn7HfHQ'
+export const DEFAULT_TTS_MODEL_ID = 'eleven_multilingual_v2'
+export const DEFAULT_TTS_VOICE_SETTINGS = {
+  stability: 0.3,
+  similarity_boost: 0.75,
+  style: 0.45,
+  use_speaker_boost: true,
+}
+
+export function buildTtsRequestOptions(text, { voiceId, apiKey, modelId, voiceSettings } = {}) {
+  return {
+    url: `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`,
+    headers: {
+      'content-type': 'application/json',
+      accept: 'audio/mpeg',
+      'xi-api-key': apiKey,
+    },
+    body: JSON.stringify({
+      text,
+      model_id: modelId ?? DEFAULT_TTS_MODEL_ID,
+      voice_settings: voiceSettings ?? DEFAULT_TTS_VOICE_SETTINGS,
+    }),
+  }
+}
+
+export function buildOutboxFilename(timestampMs, chatId) {
+  return `${timestampMs}-${sanitizeIdForFilename(chatId)}.mp3`
 }
 
 export function createKeyedQueue() {

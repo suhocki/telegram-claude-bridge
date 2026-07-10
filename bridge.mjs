@@ -3,9 +3,10 @@
 // (blocked by org policy on the enterprise account) — just polls the Telegram
 // Bot API directly and shells out to `claude -p --resume <session>` per message.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, rmSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
+import { homedir } from 'node:os'
 import {
   sanitizeAttr,
   createKeyedQueue,
@@ -36,6 +37,24 @@ import {
   RECEIPT_REACTION,
   SUCCESS_REACTION,
   ERROR_REACTION,
+  expandHome,
+  DEFAULT_WHISPER_BIN,
+  DEFAULT_WHISPER_MODEL_PATH,
+  DEFAULT_WHISPER_LANGUAGE,
+  buildFfmpegConvertArgs,
+  buildWhisperArgs,
+  parseWhisperTranscript,
+  buildVoiceTranscriptText,
+  parseVoiceToggleCommand,
+  setVoiceReplyPreference,
+  isVoiceReplyEnabled,
+  buildVoiceToggleReply,
+  buildSpeechText,
+  truncateForSpeech,
+  DEFAULT_TTS_VOICE_ID,
+  DEFAULT_TTS_MODEL_ID,
+  buildTtsRequestOptions,
+  buildOutboxFilename,
 } from './lib.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback } from './markdown-html.mjs'
 
@@ -50,20 +69,38 @@ const { botToken, cwd, allowedUserIds, appendSystemPrompt, claudeArgs, costWarnU
 const stateFile = path.resolve(path.dirname(configPath), config.stateFile ?? 'state.json')
 const stateDir = path.dirname(stateFile)
 const inboxDir = path.join(stateDir, 'inbox')
+const tmpDir = path.join(stateDir, 'tmp')
+const outboxDir = path.join(stateDir, 'outbox')
 const API = `https://api.telegram.org/bot${botToken}`
+
+const voiceTranscriptionConfig = {
+  whisperBin: DEFAULT_WHISPER_BIN,
+  modelPath: DEFAULT_WHISPER_MODEL_PATH,
+  language: DEFAULT_WHISPER_LANGUAGE,
+  ...config.voiceTranscription,
+}
+
+const voiceReplyConfig = {
+  apiKeyPath: '~/.config/tts/elevenlabs.key',
+  voiceId: DEFAULT_TTS_VOICE_ID,
+  modelId: DEFAULT_TTS_MODEL_ID,
+  maxTtsChars: 4000,
+  ...config.voiceReply,
+}
 
 function log(...args) {
   console.log(new Date().toISOString(), ...args)
 }
 
 function loadState() {
-  if (!existsSync(stateFile)) return { offset: 0, sessions: {}, pendingRisky: {} }
+  if (!existsSync(stateFile)) return { offset: 0, sessions: {}, pendingRisky: {}, voiceReply: {} }
   try {
     const state = JSON.parse(readFileSync(stateFile, 'utf8'))
     state.pendingRisky ??= {}
+    state.voiceReply ??= {}
     return state
   } catch {
-    return { offset: 0, sessions: {}, pendingRisky: {} }
+    return { offset: 0, sessions: {}, pendingRisky: {}, voiceReply: {} }
   }
 }
 
@@ -184,6 +221,74 @@ async function downloadAttachment(attachment) {
   }
 }
 
+function runSpawn(cmd, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args)
+    let err = ''
+    child.stderr.on('data', d => (err += d))
+    child.on('error', reject)
+    child.on('close', code => {
+      if (code === 0) resolve()
+      else reject(new Error(`${cmd} exited ${code}: ${err.slice(-500).trim()}`))
+    })
+  })
+}
+
+async function transcribeVoice(filePath) {
+  mkdirSync(tmpDir, { recursive: true })
+  const base = path.join(tmpDir, `${Date.now()}-${path.basename(filePath, path.extname(filePath))}`)
+  const wavPath = `${base}.wav`
+  const txtPath = `${base}.txt`
+  try {
+    await runSpawn('ffmpeg', buildFfmpegConvertArgs(filePath, wavPath))
+    const modelPath = expandHome(voiceTranscriptionConfig.modelPath, homedir())
+    await runSpawn(voiceTranscriptionConfig.whisperBin, buildWhisperArgs(wavPath, modelPath, voiceTranscriptionConfig.language, base))
+    return { text: parseWhisperTranscript(readFileSync(txtPath, 'utf8')) }
+  } catch (e) {
+    return { error: e.message }
+  } finally {
+    rmSync(wavPath, { force: true })
+    rmSync(txtPath, { force: true })
+  }
+}
+
+async function sendVoiceReply(chatId, text, replyToMessageId) {
+  const speechText = truncateForSpeech(buildSpeechText(text), voiceReplyConfig.maxTtsChars)
+  if (!speechText) return
+  let apiKey
+  try {
+    apiKey = readFileSync(expandHome(voiceReplyConfig.apiKeyPath, homedir()), 'utf8').trim()
+  } catch {
+    log('voice reply skipped: no TTS api key at', voiceReplyConfig.apiKeyPath)
+    return
+  }
+  try {
+    const { url, headers, body } = buildTtsRequestOptions(speechText, {
+      voiceId: voiceReplyConfig.voiceId,
+      apiKey,
+      modelId: voiceReplyConfig.modelId,
+      voiceSettings: voiceReplyConfig.voiceSettings,
+    })
+    const res = await fetch(url, { method: 'POST', headers, body })
+    if (!res.ok) throw new Error(`TTS request failed: HTTP ${res.status}`)
+    const buf = Buffer.from(await res.arrayBuffer())
+    mkdirSync(outboxDir, { recursive: true })
+    const filePath = path.join(outboxDir, buildOutboxFilename(Date.now(), chatId))
+    writeFileSync(filePath, buf)
+    const form = new FormData()
+    form.append('chat_id', chatId)
+    form.append('voice', new Blob([buf]), path.basename(filePath))
+    if (replyToMessageId != null) {
+      form.append('reply_parameters', JSON.stringify({ message_id: replyToMessageId, allow_sending_without_reply: true }))
+    }
+    const sendRes = await fetch(`${API}/sendVoice`, { method: 'POST', body: form })
+    const data = await sendRes.json()
+    if (!data.ok) throw new Error(data.description)
+  } catch (e) {
+    log('sendVoiceReply failed', e.message)
+  }
+}
+
 async function handleMessage(msg) {
   const chatId = String(msg.chat.id)
   const userId = String(msg.from?.id ?? '')
@@ -199,6 +304,14 @@ async function handleMessage(msg) {
       '(bridge v1 only handles text messages, photos, documents, voice, audio, and video — this message type is not supported yet)',
       msg.message_id
     ).catch(() => {})
+    return
+  }
+
+  const voiceToggle = parseVoiceToggleCommand(content)
+  if (voiceToggle) {
+    state.voiceReply = setVoiceReplyPreference(state.voiceReply, chatId, voiceToggle === 'on')
+    saveState(state)
+    await sendReply(chatId, buildVoiceToggleReply(voiceToggle === 'on'), msg.message_id).catch(() => {})
     return
   }
 
@@ -276,6 +389,18 @@ async function handleMessage(msg) {
     attachmentResult = await downloadAttachment(attachment)
     if (attachmentResult.error) log('attachment download failed', attachment.kind, attachmentResult.error)
   }
+
+  let transcriptionError = null
+  if (attachment?.kind === 'voice' && attachmentResult?.path) {
+    const transcription = await transcribeVoice(attachmentResult.path)
+    if (transcription.error) {
+      transcriptionError = transcription.error
+      log('voice transcription failed', transcriptionError)
+    } else {
+      promptText = buildVoiceTranscriptText(transcription.text)
+    }
+  }
+
   const attachmentAttrs = attachment
     ? {
         attachment_kind: attachment.kind,
@@ -283,6 +408,7 @@ async function handleMessage(msg) {
         attachment_mime: attachment.mime,
         attachment_path: attachmentResult?.path,
         attachment_error: attachmentResult?.error,
+        attachment_transcription_error: transcriptionError,
       }
     : {}
 
@@ -313,6 +439,9 @@ async function handleMessage(msg) {
     if (!result.is_error) {
       for (const attachPath of attachPaths) {
         await sendAttachment(chatId, attachPath, msg.message_id)
+      }
+      if (isVoiceReplyEnabled(state.voiceReply, chatId)) {
+        await sendVoiceReply(chatId, cleanedResult, msg.message_id)
       }
     }
     await setReaction(chatId, msg.message_id, reactionEmoji || (result.is_error ? ERROR_REACTION : SUCCESS_REACTION))
