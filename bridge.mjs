@@ -202,8 +202,6 @@ async function handleMessage(msg) {
     return
   }
 
-  await setReaction(chatId, msg.message_id, RECEIPT_REACTION)
-
   const command = classifyCommand(content)
 
   if (command === 'reset') {
@@ -252,6 +250,8 @@ async function handleMessage(msg) {
     promptText = decision.text
   }
   if (!promptText && attachment) promptText = buildAttachmentCaption(attachment)
+
+  await setReaction(chatId, msg.message_id, RECEIPT_REACTION)
 
   let typingAlive = true
   const typing = setInterval(() => {
