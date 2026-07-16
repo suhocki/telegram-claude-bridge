@@ -34,6 +34,8 @@ import {
   buildCheckinMarkerInstructions,
   buildCheckinFollowupPrompt,
   extractResponseMarkers,
+  checkinChainExceeded,
+  CHECKIN_MAX_CHAINED_HOPS,
   buildSetMessageReactionParams,
   RECEIPT_REACTION,
   SUCCESS_REACTION,
@@ -266,11 +268,12 @@ function armCheckinTimer(chatId) {
   checkinTimers.set(chatId, handle)
 }
 
-function scheduleCheckin(chatId, sessionId, checkin) {
+function scheduleCheckin(chatId, sessionId, checkin, hopCount = 1) {
   state.pendingCheckins[chatId] = {
     dueAt: Date.now() + checkin.minutes * 60_000,
     instruction: checkin.instruction,
     sessionId,
+    hopCount,
   }
   saveState(state)
   armCheckinTimer(chatId)
@@ -308,7 +311,17 @@ async function runCheckin(chatId) {
       for (const attachPath of attachPaths) {
         await sendAttachment(chatId, attachPath)
       }
-      if (nextCheckin) scheduleCheckin(chatId, newSession?.id ?? sessionId, nextCheckin)
+      if (nextCheckin) {
+        const hopCount = (pending.hopCount ?? 1) + 1
+        if (checkinChainExceeded(hopCount)) {
+          await sendReply(
+            chatId,
+            `⚠️ automated check-in chain hit its ${CHECKIN_MAX_CHAINED_HOPS}-hop safety cap — stopping here, please check on it yourself.`
+          )
+        } else {
+          scheduleCheckin(chatId, newSession?.id ?? sessionId, nextCheckin, hopCount)
+        }
+      }
     }
   } catch (e) {
     log('runCheckin failed', chatId, e.message)
