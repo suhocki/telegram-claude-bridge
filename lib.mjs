@@ -346,6 +346,13 @@ export function buildCheckinFollowupPrompt(instruction) {
   return `[AUTOMATED CHECK-IN — not a message from the user, scheduled by your own earlier CHECKIN: marker] ${instruction}`
 }
 
+export function extractResponseMarkers(text) {
+  const { text: withoutAttach, paths: attachPaths } = extractAttachmentMarkers(text)
+  const { text: withoutReact, emoji: reactionEmoji } = extractReactionMarker(withoutAttach)
+  const { text: cleanedText, checkin } = extractCheckinMarker(withoutReact)
+  return { text: cleanedText, attachPaths, reactionEmoji, checkin }
+}
+
 export function combineSystemPrompts(...parts) {
   return parts.filter(p => p != null && p !== '').join('\n\n')
 }
