@@ -33,6 +33,9 @@ import {
   buildReplyCallsFromChunks,
   extractReactionMarker,
   buildReactionMarkerInstructions,
+  extractCheckinMarker,
+  buildCheckinMarkerInstructions,
+  buildCheckinFollowupPrompt,
   buildSetMessageReactionParams,
   RECEIPT_REACTION,
   SUCCESS_REACTION,
@@ -115,14 +118,15 @@ function log(...args) {
 }
 
 function loadState() {
-  if (!existsSync(stateFile)) return { offset: 0, sessions: {}, pendingRisky: {}, voiceReply: {} }
+  if (!existsSync(stateFile)) return { offset: 0, sessions: {}, pendingRisky: {}, voiceReply: {}, pendingCheckins: {} }
   try {
     const state = JSON.parse(readFileSync(stateFile, 'utf8'))
     state.pendingRisky ??= {}
     state.voiceReply ??= {}
+    state.pendingCheckins ??= {}
     return state
   } catch {
-    return { offset: 0, sessions: {}, pendingRisky: {}, voiceReply: {} }
+    return { offset: 0, sessions: {}, pendingRisky: {}, voiceReply: {}, pendingCheckins: {} }
   }
 }
 
@@ -134,6 +138,9 @@ function saveState(state) {
 
 const state = loadState()
 const chatQueue = createKeyedQueue()
+// Re-arm any check-ins a previous process instance scheduled but didn't get to fire
+// (e.g. the bridge restarted) — timers above are in-memory only, state.pendingCheckins is not.
+for (const chatId of Object.keys(state.pendingCheckins)) armCheckinTimer(chatId)
 
 const tg = createTelegramClient(API)
 
@@ -202,7 +209,12 @@ function runClaude(prompt, sessionId, onEvent) {
     if (sessionId) args.push('--resume', sessionId)
     args.push(
       '--append-system-prompt',
-      combineSystemPrompts(buildOutboundAttachmentInstructions(), buildReactionMarkerInstructions(), appendSystemPrompt)
+      combineSystemPrompts(
+        buildOutboundAttachmentInstructions(),
+        buildReactionMarkerInstructions(),
+        buildCheckinMarkerInstructions(),
+        appendSystemPrompt
+      )
     )
     if (Array.isArray(claudeArgs)) args.push(...claudeArgs)
 
@@ -234,6 +246,84 @@ function runClaude(prompt, sessionId, onEvent) {
       reject(new Error(err || `claude exited ${code} with no result event\n${stdoutTail}`))
     })
   })
+}
+
+// `claude -p` is one-shot: the child process exits as soon as it emits its
+// result, which tears down any background Agent/task it started mid-flight —
+// there's no interactive REPL left alive to keep them running. A CHECKIN:
+// marker in the reply schedules a fresh `-p --resume` invocation later, which
+// is the only way to get more wall-clock time for that background work.
+const checkinTimers = new Map()
+
+function clearCheckinTimer(chatId) {
+  const handle = checkinTimers.get(chatId)
+  if (handle) {
+    clearTimeout(handle)
+    checkinTimers.delete(chatId)
+  }
+}
+
+function armCheckinTimer(chatId) {
+  clearCheckinTimer(chatId)
+  const pending = state.pendingCheckins[chatId]
+  if (!pending) return
+  const delayMs = Math.max(0, pending.dueAt - Date.now())
+  const handle = setTimeout(() => {
+    chatQueue.enqueue(chatId, () => runCheckin(chatId)).catch(e => log('queued runCheckin rejected', e))
+  }, delayMs)
+  checkinTimers.set(chatId, handle)
+}
+
+function scheduleCheckin(chatId, sessionId, checkin) {
+  state.pendingCheckins[chatId] = {
+    dueAt: Date.now() + checkin.minutes * 60_000,
+    instruction: checkin.instruction,
+    sessionId,
+  }
+  saveState(state)
+  armCheckinTimer(chatId)
+}
+
+function cancelCheckin(chatId) {
+  clearCheckinTimer(chatId)
+  delete state.pendingCheckins[chatId]
+}
+
+async function runCheckin(chatId) {
+  const pending = state.pendingCheckins[chatId]
+  if (!pending) return
+  delete state.pendingCheckins[chatId]
+  saveState(state)
+
+  const sessionId = pending.sessionId ?? normalizeSession(state.sessions[chatId])?.id
+  if (!sessionId) {
+    log('skipping check-in, no session to resume', chatId)
+    return
+  }
+
+  try {
+    const result = await runClaude(buildCheckinFollowupPrompt(pending.instruction), sessionId)
+    let newSession = normalizeSession(state.sessions[chatId])
+    if (result.session_id) {
+      newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
+      state.sessions[chatId] = newSession
+      saveState(state)
+    }
+    const { text: withoutAttach, paths: attachPaths } = extractAttachmentMarkers(result.result)
+    const { text: withoutReact } = extractReactionMarker(withoutAttach)
+    const { text: cleanedResult, checkin: nextCheckin } = extractCheckinMarker(withoutReact)
+    const replyText = result.is_error ? `⚠️ ${cleanedResult || 'check-in error'}` : cleanedResult || '(empty check-in response)'
+    await sendReply(chatId, replyText)
+    if (!result.is_error) {
+      for (const attachPath of attachPaths) {
+        await sendAttachment(chatId, attachPath)
+      }
+      if (nextCheckin) scheduleCheckin(chatId, newSession?.id ?? sessionId, nextCheckin)
+    }
+  } catch (e) {
+    log('runCheckin failed', chatId, e.message)
+    await sendReply(chatId, `⚠️ automated check-in failed: ${e.message}`).catch(() => {})
+  }
 }
 
 async function downloadAttachment(attachment) {
@@ -366,6 +456,7 @@ async function handleMessage(msg) {
   if (command === 'reset') {
     delete state.sessions[chatId]
     delete state.pendingRisky[chatId]
+    cancelCheckin(chatId)
     saveState(state)
     await sendReply(chatId, '🔄 session reset — the next message starts a brand new conversation.', msg.message_id).catch(() => {})
     return
@@ -504,7 +595,8 @@ async function handleMessage(msg) {
       saveState(state)
     }
     const { text: withoutAttach, paths: attachPaths } = extractAttachmentMarkers(result.result)
-    const { text: cleanedResult, emoji: reactionEmoji } = extractReactionMarker(withoutAttach)
+    const { text: withoutReact, emoji: reactionEmoji } = extractReactionMarker(withoutAttach)
+    const { text: cleanedResult, checkin } = extractCheckinMarker(withoutReact)
     let replyText = result.is_error
       ? `⚠️ ${cleanedResult || 'error'}`
       : command === 'compact'
@@ -522,6 +614,7 @@ async function handleMessage(msg) {
       if (isVoiceReplyEnabled(state.voiceReply, chatId)) {
         await sendVoiceReply(chatId, cleanedResult, msg.message_id)
       }
+      if (checkin) scheduleCheckin(chatId, newSession?.id ?? sessionId, checkin)
     }
     await setReaction(chatId, msg.message_id, reactionEmoji || (result.is_error ? ERROR_REACTION : SUCCESS_REACTION))
   } catch (e) {

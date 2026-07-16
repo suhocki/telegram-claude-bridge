@@ -38,6 +38,11 @@ import {
   SUCCESS_REACTION,
   ERROR_REACTION,
   ALLOWED_REACTION_EMOJI,
+  extractCheckinMarker,
+  buildCheckinMarkerInstructions,
+  buildCheckinFollowupPrompt,
+  CHECKIN_MIN_MINUTES,
+  CHECKIN_MAX_MINUTES,
   expandHome,
   buildFfmpegConvertArgs,
   buildWhisperArgs,
@@ -834,6 +839,83 @@ test('reaction constants: all fall inside Telegram\'s setMessageReaction whiteli
   for (const emoji of [RECEIPT_REACTION, SUCCESS_REACTION, ERROR_REACTION]) {
     assert.ok(ALLOWED_REACTION_EMOJI.has(emoji), `${emoji} is not in Telegram's reaction whitelist (would 400 as REACTION_INVALID)`)
   }
+})
+
+test('extractCheckinMarker: no marker leaves text untouched and checkin null', () => {
+  assert.deepEqual(extractCheckinMarker('just a plain reply'), { text: 'just a plain reply', checkin: null })
+})
+
+test('extractCheckinMarker: strips a single trailing marker line and captures minutes + instruction', () => {
+  const result = extractCheckinMarker('working on it\n\nCHECKIN: 10 check on the background agent and report progress')
+  assert.deepEqual(result, {
+    text: 'working on it',
+    checkin: { minutes: 10, instruction: 'check on the background agent and report progress' },
+  })
+})
+
+test('extractCheckinMarker: a marker line in the middle is removed, surrounding text kept', () => {
+  const result = extractCheckinMarker('before\nCHECKIN: 5 nudge the agent\nafter')
+  assert.deepEqual(result, { text: 'before\nafter', checkin: { minutes: 5, instruction: 'nudge the agent' } })
+})
+
+test('extractCheckinMarker: multiple marker lines keep only the last one', () => {
+  const result = extractCheckinMarker('CHECKIN: 5 first\nsome text\nCHECKIN: 15 second')
+  assert.deepEqual(result, { text: 'some text', checkin: { minutes: 15, instruction: 'second' } })
+})
+
+test('extractCheckinMarker: null/undefined text yields no checkin and empty text', () => {
+  assert.deepEqual(extractCheckinMarker(undefined), { text: '', checkin: null })
+  assert.deepEqual(extractCheckinMarker(null), { text: '', checkin: null })
+})
+
+test('extractCheckinMarker: a line only matches CHECKIN: at the start, not mid-line mentions', () => {
+  const result = extractCheckinMarker('please CHECKIN: 5 do this to this')
+  assert.deepEqual(result, { text: 'please CHECKIN: 5 do this to this', checkin: null })
+})
+
+test('extractCheckinMarker: trims surrounding whitespace on the instruction', () => {
+  const result = extractCheckinMarker('ok\nCHECKIN: 10   check on things   ')
+  assert.deepEqual(result, { text: 'ok', checkin: { minutes: 10, instruction: 'check on things' } })
+})
+
+test('extractCheckinMarker: minutes below the minimum are rejected, line still stripped', () => {
+  const result = extractCheckinMarker(`reply\nCHECKIN: ${CHECKIN_MIN_MINUTES - 1} too soon`)
+  assert.deepEqual(result, { text: 'reply', checkin: null })
+})
+
+test('extractCheckinMarker: minutes above the maximum are rejected, line still stripped', () => {
+  const result = extractCheckinMarker(`reply\nCHECKIN: ${CHECKIN_MAX_MINUTES + 1} too far out`)
+  assert.deepEqual(result, { text: 'reply', checkin: null })
+})
+
+test('extractCheckinMarker: minutes at the min/max boundary are accepted', () => {
+  assert.deepEqual(extractCheckinMarker(`CHECKIN: ${CHECKIN_MIN_MINUTES} a`).checkin, {
+    minutes: CHECKIN_MIN_MINUTES,
+    instruction: 'a',
+  })
+  assert.deepEqual(extractCheckinMarker(`CHECKIN: ${CHECKIN_MAX_MINUTES} b`).checkin, {
+    minutes: CHECKIN_MAX_MINUTES,
+    instruction: 'b',
+  })
+})
+
+test('extractCheckinMarker: a marker with no instruction text does not match', () => {
+  const result = extractCheckinMarker('reply\nCHECKIN: 10')
+  assert.deepEqual(result, { text: 'reply\nCHECKIN: 10', checkin: null })
+})
+
+test('buildCheckinMarkerInstructions: documents the CHECKIN marker protocol and bounds', () => {
+  const text = buildCheckinMarkerInstructions()
+  assert.match(text, /CHECKIN: <minutes>/)
+  assert.match(text, new RegExp(String(CHECKIN_MIN_MINUTES)))
+  assert.match(text, new RegExp(String(CHECKIN_MAX_MINUTES)))
+})
+
+test('buildCheckinFollowupPrompt: wraps the instruction and marks it as an automated, non-user prompt', () => {
+  const prompt = buildCheckinFollowupPrompt('check on the background agent')
+  assert.match(prompt, /AUTOMATED CHECK-IN/)
+  assert.match(prompt, /not a message from the user/)
+  assert.match(prompt, /check on the background agent/)
 })
 
 test('expandHome: expands a leading ~/ using the given home dir', () => {

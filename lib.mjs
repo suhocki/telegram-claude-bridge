@@ -308,6 +308,44 @@ export function buildReactionMarkerInstructions() {
   ].join('\n')
 }
 
+export const CHECKIN_MIN_MINUTES = 1
+export const CHECKIN_MAX_MINUTES = 120
+
+const CHECKIN_LINE_RE = /^CHECKIN:\s*(\d+)\s+(.+?)\s*$/
+
+export function extractCheckinMarker(text) {
+  const lines = String(text ?? '').split('\n')
+  const kept = []
+  let checkin = null
+  for (const line of lines) {
+    const m = line.match(CHECKIN_LINE_RE)
+    if (m) {
+      const minutes = Number(m[1])
+      if (minutes >= CHECKIN_MIN_MINUTES && minutes <= CHECKIN_MAX_MINUTES) {
+        checkin = { minutes, instruction: m[2] }
+      }
+    } else {
+      kept.push(line)
+    }
+  }
+  return { text: kept.join('\n').trimEnd(), checkin }
+}
+
+export function buildCheckinMarkerInstructions() {
+  return [
+    'The process running this turn exits as soon as your reply is sent — a background Agent or task you started does NOT keep running on its own after that, even with run_in_background.',
+    'If you started real background work this turn that will still be going after your reply, and you want a follow-up, include one line anywhere in your final answer, in exactly this form:',
+    `CHECKIN: <minutes> <what to check on and report back>`,
+    `<minutes> must be a whole number between ${CHECKIN_MIN_MINUTES} and ${CHECKIN_MAX_MINUTES}.`,
+    'This marker line is stripped from what the user sees. After the delay, the bridge starts a fresh turn (resuming this same session) using your instruction as the prompt — use that turn to check on/nudge the background work and report progress to the user. Include another CHECKIN: line in that follow-up if more waiting is still needed; omit it once the work is done.',
+    "Don't use this for anything that finishes within your own current turn.",
+  ].join('\n')
+}
+
+export function buildCheckinFollowupPrompt(instruction) {
+  return `[AUTOMATED CHECK-IN — not a message from the user, scheduled by your own earlier CHECKIN: marker] ${instruction}`
+}
+
 export function combineSystemPrompts(...parts) {
   return parts.filter(p => p != null && p !== '').join('\n\n')
 }
