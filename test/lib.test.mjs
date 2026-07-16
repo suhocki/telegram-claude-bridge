@@ -44,6 +44,8 @@ import {
   extractResponseMarkers,
   CHECKIN_MIN_MINUTES,
   CHECKIN_MAX_MINUTES,
+  CHECKIN_MAX_CHAINED_HOPS,
+  checkinChainExceeded,
   expandHome,
   buildFfmpegConvertArgs,
   buildWhisperArgs,
@@ -910,6 +912,13 @@ test('buildCheckinMarkerInstructions: documents the CHECKIN marker protocol and 
   assert.match(text, /CHECKIN: <minutes>/)
   assert.match(text, new RegExp(String(CHECKIN_MIN_MINUTES)))
   assert.match(text, new RegExp(String(CHECKIN_MAX_MINUTES)))
+  assert.match(text, new RegExp(String(CHECKIN_MAX_CHAINED_HOPS)))
+})
+
+test('checkinChainExceeded: false at and below the hop cap, true above it', () => {
+  assert.equal(checkinChainExceeded(1), false)
+  assert.equal(checkinChainExceeded(CHECKIN_MAX_CHAINED_HOPS), false)
+  assert.equal(checkinChainExceeded(CHECKIN_MAX_CHAINED_HOPS + 1), true)
 })
 
 test('buildCheckinFollowupPrompt: wraps the instruction and marks it as an automated, non-user prompt', () => {
