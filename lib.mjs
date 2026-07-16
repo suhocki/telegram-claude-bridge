@@ -310,6 +310,11 @@ export function buildReactionMarkerInstructions() {
 
 export const CHECKIN_MIN_MINUTES = 1
 export const CHECKIN_MAX_MINUTES = 120
+export const CHECKIN_MAX_CHAINED_HOPS = 20
+
+export function checkinChainExceeded(hopCount) {
+  return hopCount > CHECKIN_MAX_CHAINED_HOPS
+}
 
 const CHECKIN_LINE_RE = /^CHECKIN:\s*(\d+)\s+(.+?)\s*$/
 
@@ -338,12 +343,20 @@ export function buildCheckinMarkerInstructions() {
     `CHECKIN: <minutes> <what to check on and report back>`,
     `<minutes> must be a whole number between ${CHECKIN_MIN_MINUTES} and ${CHECKIN_MAX_MINUTES}.`,
     'This marker line is stripped from what the user sees. After the delay, the bridge starts a fresh turn (resuming this same session) using your instruction as the prompt — use that turn to check on/nudge the background work and report progress to the user. Include another CHECKIN: line in that follow-up if more waiting is still needed; omit it once the work is done.',
+    `A safety cap limits any chain to ${CHECKIN_MAX_CHAINED_HOPS} automated check-ins in a row; past that the bridge stops rescheduling and tells the user to check manually, so don't count on unlimited retries.`,
     "Don't use this for anything that finishes within your own current turn.",
   ].join('\n')
 }
 
 export function buildCheckinFollowupPrompt(instruction) {
   return `[AUTOMATED CHECK-IN — not a message from the user, scheduled by your own earlier CHECKIN: marker] ${instruction}`
+}
+
+export function extractResponseMarkers(text) {
+  const { text: withoutAttach, paths: attachPaths } = extractAttachmentMarkers(text)
+  const { text: withoutReact, emoji: reactionEmoji } = extractReactionMarker(withoutAttach)
+  const { text: cleanedText, checkin } = extractCheckinMarker(withoutReact)
+  return { text: cleanedText, attachPaths, reactionEmoji, checkin }
 }
 
 export function combineSystemPrompts(...parts) {

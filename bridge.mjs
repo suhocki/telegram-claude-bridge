@@ -25,17 +25,17 @@ import {
   exceedsAttachmentLimit,
   buildInboxFilename,
   MAX_ATTACHMENT_BYTES,
-  extractAttachmentMarkers,
   pickOutboundSendMethod,
   assertSendablePath,
   buildOutboundAttachmentInstructions,
   combineSystemPrompts,
   buildReplyCallsFromChunks,
-  extractReactionMarker,
   buildReactionMarkerInstructions,
-  extractCheckinMarker,
   buildCheckinMarkerInstructions,
   buildCheckinFollowupPrompt,
+  extractResponseMarkers,
+  checkinChainExceeded,
+  CHECKIN_MAX_CHAINED_HOPS,
   buildSetMessageReactionParams,
   RECEIPT_REACTION,
   SUCCESS_REACTION,
@@ -138,8 +138,8 @@ function saveState(state) {
 
 const state = loadState()
 const chatQueue = createKeyedQueue()
-// Re-arm any check-ins a previous process instance scheduled but didn't get to fire
-// (e.g. the bridge restarted) — timers above are in-memory only, state.pendingCheckins is not.
+// setTimeout handles can't be persisted, so state.pendingCheckins is re-armed into this Map on every boot.
+const checkinTimers = new Map()
 for (const chatId of Object.keys(state.pendingCheckins)) armCheckinTimer(chatId)
 
 const tg = createTelegramClient(API)
@@ -248,13 +248,6 @@ function runClaude(prompt, sessionId, onEvent) {
   })
 }
 
-// `claude -p` is one-shot: the child process exits as soon as it emits its
-// result, which tears down any background Agent/task it started mid-flight —
-// there's no interactive REPL left alive to keep them running. A CHECKIN:
-// marker in the reply schedules a fresh `-p --resume` invocation later, which
-// is the only way to get more wall-clock time for that background work.
-const checkinTimers = new Map()
-
 function clearCheckinTimer(chatId) {
   const handle = checkinTimers.get(chatId)
   if (handle) {
@@ -269,16 +262,18 @@ function armCheckinTimer(chatId) {
   if (!pending) return
   const delayMs = Math.max(0, pending.dueAt - Date.now())
   const handle = setTimeout(() => {
+    checkinTimers.delete(chatId)
     chatQueue.enqueue(chatId, () => runCheckin(chatId)).catch(e => log('queued runCheckin rejected', e))
   }, delayMs)
   checkinTimers.set(chatId, handle)
 }
 
-function scheduleCheckin(chatId, sessionId, checkin) {
+function scheduleCheckin(chatId, sessionId, checkin, hopCount = 1) {
   state.pendingCheckins[chatId] = {
     dueAt: Date.now() + checkin.minutes * 60_000,
     instruction: checkin.instruction,
     sessionId,
+    hopCount,
   }
   saveState(state)
   armCheckinTimer(chatId)
@@ -295,7 +290,7 @@ async function runCheckin(chatId) {
   delete state.pendingCheckins[chatId]
   saveState(state)
 
-  const sessionId = pending.sessionId ?? normalizeSession(state.sessions[chatId])?.id
+  const sessionId = normalizeSession(state.sessions[chatId])?.id ?? pending.sessionId
   if (!sessionId) {
     log('skipping check-in, no session to resume', chatId)
     return
@@ -309,16 +304,24 @@ async function runCheckin(chatId) {
       state.sessions[chatId] = newSession
       saveState(state)
     }
-    const { text: withoutAttach, paths: attachPaths } = extractAttachmentMarkers(result.result)
-    const { text: withoutReact } = extractReactionMarker(withoutAttach)
-    const { text: cleanedResult, checkin: nextCheckin } = extractCheckinMarker(withoutReact)
+    const { text: cleanedResult, attachPaths, checkin: nextCheckin } = extractResponseMarkers(result.result)
     const replyText = result.is_error ? `⚠️ ${cleanedResult || 'check-in error'}` : cleanedResult || '(empty check-in response)'
     await sendReply(chatId, replyText)
     if (!result.is_error) {
       for (const attachPath of attachPaths) {
         await sendAttachment(chatId, attachPath)
       }
-      if (nextCheckin) scheduleCheckin(chatId, newSession?.id ?? sessionId, nextCheckin)
+      if (nextCheckin) {
+        const hopCount = (pending.hopCount ?? 1) + 1
+        if (checkinChainExceeded(hopCount)) {
+          await sendReply(
+            chatId,
+            `⚠️ automated check-in chain hit its ${CHECKIN_MAX_CHAINED_HOPS}-hop safety cap — stopping here, please check on it yourself.`
+          )
+        } else {
+          scheduleCheckin(chatId, newSession?.id ?? sessionId, nextCheckin, hopCount)
+        }
+      }
     }
   } catch (e) {
     log('runCheckin failed', chatId, e.message)
@@ -594,9 +597,7 @@ async function handleMessage(msg) {
       state.sessions[chatId] = newSession
       saveState(state)
     }
-    const { text: withoutAttach, paths: attachPaths } = extractAttachmentMarkers(result.result)
-    const { text: withoutReact, emoji: reactionEmoji } = extractReactionMarker(withoutAttach)
-    const { text: cleanedResult, checkin } = extractCheckinMarker(withoutReact)
+    const { text: cleanedResult, attachPaths, reactionEmoji, checkin } = extractResponseMarkers(result.result)
     let replyText = result.is_error
       ? `⚠️ ${cleanedResult || 'error'}`
       : command === 'compact'

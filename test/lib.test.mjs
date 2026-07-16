@@ -41,8 +41,11 @@ import {
   extractCheckinMarker,
   buildCheckinMarkerInstructions,
   buildCheckinFollowupPrompt,
+  extractResponseMarkers,
   CHECKIN_MIN_MINUTES,
   CHECKIN_MAX_MINUTES,
+  CHECKIN_MAX_CHAINED_HOPS,
+  checkinChainExceeded,
   expandHome,
   buildFfmpegConvertArgs,
   buildWhisperArgs,
@@ -909,6 +912,13 @@ test('buildCheckinMarkerInstructions: documents the CHECKIN marker protocol and 
   assert.match(text, /CHECKIN: <minutes>/)
   assert.match(text, new RegExp(String(CHECKIN_MIN_MINUTES)))
   assert.match(text, new RegExp(String(CHECKIN_MAX_MINUTES)))
+  assert.match(text, new RegExp(String(CHECKIN_MAX_CHAINED_HOPS)))
+})
+
+test('checkinChainExceeded: false at and below the hop cap, true above it', () => {
+  assert.equal(checkinChainExceeded(1), false)
+  assert.equal(checkinChainExceeded(CHECKIN_MAX_CHAINED_HOPS), false)
+  assert.equal(checkinChainExceeded(CHECKIN_MAX_CHAINED_HOPS + 1), true)
 })
 
 test('buildCheckinFollowupPrompt: wraps the instruction and marks it as an automated, non-user prompt', () => {
@@ -916,6 +926,25 @@ test('buildCheckinFollowupPrompt: wraps the instruction and marks it as an autom
   assert.match(prompt, /AUTOMATED CHECK-IN/)
   assert.match(prompt, /not a message from the user/)
   assert.match(prompt, /check on the background agent/)
+})
+
+test('extractResponseMarkers: strips all three marker kinds regardless of order and returns their payloads', () => {
+  const result = extractResponseMarkers('done\nATTACH: /tmp/a.png\nREACT: 👍\nCHECKIN: 10 nudge the agent')
+  assert.deepEqual(result, {
+    text: 'done',
+    attachPaths: ['/tmp/a.png'],
+    reactionEmoji: '👍',
+    checkin: { minutes: 10, instruction: 'nudge the agent' },
+  })
+})
+
+test('extractResponseMarkers: no markers leaves text untouched with empty/null payloads', () => {
+  assert.deepEqual(extractResponseMarkers('just a plain reply'), {
+    text: 'just a plain reply',
+    attachPaths: [],
+    reactionEmoji: null,
+    checkin: null,
+  })
 })
 
 test('expandHome: expands a leading ~/ using the given home dir', () => {
