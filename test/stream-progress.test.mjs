@@ -9,6 +9,9 @@ import {
   extractTextDelta,
   extractThinkingDelta,
   extractToolResults,
+  extractNewSubagentBlocks,
+  extractFinishedSubagentIds,
+  SUBAGENT_TOOL_NAME,
   summarizeToolInput,
   truncateStatus,
   formatToolStatusLine,
@@ -129,6 +132,70 @@ test('extractToolResults returns empty for non-user or malformed events', () => 
   assert.deepEqual(extractToolResults({ type: 'user', message: { content: 'nope' } }), [])
   assert.deepEqual(extractToolResults({ type: 'user', message: { content: [{ type: 'tool_result' }] } }), [])
   assert.deepEqual(extractToolResults(null), [])
+})
+
+test('extractNewSubagentBlocks picks out only Task tool_use blocks not already tracked', () => {
+  const event = {
+    type: 'assistant',
+    message: {
+      content: [
+        { type: 'tool_use', id: 'toolu_1', name: SUBAGENT_TOOL_NAME, input: { description: 'explore repo' } },
+        { type: 'tool_use', id: 'toolu_2', name: 'Bash', input: { command: 'ls' } },
+        { type: 'tool_use', id: 'toolu_3', name: SUBAGENT_TOOL_NAME, input: { description: 'run tests' } },
+      ],
+    },
+  }
+  const result = extractNewSubagentBlocks(event, new Set())
+  assert.deepEqual(result.map(b => b.id), ['toolu_1', 'toolu_3'])
+})
+
+test('extractNewSubagentBlocks skips Task blocks whose id is already tracked', () => {
+  const event = {
+    type: 'assistant',
+    message: {
+      content: [
+        { type: 'tool_use', id: 'toolu_1', name: SUBAGENT_TOOL_NAME, input: { description: 'explore repo' } },
+        { type: 'tool_use', id: 'toolu_2', name: SUBAGENT_TOOL_NAME, input: { description: 'run tests' } },
+      ],
+    },
+  }
+  const result = extractNewSubagentBlocks(event, new Set(['toolu_1']))
+  assert.deepEqual(result.map(b => b.id), ['toolu_2'])
+})
+
+test('extractNewSubagentBlocks accepts a Map (or anything with .has) as the tracked-ids set', () => {
+  const event = {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: SUBAGENT_TOOL_NAME, input: {} }] },
+  }
+  const tracked = new Map([['toolu_1', { messageId: 1 }]])
+  assert.deepEqual(extractNewSubagentBlocks(event, tracked), [])
+})
+
+test('extractNewSubagentBlocks returns empty when there are no tool_use blocks at all', () => {
+  assert.deepEqual(extractNewSubagentBlocks({ type: 'assistant', message: { content: [] } }, new Set()), [])
+  assert.deepEqual(extractNewSubagentBlocks(null, new Set()), [])
+})
+
+test('extractFinishedSubagentIds picks out only tool_result ids that are currently tracked', () => {
+  const event = {
+    type: 'user',
+    message: {
+      content: [
+        { type: 'tool_result', tool_use_id: 'toolu_1', is_error: false },
+        { type: 'tool_result', tool_use_id: 'toolu_untracked', is_error: false },
+        { type: 'tool_result', tool_use_id: 'toolu_3', is_error: true },
+      ],
+    },
+  }
+  const result = extractFinishedSubagentIds(event, new Set(['toolu_1', 'toolu_3']))
+  assert.deepEqual(result, ['toolu_1', 'toolu_3'])
+})
+
+test('extractFinishedSubagentIds returns empty when nothing tracked matches', () => {
+  const event = { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_x' }] } }
+  assert.deepEqual(extractFinishedSubagentIds(event, new Set(['toolu_1'])), [])
+  assert.deepEqual(extractFinishedSubagentIds(null, new Set(['toolu_1'])), [])
 })
 
 test('summarizeToolInput picks the right field per tool and basenames paths', () => {

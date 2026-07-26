@@ -77,6 +77,8 @@ import {
   createProgressTracker,
   formatRunOutcomeStatus,
   createStatusUpdater,
+  extractNewSubagentBlocks,
+  extractFinishedSubagentIds,
 } from './stream-progress.mjs'
 
 const configPath = process.argv[2]
@@ -235,11 +237,12 @@ function runClaude(prompt, sessionId, onEvent) {
         if (!event) continue
         if (isResultEvent(event)) result = event
         if (onEvent) {
-          try {
-            onEvent(event)
-          } catch (e) {
-            log('progress onEvent handler failed', e.message)
-          }
+          // onEvent may be async (it can send/delete subagent placeholder messages);
+          // fire-and-forget it here, same as before, but catch both sync throws and
+          // async rejections so a failure never crashes the stdout handler
+          Promise.resolve()
+            .then(() => onEvent(event))
+            .catch(e => log('progress onEvent handler failed', e.message))
         }
       }
     })
@@ -426,6 +429,59 @@ async function sendVoiceReply(chatId, text, replyToMessageId) {
   }
 }
 
+// Drives one Telegram message's live "⏳ working…" placeholder: a progress tracker plus
+// the periodic editMessageText loop that renders it. Used both for the root placeholder
+// of a run and for each parallel subagent (Agent tool) placeholder spawned during it.
+function createPlaceholderController(chatId, messageId, getQuoteHtml = () => null) {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
+    renderTranscript: (historyLines, liveText) =>
+      renderTranscriptHtml(historyLines, liveText, computeStreamingTextLimit(getQuoteHtml())),
+  })
+
+  async function editPlaceholder({ text, html }) {
+    if (messageId == null) return
+    const params = buildPlaceholderEditParams(chatId, messageId, text, getQuoteHtml(), html)
+    try {
+      await tg('editMessageText', params)
+    } catch (e) {
+      if (/message is not modified/i.test(e.message)) return
+      const retryAfterMatch = e.message.match(/retry after (\d+)/i)
+      if (retryAfterMatch) {
+        statusUpdater.pauseFor(Number(retryAfterMatch[1]) * 1000)
+        log('editMessageText rate-limited, pausing streaming updates', e.message)
+        return
+      }
+      if (!params.parse_mode) {
+        log('editMessageText failed', e.message)
+        return
+      }
+      await tg('editMessageText', { chat_id: chatId, message_id: messageId, text: htmlToPlainFallback(params.text) }).catch(e2 =>
+        log('editMessageText fallback failed', e2.message)
+      )
+    }
+  }
+
+  const statusUpdater = createStatusUpdater({
+    getStatus: () => tracker.snapshot(),
+    onUpdate: latestStatus => editPlaceholder(latestStatus),
+    initialStatus: tracker.snapshot(),
+    intervalMs: STREAM_EDIT_INTERVAL_MS,
+  })
+
+  return {
+    tracker,
+    editPlaceholder,
+    statusUpdater,
+    ingest(event) {
+      tracker.ingest(event)
+    },
+    async stop(finalStatus) {
+      statusUpdater.stop()
+      if (finalStatus !== undefined) await editPlaceholder({ text: finalStatus, html: false })
+    },
+  }
+}
+
 async function handleMessage(msg) {
   const chatId = String(msg.chat.id)
   const userId = String(msg.from?.id ?? '')
@@ -529,43 +585,37 @@ async function handleMessage(msg) {
   }
 
   let transcriptQuoteHtml = null
-  const progress = createProgressTracker(DEFAULT_WORKING_STATUS, {
-    renderTranscript: (historyLines, liveText) =>
-      renderTranscriptHtml(historyLines, liveText, computeStreamingTextLimit(transcriptQuoteHtml)),
-  })
+  const rootController = createPlaceholderController(chatId, placeholderId, () => transcriptQuoteHtml)
 
-  async function editPlaceholder({ text, html }) {
-    if (placeholderId == null) return
-    const params = buildPlaceholderEditParams(chatId, placeholderId, text, transcriptQuoteHtml, html)
-    try {
-      await tg('editMessageText', params)
-    } catch (e) {
-      if (/message is not modified/i.test(e.message)) return
-      const retryAfterMatch = e.message.match(/retry after (\d+)/i)
-      if (retryAfterMatch) {
-        statusUpdater.pauseFor(Number(retryAfterMatch[1]) * 1000)
-        log('editMessageText rate-limited, pausing streaming updates', e.message)
-        return
+  // one placeholder message per parallel subagent (Agent tool call), keyed by that
+  // tool_use's id; created when it starts, deleted once its tool_result comes back
+  const subagentControllers = new Map()
+
+  async function routeEvent(event) {
+    const parentId = event?.parent_tool_use_id ?? null
+    const parentEntry = parentId ? subagentControllers.get(parentId) : null
+    ;(parentEntry ? parentEntry.controller : rootController).ingest(event)
+
+    for (const block of extractNewSubagentBlocks(event, subagentControllers)) {
+      try {
+        const sub = await tg('sendMessage', {
+          chat_id: chatId,
+          text: DEFAULT_WORKING_STATUS,
+          ...(placeholderId != null ? { reply_parameters: { message_id: placeholderId, allow_sending_without_reply: true } } : {}),
+        })
+        subagentControllers.set(block.id, { messageId: sub.message_id, controller: createPlaceholderController(chatId, sub.message_id) })
+      } catch (e) {
+        log('failed to send subagent placeholder', e.message)
       }
-      if (!params.parse_mode) {
-        log('editMessageText failed', e.message)
-        return
-      }
-      await tg('editMessageText', { chat_id: chatId, message_id: placeholderId, text: htmlToPlainFallback(params.text) }).catch(e2 =>
-        log('editMessageText fallback failed', e2.message)
-      )
     }
-  }
 
-  const statusUpdater = createStatusUpdater({
-    getStatus: () => progress.snapshot(),
-    onUpdate: latestStatus => editPlaceholder(latestStatus),
-    initialStatus: progress.snapshot(),
-    intervalMs: STREAM_EDIT_INTERVAL_MS,
-  })
-  const stopStatusUpdates = async finalStatus => {
-    statusUpdater.stop()
-    await editPlaceholder({ text: finalStatus, html: false })
+    for (const id of extractFinishedSubagentIds(event, subagentControllers)) {
+      const entry = subagentControllers.get(id)
+      if (!entry) continue
+      subagentControllers.delete(id)
+      entry.controller.statusUpdater.stop()
+      await tg('deleteMessage', { chat_id: chatId, message_id: entry.messageId }).catch(e => log('failed to delete subagent placeholder', e.message))
+    }
   }
 
   let attachmentResult = null
@@ -583,7 +633,7 @@ async function handleMessage(msg) {
     } else {
       promptText = buildVoiceTranscriptText(transcription.text)
       transcriptQuoteHtml = buildTranscriptQuoteHtml(transcription.text)
-      if (transcriptQuoteHtml) editPlaceholder(progress.snapshot())
+      if (transcriptQuoteHtml) rootController.editPlaceholder(rootController.tracker.snapshot())
     }
   }
 
@@ -604,8 +654,8 @@ async function handleMessage(msg) {
       : buildChannelPrompt(chatId, meta.messageId, meta.user, meta.ts, promptText, attachmentAttrs)
 
   try {
-    const result = await runClaude(prompt, sessionId, event => progress.ingest(event))
-    await stopStatusUpdates(formatRunOutcomeStatus(result.is_error))
+    const result = await runClaude(prompt, sessionId, event => routeEvent(event))
+    await rootController.stop(formatRunOutcomeStatus(result.is_error))
     let newSession = session
     if (result.session_id) {
       newSession = accumulateSessionCost(session, result.session_id, result.total_cost_usd)
@@ -635,13 +685,22 @@ async function handleMessage(msg) {
     await setReaction(chatId, msg.message_id, reactionEmoji || (result.is_error ? ERROR_REACTION : SUCCESS_REACTION))
   } catch (e) {
     log('handleMessage error', e)
-    statusUpdater.stop()
+    rootController.statusUpdater.stop()
     await sendReply(chatId, `⚠️ bridge error: ${e.message}`, msg.message_id, placeholderId).catch(() => {})
     await setReaction(chatId, msg.message_id, ERROR_REACTION)
   } finally {
     typingAlive = false
     clearInterval(typing)
-    statusUpdater.stop()
+    rootController.statusUpdater.stop()
+    // safety net: normally every Task's tool_result already deletes its own placeholder
+    // as it happens; this only catches leftovers from a crash or a missed event
+    await Promise.all(
+      Array.from(subagentControllers.values()).map(entry => {
+        entry.controller.statusUpdater.stop()
+        return tg('deleteMessage', { chat_id: chatId, message_id: entry.messageId }).catch(() => {})
+      })
+    )
+    subagentControllers.clear()
   }
 }
 

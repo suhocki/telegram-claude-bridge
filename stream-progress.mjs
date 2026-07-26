@@ -59,6 +59,27 @@ export function extractToolResults(event) {
     .map(block => ({ id: block.tool_use_id, isError: Boolean(block.is_error) }))
 }
 
+// The subagent-launching tool is named "Agent" in claude -p's stream-json output
+// (verified against a real captured run — not "Task", despite that being the more
+// commonly assumed name).
+export const SUBAGENT_TOOL_NAME = 'Agent'
+
+// Which tool_use blocks in this event are a subagent call not already being
+// tracked — i.e. ones that need their own placeholder message started.
+export function extractNewSubagentBlocks(event, alreadyTrackedIds) {
+  return extractToolUseBlocks(event).filter(
+    block => block.name === SUBAGENT_TOOL_NAME && !alreadyTrackedIds.has(block.id)
+  )
+}
+
+// Which currently-tracked subagent ids just finished (their tool_result came back) —
+// i.e. ones whose placeholder message should now be deleted.
+export function extractFinishedSubagentIds(event, trackedIds) {
+  return extractToolResults(event)
+    .map(result => result.id)
+    .filter(id => trackedIds.has(id))
+}
+
 const TOOL_SUMMARY_KEYS = {
   Bash: 'command',
   Edit: 'file_path',
@@ -69,7 +90,7 @@ const TOOL_SUMMARY_KEYS = {
   Grep: 'pattern',
   WebFetch: 'url',
   WebSearch: 'query',
-  Task: 'description',
+  Agent: 'description',
 }
 
 const PATH_SUMMARY_TOOLS = new Set(['Edit', 'Write', 'Read', 'NotebookEdit'])
