@@ -50,6 +50,7 @@ import {
   buildVoiceTranscriptText,
   buildTranscriptQuoteHtml,
   buildPlaceholderEditParams,
+  computeStreamingTextLimit,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
   isVoiceReplyEnabled,
@@ -528,7 +529,9 @@ async function handleMessage(msg) {
   }
 
   let transcriptQuoteHtml = null
-  const progress = createProgressTracker(DEFAULT_WORKING_STATUS, { renderText: renderStreamingTail })
+  const progress = createProgressTracker(DEFAULT_WORKING_STATUS, {
+    renderText: buf => renderStreamingTail(buf, computeStreamingTextLimit(transcriptQuoteHtml)),
+  })
 
   async function editPlaceholder({ text, html }) {
     if (placeholderId == null) return
@@ -537,6 +540,12 @@ async function handleMessage(msg) {
       await tg('editMessageText', params)
     } catch (e) {
       if (/message is not modified/i.test(e.message)) return
+      const retryAfterMatch = e.message.match(/retry after (\d+)/i)
+      if (retryAfterMatch) {
+        statusUpdater.pauseFor(Number(retryAfterMatch[1]) * 1000)
+        log('editMessageText rate-limited, pausing streaming updates', e.message)
+        return
+      }
       if (!params.parse_mode) {
         log('editMessageText failed', e.message)
         return

@@ -399,6 +399,14 @@ export function buildTranscriptQuoteHtml(transcript) {
   return `<blockquote>${truncateStatus(escaped, TRANSCRIPT_QUOTE_MAX_CHARS)}</blockquote>`
 }
 
+// buildPlaceholderEditParams joins quoteHtml and the status body with "\n" (1 char),
+// so the body itself must be rendered to fit within (limit - quoteHtml.length - 1)
+// or the combined edit can exceed Telegram's message-length limit.
+export function computeStreamingTextLimit(quoteHtml, limit = 4096) {
+  if (!quoteHtml) return limit
+  return Math.max(0, limit - quoteHtml.length - 1)
+}
+
 export function buildPlaceholderEditParams(chatId, messageId, status, quoteHtml, isHtml = false) {
   if (!quoteHtml) {
     return isHtml

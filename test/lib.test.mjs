@@ -54,6 +54,7 @@ import {
   buildTranscriptQuoteHtml,
   TRANSCRIPT_QUOTE_MAX_CHARS,
   buildPlaceholderEditParams,
+  computeStreamingTextLimit,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
   isVoiceReplyEnabled,
@@ -76,6 +77,7 @@ import {
   createTelegramClient,
   fetchWithTimeout,
 } from '../lib.mjs'
+import { renderStreamingTail } from '../markdown-html.mjs'
 import path from 'node:path'
 
 function deferred() {
@@ -1060,6 +1062,27 @@ test('buildPlaceholderEditParams: with a quote and isHtml=true, prepends the quo
     text: '<blockquote>quote</blockquote>\n<b>hi</b>',
     parse_mode: 'HTML',
   })
+})
+
+test('computeStreamingTextLimit: with no quote, returns the full limit unchanged', () => {
+  assert.equal(computeStreamingTextLimit(null, 4096), 4096)
+  assert.equal(computeStreamingTextLimit(undefined, 4096), 4096)
+})
+
+test('computeStreamingTextLimit: with a quote, reserves its length plus the joining newline', () => {
+  assert.equal(computeStreamingTextLimit('x'.repeat(100), 4096), 4096 - 100 - 1)
+})
+
+test('computeStreamingTextLimit: clamps to 0 instead of going negative for a quote longer than the limit', () => {
+  assert.equal(computeStreamingTextLimit('x'.repeat(5000), 4096), 0)
+})
+
+test('regression: a streaming preview rendered with computeStreamingTextLimit, combined with the worst-case transcript quote, never exceeds the Telegram message limit', () => {
+  const quoteHtml = buildTranscriptQuoteHtml('x'.repeat(TRANSCRIPT_QUOTE_MAX_CHARS * 2))
+  const body = 'y'.repeat(6000)
+  const renderedBody = renderStreamingTail(body, computeStreamingTextLimit(quoteHtml))
+  const params = buildPlaceholderEditParams('123', 456, renderedBody, quoteHtml, true)
+  assert.ok(params.text.length <= 4096, `combined text length ${params.text.length} exceeds the Telegram limit`)
 })
 
 test('parseVoiceToggleCommand: recognizes /voice on and /voice off case-insensitively', () => {

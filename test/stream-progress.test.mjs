@@ -265,6 +265,41 @@ test('createStatusUpdater.stop is idempotent and safe to call from multiple code
   assert.equal(updater.alive, false)
 })
 
+test('createStatusUpdater.pauseFor skips enough ticks to cover the requested backoff, then resumes', t => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  let status = 'first'
+  const updates = []
+  const updater = createStatusUpdater({ getStatus: () => status, onUpdate: s => updates.push(s), initialStatus: status, intervalMs: 1000 })
+  status = 'second'
+  updater.pauseFor(2500)
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, [])
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, [])
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, [])
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, ['second'])
+  updater.stop()
+})
+
+test('createStatusUpdater.pauseFor calls during an active pause extend it rather than shortening it', t => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  let status = 'first'
+  const updates = []
+  const updater = createStatusUpdater({ getStatus: () => status, onUpdate: s => updates.push(s), initialStatus: status, intervalMs: 1000 })
+  status = 'second'
+  updater.pauseFor(3000)
+  updater.pauseFor(500)
+  t.mock.timers.tick(1000)
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, [], 'a shorter pauseFor call should not cut the longer pause short')
+  t.mock.timers.tick(1000)
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, ['second'])
+  updater.stop()
+})
+
 test('regression: stopping before writing an error message prevents a later stale tick from clobbering it (bridge.mjs catch-path ordering)', t => {
   t.mock.timers.enable({ apis: ['setInterval'] })
   let status = '⏳ Bash: some stale progress line'

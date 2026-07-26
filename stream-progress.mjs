@@ -136,8 +136,13 @@ export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS, { 
 export function createStatusUpdater({ getStatus, onUpdate, initialStatus = DEFAULT_WORKING_STATUS, intervalMs = 3000 }) {
   let alive = true
   let lastSent = initialStatus
+  let skipTicks = 0
   const timer = setInterval(() => {
     if (!alive) return
+    if (skipTicks > 0) {
+      skipTicks -= 1
+      return
+    }
     const latest = getStatus()
     if (latest === lastSent) return
     lastSent = latest
@@ -149,6 +154,11 @@ export function createStatusUpdater({ getStatus, onUpdate, initialStatus = DEFAU
       if (!alive) return
       alive = false
       clearInterval(timer)
+    },
+    // back off after a rate-limit response (e.g. Telegram's 429 retry_after) by
+    // skipping however many ticks roughly cover the requested wait
+    pauseFor(ms) {
+      skipTicks = Math.max(skipTicks, Math.ceil(ms / intervalMs))
     },
     get alive() {
       return alive
