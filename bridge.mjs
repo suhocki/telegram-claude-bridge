@@ -68,7 +68,7 @@ import {
   createTelegramClient,
   fetchWithTimeout,
 } from './lib.mjs'
-import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderStreamingTail } from './markdown-html.mjs'
+import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml } from './markdown-html.mjs'
 import {
   DEFAULT_WORKING_STATUS,
   createLineSplitter,
@@ -530,7 +530,8 @@ async function handleMessage(msg) {
 
   let transcriptQuoteHtml = null
   const progress = createProgressTracker(DEFAULT_WORKING_STATUS, {
-    renderText: buf => renderStreamingTail(buf, computeStreamingTextLimit(transcriptQuoteHtml)),
+    renderTranscript: (historyLines, liveText) =>
+      renderTranscriptHtml(historyLines, liveText, computeStreamingTextLimit(transcriptQuoteHtml)),
   })
 
   async function editPlaceholder({ text, html }) {

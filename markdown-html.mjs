@@ -140,12 +140,59 @@ export function renderStreamingTail(text, limit = 4096) {
   const src = String(text ?? '')
   if (!src.trim()) return null
 
+  // markdownToTelegramHtmlChunks can't always honor `limit`: a single character can
+  // expand past it on its own (e.g. "&" -> "&amp;", or ">" -> a <blockquote> wrapper),
+  // and it has no smaller unit left to split into. So every path here re-checks the
+  // actual rendered length against `limit` before returning, rather than trusting the
+  // chunker's target size — dropping the tail (returning null) is always safe, an
+  // over-limit edit is not.
   const chunks = markdownToTelegramHtmlChunks(src, limit)
   if (!chunks.length) return null
-  if (chunks.length === 1) return chunks[0]
+  if (chunks.length === 1) return chunks[0].length <= limit ? chunks[0] : null
 
-  const tailChunks = markdownToTelegramHtmlChunks(src, limit - STREAM_TAIL_NOTICE.length)
-  return `${STREAM_TAIL_NOTICE}${tailChunks[tailChunks.length - 1]}`
+  const tailLimit = limit - STREAM_TAIL_NOTICE.length
+  // if there isn't even enough room for the notice itself, drop the tail rather than
+  // returning something longer than the caller's limit
+  if (tailLimit <= 0) return null
+  const tailChunks = markdownToTelegramHtmlChunks(src, tailLimit)
+  const tail = tailChunks[tailChunks.length - 1]
+  const combined = `${STREAM_TAIL_NOTICE}${tail}`
+  return combined.length <= limit ? combined : null
+}
+
+// Drops whole lines from the front until what's left fits — always HTML-safe since the
+// input here is already-escaped plain text with no tags that a truncation could break.
+function tailPlainTextLines(text, limit) {
+  // guard against `limit <= 0` explicitly: `slice(-0)` is `slice(0)` in JS (returns the
+  // whole string instead of nothing), so the natural-looking fallback below would
+  // silently violate a zero/negative limit rather than truncating to it
+  if (limit <= 0) return ''
+  if (text.length <= limit) return text
+  const lines = text.split('\n')
+  let acc = ''
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const candidate = acc ? `${lines[i]}\n${acc}` : lines[i]
+    if (candidate.length > limit) break
+    acc = candidate
+  }
+  return acc || lines[lines.length - 1].slice(-limit)
+}
+
+// Renders a progress transcript (frozen history lines + the segment currently streaming
+// in) as Telegram-safe HTML. History lines are escaped-but-not-markdown-parsed plain text
+// (so an arbitrary tool command/path can never be misread as formatting); only the live
+// segment gets full markdown rendering, tail-capped to whatever budget remains after the
+// (always-safe-to-truncate) history.
+export function renderTranscriptHtml(historyLines, liveText, limit = 4096) {
+  const lines = (historyLines ?? []).filter(Boolean)
+  const historyText = tailPlainTextLines(lines.map(escapeHtml).join('\n'), limit)
+
+  const reserved = historyText ? historyText.length + 1 : 0
+  const liveBudget = limit - reserved
+  const liveHtml = liveBudget > 0 && String(liveText ?? '').trim() ? renderStreamingTail(liveText, liveBudget) : null
+
+  if (!historyText) return liveHtml
+  return liveHtml ? `${historyText}\n${liveHtml}` : historyText
 }
 
 export function htmlToPlainFallback(html) {

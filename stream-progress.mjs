@@ -41,6 +41,24 @@ export function extractTextDelta(event) {
   return typeof inner.delta.text === 'string' ? inner.delta.text : null
 }
 
+export function extractThinkingDelta(event) {
+  if (event?.type !== 'stream_event') return null
+  const inner = event.event
+  if (inner?.type !== 'content_block_delta') return null
+  if (inner.delta?.type !== 'thinking_delta') return null
+  return typeof inner.delta.thinking === 'string' ? inner.delta.thinking : null
+}
+
+// tool_result blocks come back as a `user` message once a tool finishes running
+export function extractToolResults(event) {
+  if (event?.type !== 'user') return []
+  const content = event.message?.content
+  if (!Array.isArray(content)) return []
+  return content
+    .filter(block => block?.type === 'tool_result' && typeof block.tool_use_id === 'string')
+    .map(block => ({ id: block.tool_use_id, isError: Boolean(block.is_error) }))
+}
+
 const TOOL_SUMMARY_KEYS = {
   Bash: 'command',
   Edit: 'file_path',
@@ -90,34 +108,97 @@ export function formatRunOutcomeStatus(isError) {
   return isError ? '❌ failed' : '✅ done'
 }
 
-export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS, { renderText } = {}) {
+const HISTORY_LINE_MAX_CHARS = 80
+
+// Builds a running transcript instead of a single overwritten status line: completed
+// tool calls and frozen thinking/text segments accumulate in `historyLines` (each kept
+// brief), while the segment currently streaming in (a thinking block or the reply text)
+// stays fully visible as the "live" tail until the next tool call or kind switch freezes
+// it into history too.
+export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS, { renderTranscript } = {}) {
   const seenToolIds = new Set()
-  let textBuffer = ''
+  const finishedToolIds = new Set()
+  const toolLineIndex = new Map()
+  const historyLines = []
+  let liveText = ''
+  let liveKind = null // 'thinking' | 'text' | null
   let status = initialStatus
   let statusIsHtml = false
   let snapshotCache = { text: status, html: statusIsHtml }
 
+  function freezeLive() {
+    const trimmed = liveText.trim()
+    if (trimmed) {
+      const prefix = liveKind === 'thinking' ? '🤔' : '💬'
+      historyLines.push(`${prefix} ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`)
+    }
+    liveText = ''
+    liveKind = null
+  }
+
+  function liveDisplayText() {
+    if (!liveText) return ''
+    return liveKind === 'thinking' ? `🤔 thinking…\n${liveText}` : liveText
+  }
+
+  function defaultRender() {
+    const preview = liveText.trim()
+      ? liveKind === 'thinking'
+        ? `🤔 ${truncateStatus(liveText.trim(), HISTORY_LINE_MAX_CHARS)}`
+        : formatTextPreviewStatus(liveText)
+      : null
+    return truncateStatus([...historyLines, preview].filter(Boolean).join('\n'), 2000)
+  }
+
   function ingest(event) {
     let changed = false
+
     for (const block of extractToolUseBlocks(event)) {
       if (seenToolIds.has(block.id)) continue
       seenToolIds.add(block.id)
-      status = formatToolStatusLine(block.name, block.input)
-      statusIsHtml = false
+      freezeLive()
+      historyLines.push(formatToolStatusLine(block.name, block.input))
+      toolLineIndex.set(block.id, historyLines.length - 1)
       changed = true
     }
-    const delta = extractTextDelta(event)
-    if (delta) {
-      textBuffer += delta
-      const preview = renderText ? renderText(textBuffer) : formatTextPreviewStatus(textBuffer)
-      if (preview) {
-        status = preview
-        statusIsHtml = Boolean(renderText)
-        changed = true
-      }
+
+    for (const result of extractToolResults(event)) {
+      if (finishedToolIds.has(result.id)) continue
+      const idx = toolLineIndex.get(result.id)
+      if (idx === undefined) continue
+      finishedToolIds.add(result.id)
+      historyLines[idx] = historyLines[idx].replace(/^⏳/, result.isError ? '❌' : '✅')
+      changed = true
     }
-    if (changed) snapshotCache = { text: status, html: statusIsHtml }
-    return changed ? status : null
+
+    const thinkingDelta = extractThinkingDelta(event)
+    if (thinkingDelta) {
+      if (liveKind !== 'thinking') freezeLive()
+      liveKind = 'thinking'
+      liveText += thinkingDelta
+      changed = true
+    }
+
+    const textDelta = extractTextDelta(event)
+    if (textDelta) {
+      if (liveKind !== 'text') freezeLive()
+      liveKind = 'text'
+      liveText += textDelta
+      changed = true
+    }
+
+    if (!changed) return null
+
+    const rendered = renderTranscript ? renderTranscript(historyLines.slice(), liveDisplayText()) : defaultRender()
+    // renderTranscript can legitimately return null (e.g. nothing fits the budget this
+    // tick) — treat that the same as "nothing new to report" rather than letting null
+    // overwrite a perfectly good prior status (and leak downstream into an edit)
+    if (rendered == null) return null
+
+    status = rendered
+    statusIsHtml = Boolean(renderTranscript)
+    snapshotCache = { text: status, html: statusIsHtml }
+    return status
   }
 
   function current() {
