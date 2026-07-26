@@ -59,6 +59,27 @@ export function extractToolResults(event) {
     .map(block => ({ id: block.tool_use_id, isError: Boolean(block.is_error) }))
 }
 
+// The subagent-launching tool is named "Agent" in claude -p's stream-json output
+// (verified against a real captured run — not "Task", despite that being the more
+// commonly assumed name).
+export const SUBAGENT_TOOL_NAME = 'Agent'
+
+// Which tool_use blocks in this event are a subagent call not already being
+// tracked — i.e. ones that need their own placeholder message started.
+export function extractNewSubagentBlocks(event, alreadyTrackedIds) {
+  return extractToolUseBlocks(event).filter(
+    block => block.name === SUBAGENT_TOOL_NAME && !alreadyTrackedIds.has(block.id)
+  )
+}
+
+// Which currently-tracked subagent ids just finished (their tool_result came back) —
+// i.e. ones whose placeholder message should now be deleted.
+export function extractFinishedSubagentIds(event, trackedIds) {
+  return extractToolResults(event)
+    .map(result => result.id)
+    .filter(id => trackedIds.has(id))
+}
+
 const TOOL_SUMMARY_KEYS = {
   Bash: 'command',
   Edit: 'file_path',
@@ -69,7 +90,7 @@ const TOOL_SUMMARY_KEYS = {
   Grep: 'pattern',
   WebFetch: 'url',
   WebSearch: 'query',
-  Task: 'description',
+  Agent: 'description',
 }
 
 const PATH_SUMMARY_TOOLS = new Set(['Edit', 'Write', 'Read', 'NotebookEdit'])
@@ -214,12 +235,28 @@ export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS, { 
   return { ingest, current, snapshot }
 }
 
-export function createStatusUpdater({ getStatus, onUpdate, initialStatus = DEFAULT_WORKING_STATUS, intervalMs = 3000 }) {
+// Shared across every controller writing to the same chat (root + all its parallel
+// subagent placeholders), so a 429 on any one of them pauses every other concurrent
+// edit loop too, instead of leaving siblings to keep hammering an already-rate-limited
+// chat. Plain wall-clock time, not tick-counting, since it's read by independently
+// ticking timers with no shared cadence to count in.
+export function createChatRateGate() {
+  let pausedUntilMs = 0
+  return {
+    isPaused: () => Date.now() < pausedUntilMs,
+    pauseFor(ms) {
+      pausedUntilMs = Math.max(pausedUntilMs, Date.now() + ms)
+    },
+  }
+}
+
+export function createStatusUpdater({ getStatus, onUpdate, initialStatus = DEFAULT_WORKING_STATUS, intervalMs = 3000, sharedGate = null }) {
   let alive = true
   let lastSent = initialStatus
   let skipTicks = 0
   const timer = setInterval(() => {
     if (!alive) return
+    if (sharedGate?.isPaused()) return
     if (skipTicks > 0) {
       skipTicks -= 1
       return
@@ -237,9 +274,15 @@ export function createStatusUpdater({ getStatus, onUpdate, initialStatus = DEFAU
       clearInterval(timer)
     },
     // back off after a rate-limit response (e.g. Telegram's 429 retry_after) by
-    // skipping however many ticks roughly cover the requested wait
+    // skipping however many ticks roughly cover the requested wait, and — if this
+    // updater shares a chat-level gate — pausing every sibling controller too
     pauseFor(ms) {
-      skipTicks = Math.max(skipTicks, Math.ceil(ms / intervalMs))
+      // with a shared gate, route pausing through it exclusively — otherwise this
+      // controller's own skipTicks sits frozen (never decremented) for as long as the
+      // gate itself is paused, then resumes counting down afterwards, roughly doubling
+      // the pause on whichever controller happened to trigger it
+      if (sharedGate) sharedGate.pauseFor(ms)
+      else skipTicks = Math.max(skipTicks, Math.ceil(ms / intervalMs))
     },
     get alive() {
       return alive

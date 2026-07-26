@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   DEFAULT_WORKING_STATUS,
   createLineSplitter,
@@ -9,6 +10,9 @@ import {
   extractTextDelta,
   extractThinkingDelta,
   extractToolResults,
+  extractNewSubagentBlocks,
+  extractFinishedSubagentIds,
+  SUBAGENT_TOOL_NAME,
   summarizeToolInput,
   truncateStatus,
   formatToolStatusLine,
@@ -16,6 +20,7 @@ import {
   formatRunOutcomeStatus,
   createProgressTracker,
   createStatusUpdater,
+  createChatRateGate,
 } from '../stream-progress.mjs'
 
 test('createLineSplitter yields complete lines and buffers partial ones', () => {
@@ -129,6 +134,70 @@ test('extractToolResults returns empty for non-user or malformed events', () => 
   assert.deepEqual(extractToolResults({ type: 'user', message: { content: 'nope' } }), [])
   assert.deepEqual(extractToolResults({ type: 'user', message: { content: [{ type: 'tool_result' }] } }), [])
   assert.deepEqual(extractToolResults(null), [])
+})
+
+test('extractNewSubagentBlocks picks out only Task tool_use blocks not already tracked', () => {
+  const event = {
+    type: 'assistant',
+    message: {
+      content: [
+        { type: 'tool_use', id: 'toolu_1', name: SUBAGENT_TOOL_NAME, input: { description: 'explore repo' } },
+        { type: 'tool_use', id: 'toolu_2', name: 'Bash', input: { command: 'ls' } },
+        { type: 'tool_use', id: 'toolu_3', name: SUBAGENT_TOOL_NAME, input: { description: 'run tests' } },
+      ],
+    },
+  }
+  const result = extractNewSubagentBlocks(event, new Set())
+  assert.deepEqual(result.map(b => b.id), ['toolu_1', 'toolu_3'])
+})
+
+test('extractNewSubagentBlocks skips Task blocks whose id is already tracked', () => {
+  const event = {
+    type: 'assistant',
+    message: {
+      content: [
+        { type: 'tool_use', id: 'toolu_1', name: SUBAGENT_TOOL_NAME, input: { description: 'explore repo' } },
+        { type: 'tool_use', id: 'toolu_2', name: SUBAGENT_TOOL_NAME, input: { description: 'run tests' } },
+      ],
+    },
+  }
+  const result = extractNewSubagentBlocks(event, new Set(['toolu_1']))
+  assert.deepEqual(result.map(b => b.id), ['toolu_2'])
+})
+
+test('extractNewSubagentBlocks accepts a Map (or anything with .has) as the tracked-ids set', () => {
+  const event = {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: SUBAGENT_TOOL_NAME, input: {} }] },
+  }
+  const tracked = new Map([['toolu_1', { messageId: 1 }]])
+  assert.deepEqual(extractNewSubagentBlocks(event, tracked), [])
+})
+
+test('extractNewSubagentBlocks returns empty when there are no tool_use blocks at all', () => {
+  assert.deepEqual(extractNewSubagentBlocks({ type: 'assistant', message: { content: [] } }, new Set()), [])
+  assert.deepEqual(extractNewSubagentBlocks(null, new Set()), [])
+})
+
+test('extractFinishedSubagentIds picks out only tool_result ids that are currently tracked', () => {
+  const event = {
+    type: 'user',
+    message: {
+      content: [
+        { type: 'tool_result', tool_use_id: 'toolu_1', is_error: false },
+        { type: 'tool_result', tool_use_id: 'toolu_untracked', is_error: false },
+        { type: 'tool_result', tool_use_id: 'toolu_3', is_error: true },
+      ],
+    },
+  }
+  const result = extractFinishedSubagentIds(event, new Set(['toolu_1', 'toolu_3']))
+  assert.deepEqual(result, ['toolu_1', 'toolu_3'])
+})
+
+test('extractFinishedSubagentIds returns empty when nothing tracked matches', () => {
+  const event = { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_x' }] } }
+  assert.deepEqual(extractFinishedSubagentIds(event, new Set(['toolu_1'])), [])
+  assert.deepEqual(extractFinishedSubagentIds(null, new Set(['toolu_1'])), [])
 })
 
 test('summarizeToolInput picks the right field per tool and basenames paths', () => {
@@ -423,6 +492,74 @@ test('createStatusUpdater.pauseFor calls during an active pause extend it rather
   updater.stop()
 })
 
+test('createChatRateGate starts unpaused', () => {
+  const gate = createChatRateGate()
+  assert.equal(gate.isPaused(), false)
+})
+
+test('createChatRateGate: pauseFor(ms) pauses immediately and resumes once real time advances past it', t => {
+  t.mock.timers.enable({ apis: ['Date'] })
+  const gate = createChatRateGate()
+  gate.pauseFor(3000)
+  assert.equal(gate.isPaused(), true)
+  t.mock.timers.tick(2999)
+  assert.equal(gate.isPaused(), true)
+  t.mock.timers.tick(2)
+  assert.equal(gate.isPaused(), false)
+})
+
+test('createChatRateGate: a shorter pauseFor call during an active pause does not shorten it', t => {
+  t.mock.timers.enable({ apis: ['Date'] })
+  const gate = createChatRateGate()
+  gate.pauseFor(5000)
+  gate.pauseFor(100)
+  t.mock.timers.tick(4999)
+  assert.equal(gate.isPaused(), true, 'the longer pause should still be in effect')
+  t.mock.timers.tick(2)
+  assert.equal(gate.isPaused(), false)
+})
+
+test('createStatusUpdater: a shared gate that is paused suppresses updates even when the status changes', t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'Date'] })
+  let status = 'first'
+  const updates = []
+  const sharedGate = createChatRateGate()
+  sharedGate.pauseFor(10000)
+  const updater = createStatusUpdater({ getStatus: () => status, onUpdate: s => updates.push(s), initialStatus: status, intervalMs: 1000, sharedGate })
+  status = 'second'
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, [], 'the shared gate being paused should block this controller too')
+  t.mock.timers.tick(9000)
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, ['second'], 'once the shared pause elapses, the pending change should go out')
+  updater.stop()
+})
+
+test('createStatusUpdater.pauseFor also pauses the shared gate, affecting sibling controllers', t => {
+  t.mock.timers.enable({ apis: ['setInterval', 'Date'] })
+  const sharedGate = createChatRateGate()
+  let statusA = 'a1'
+  let statusB = 'b1'
+  const updatesA = []
+  const updatesB = []
+  const updaterA = createStatusUpdater({ getStatus: () => statusA, onUpdate: s => updatesA.push(s), initialStatus: statusA, intervalMs: 1000, sharedGate })
+  const updaterB = createStatusUpdater({ getStatus: () => statusB, onUpdate: s => updatesB.push(s), initialStatus: statusB, intervalMs: 1000, sharedGate })
+
+  updaterA.pauseFor(5000)
+  statusA = 'a2'
+  statusB = 'b2'
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updatesA, [], 'the controller that paused should itself stay paused')
+  assert.deepEqual(updatesB, [], 'a sibling controller sharing the same gate should also be paused')
+
+  t.mock.timers.tick(4000)
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updatesA, ['a2'])
+  assert.deepEqual(updatesB, ['b2'])
+  updaterA.stop()
+  updaterB.stop()
+})
+
 test('regression: stopping before writing an error message prevents a later stale tick from clobbering it (bridge.mjs catch-path ordering)', t => {
   t.mock.timers.enable({ apis: ['setInterval'] })
   let status = '⏳ Bash: some stale progress line'
@@ -432,4 +569,31 @@ test('regression: stopping before writing an error message prevents a later stal
   writes.push('⚠️ bridge error: boom')
   t.mock.timers.tick(10000)
   assert.deepEqual(writes, ['⚠️ bridge error: boom'])
+})
+
+test('regression: the subagent tool is really named "Agent" in a real captured claude -p stream, not "Task"', () => {
+  const fixturePath = new URL('./fixtures/subagent-stream-sample.jsonl', import.meta.url)
+  const raw = readFileSync(fixturePath, 'utf8')
+
+  // hardcoded literally (not via SUBAGENT_TOOL_NAME) so this test still catches it if
+  // that constant is ever wrongly changed back to "Task" or something else
+  assert.ok(raw.includes('"name":"Agent"'), 'the captured stream should contain a literal "name":"Agent" tool_use block')
+  assert.ok(!raw.includes('"name":"Task"'), 'the captured stream should not use "Task" as the subagent tool name')
+
+  const events = raw
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line))
+
+  const tracked = new Set()
+  let spawnedIds = []
+  let finishedIds = []
+  for (const event of events) {
+    spawnedIds.push(...extractNewSubagentBlocks(event, tracked).map(b => b.id))
+    for (const id of spawnedIds) tracked.add(id)
+    finishedIds.push(...extractFinishedSubagentIds(event, tracked))
+  }
+
+  assert.equal(spawnedIds.length, 1, 'exactly one subagent should have been detected in this fixture')
+  assert.deepEqual(finishedIds, spawnedIds, 'the one subagent detected should also be detected as finished')
 })
