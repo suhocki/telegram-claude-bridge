@@ -618,13 +618,14 @@ async function handleMessage(msg) {
   }, 4000)
   await tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {})
 
+  const cancelKeyboard = buildCancelKeyboard(chatId)
   let placeholderId = null
   try {
     const placeholder = await tg('sendMessage', {
       chat_id: chatId,
       text: DEFAULT_WORKING_STATUS,
       reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
-      reply_markup: buildCancelKeyboard(chatId),
+      reply_markup: cancelKeyboard,
     })
     placeholderId = placeholder.message_id
   } catch (e) {
@@ -635,7 +636,7 @@ async function handleMessage(msg) {
   // shared by root + every subagent placeholder below, so a 429 on any one of them
   // backs off every concurrent edit loop writing to this same chat
   const chatRateGate = createChatRateGate()
-  const rootController = createPlaceholderController(chatId, placeholderId, () => transcriptQuoteHtml, chatRateGate, buildCancelKeyboard(chatId))
+  const rootController = createPlaceholderController(chatId, placeholderId, () => transcriptQuoteHtml, chatRateGate, cancelKeyboard)
 
   // one placeholder message per parallel subagent (Agent tool call), keyed by that
   // tool_use's id; created when it starts, deleted once its tool_result comes back
