@@ -1323,6 +1323,14 @@ test('isCallbackQueryAuthorized: does not require a mention, unlike shouldHandle
   assert.equal(isCallbackQueryAuthorized(cq, [], groupsConfig), true)
 })
 
+test('isCallbackQueryAuthorized: fails closed on a missing or malformed message/chat/from', () => {
+  assert.equal(isCallbackQueryAuthorized({ from: { id: 1 } }, ['1'], {}), true, 'no message at all falls back to a private-chat check by userId')
+  assert.equal(isCallbackQueryAuthorized({ from: { id: 1 }, message: {} }, ['1'], {}), true, 'a message with no chat also falls back to the private-chat check')
+  assert.equal(isCallbackQueryAuthorized({ message: { chat: { id: 1, type: 'private' } } }, ['1'], {}), false, 'no from.id can never match an allowed user id')
+  assert.equal(isCallbackQueryAuthorized(null, ['1'], {}), false)
+  assert.equal(isCallbackQueryAuthorized(undefined, ['1'], {}), false)
+})
+
 test('buildBotIdentity: extracts id and username from a getMe result', () => {
   assert.deepEqual(buildBotIdentity({ id: 111, username: 'mybot', is_bot: true }), { id: '111', username: 'mybot' })
 })

@@ -258,9 +258,11 @@ function runClaude(prompt, sessionId, onEvent) {
   })
   child.stderr.on('data', d => (err += d))
 
+  let sigkillTimer = null
   const promise = new Promise((resolve, reject) => {
     child.on('error', reject)
     child.on('close', code => {
+      if (sigkillTimer) clearTimeout(sigkillTimer)
       if (result) return resolve(result)
       reject(new Error(err || `claude exited ${code} with no result event\n${stdoutTail}`))
     })
@@ -273,7 +275,7 @@ function runClaude(prompt, sessionId, onEvent) {
     } catch (e) {
       log('cancel: SIGTERM failed', e.message)
     }
-    setTimeout(() => {
+    sigkillTimer = setTimeout(() => {
       if (child.exitCode == null && child.signalCode == null) {
         try {
           process.kill(-child.pid, 'SIGKILL')
