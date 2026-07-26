@@ -140,16 +140,24 @@ export function renderStreamingTail(text, limit = 4096) {
   const src = String(text ?? '')
   if (!src.trim()) return null
 
+  // markdownToTelegramHtmlChunks can't always honor `limit`: a single character can
+  // expand past it on its own (e.g. "&" -> "&amp;", or ">" -> a <blockquote> wrapper),
+  // and it has no smaller unit left to split into. So every path here re-checks the
+  // actual rendered length against `limit` before returning, rather than trusting the
+  // chunker's target size — dropping the tail (returning null) is always safe, an
+  // over-limit edit is not.
   const chunks = markdownToTelegramHtmlChunks(src, limit)
   if (!chunks.length) return null
-  if (chunks.length === 1) return chunks[0]
+  if (chunks.length === 1) return chunks[0].length <= limit ? chunks[0] : null
 
   const tailLimit = limit - STREAM_TAIL_NOTICE.length
   // if there isn't even enough room for the notice itself, drop the tail rather than
   // returning something longer than the caller's limit
   if (tailLimit <= 0) return null
   const tailChunks = markdownToTelegramHtmlChunks(src, tailLimit)
-  return `${STREAM_TAIL_NOTICE}${tailChunks[tailChunks.length - 1]}`
+  const tail = tailChunks[tailChunks.length - 1]
+  const combined = `${STREAM_TAIL_NOTICE}${tail}`
+  return combined.length <= limit ? combined : null
 }
 
 // Drops whole lines from the front until what's left fits — always HTML-safe since the

@@ -247,6 +247,20 @@ test('regression: renderStreamingTail never returns more than the requested limi
   }
 })
 
+test('regression: renderStreamingTail drops (does not overflow on) a single character whose HTML-escaped form alone exceeds the limit', () => {
+  assert.equal(renderStreamingTail('&', 3), null)
+  assert.equal(renderStreamingTail('&', 1), null)
+})
+
+test('regression: renderStreamingTail drops (does not overflow on) a lone ">" whose blockquote-wrapped rendering alone exceeds the limit', () => {
+  assert.equal(renderStreamingTail('>', 5), null)
+})
+
+test('regression: renderStreamingTail still renders normally-sized content that happens to contain expandable characters', () => {
+  assert.equal(renderStreamingTail('&', 4096), '&amp;')
+  assert.equal(renderStreamingTail('a & b', 4096), 'a &amp; b')
+})
+
 test('renderTranscriptHtml: no history, just renders the live text as markdown HTML', () => {
   assert.equal(renderTranscriptHtml([], '**hi**', 4096), markdownToTelegramHtml('**hi**'))
 })
