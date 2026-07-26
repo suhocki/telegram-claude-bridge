@@ -399,12 +399,16 @@ export function buildTranscriptQuoteHtml(transcript) {
   return `<blockquote>${truncateStatus(escaped, TRANSCRIPT_QUOTE_MAX_CHARS)}</blockquote>`
 }
 
-export function buildPlaceholderEditParams(chatId, messageId, status, quoteHtml) {
-  if (!quoteHtml) return { chat_id: chatId, message_id: messageId, text: status }
+export function buildPlaceholderEditParams(chatId, messageId, status, quoteHtml, isHtml = false) {
+  if (!quoteHtml) {
+    return isHtml
+      ? { chat_id: chatId, message_id: messageId, text: status, parse_mode: 'HTML' }
+      : { chat_id: chatId, message_id: messageId, text: status }
+  }
   return {
     chat_id: chatId,
     message_id: messageId,
-    text: `${quoteHtml}\n${escapeHtml(status)}`,
+    text: `${quoteHtml}\n${isHtml ? status : escapeHtml(status)}`,
     parse_mode: 'HTML',
   }
 }

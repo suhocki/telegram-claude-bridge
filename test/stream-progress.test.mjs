@@ -174,6 +174,56 @@ test('createProgressTracker accumulates text deltas into a growing preview', () 
   assert.equal(tracker.ingest(delta(' world')), '✍️ Hello world')
 })
 
+test('createProgressTracker.snapshot starts as { text: initialStatus, html: false }', () => {
+  const tracker = createProgressTracker()
+  assert.deepEqual(tracker.snapshot(), { text: DEFAULT_WORKING_STATUS, html: false })
+})
+
+test('createProgressTracker.snapshot reflects a tool status line as non-html', () => {
+  const tracker = createProgressTracker()
+  const event = {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
+  }
+  tracker.ingest(event)
+  assert.deepEqual(tracker.snapshot(), { text: '⏳ Bash: npm test…', html: false })
+})
+
+test('createProgressTracker.snapshot returns the same object reference across ingests that report no change', () => {
+  const tracker = createProgressTracker()
+  const before = tracker.snapshot()
+  tracker.ingest({ type: 'system', subtype: 'init' })
+  assert.equal(tracker.snapshot(), before)
+})
+
+test('createProgressTracker: without a renderText option, text deltas still fall back to the truncated plain-text preview', () => {
+  const tracker = createProgressTracker()
+  const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
+  tracker.ingest(delta('Hello world'))
+  assert.deepEqual(tracker.snapshot(), { text: '✍️ Hello world', html: false })
+})
+
+test('createProgressTracker: with a renderText option, text deltas are rendered through it and marked html', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, { renderText: buf => `<b>${buf}</b>` })
+  const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
+  assert.equal(tracker.ingest(delta('Hello')), '<b>Hello</b>')
+  assert.deepEqual(tracker.snapshot(), { text: '<b>Hello</b>', html: true })
+  tracker.ingest(delta(' world'))
+  assert.deepEqual(tracker.snapshot(), { text: '<b>Hello world</b>', html: true })
+})
+
+test('createProgressTracker: a tool status line after a renderText text preview resets html back to false', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, { renderText: buf => `<b>${buf}</b>` })
+  const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
+  tracker.ingest(delta('Hello'))
+  const toolEvent = {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
+  }
+  tracker.ingest(toolEvent)
+  assert.deepEqual(tracker.snapshot(), { text: '⏳ Bash: npm test…', html: false })
+})
+
 test('createProgressTracker ignores events with nothing new to report', () => {
   const tracker = createProgressTracker()
   assert.equal(tracker.ingest({ type: 'system', subtype: 'init' }), null)

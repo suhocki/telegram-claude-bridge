@@ -67,7 +67,7 @@ import {
   createTelegramClient,
   fetchWithTimeout,
 } from './lib.mjs'
-import { markdownToTelegramHtmlChunks, htmlToPlainFallback } from './markdown-html.mjs'
+import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderStreamingTail } from './markdown-html.mjs'
 import {
   DEFAULT_WORKING_STATUS,
   createLineSplitter,
@@ -97,6 +97,9 @@ const GET_UPDATES_POLL_TIMEOUT_S = 30
 const GET_UPDATES_FETCH_TIMEOUT_MS = 50000
 const FILE_TRANSFER_TIMEOUT_MS = 60000
 const TTS_REQUEST_TIMEOUT_MS = 30000
+// Telegram rate-limits editMessageText to roughly 1/sec per chat; this stays safely under
+// that while still feeling "live" for the growing-text placeholder preview.
+const STREAM_EDIT_INTERVAL_MS = 1300
 
 const voiceTranscriptionConfig = {
   whisperBin: DEFAULT_WHISPER_BIN,
@@ -525,11 +528,11 @@ async function handleMessage(msg) {
   }
 
   let transcriptQuoteHtml = null
-  const progress = createProgressTracker()
+  const progress = createProgressTracker(DEFAULT_WORKING_STATUS, { renderText: renderStreamingTail })
 
-  async function editPlaceholder(status) {
+  async function editPlaceholder({ text, html }) {
     if (placeholderId == null) return
-    const params = buildPlaceholderEditParams(chatId, placeholderId, status, transcriptQuoteHtml)
+    const params = buildPlaceholderEditParams(chatId, placeholderId, text, transcriptQuoteHtml, html)
     try {
       await tg('editMessageText', params)
     } catch (e) {
@@ -545,12 +548,14 @@ async function handleMessage(msg) {
   }
 
   const statusUpdater = createStatusUpdater({
-    getStatus: () => progress.current(),
+    getStatus: () => progress.snapshot(),
     onUpdate: latestStatus => editPlaceholder(latestStatus),
+    initialStatus: progress.snapshot(),
+    intervalMs: STREAM_EDIT_INTERVAL_MS,
   })
   const stopStatusUpdates = async finalStatus => {
     statusUpdater.stop()
-    await editPlaceholder(finalStatus)
+    await editPlaceholder({ text: finalStatus, html: false })
   }
 
   let attachmentResult = null
@@ -568,7 +573,7 @@ async function handleMessage(msg) {
     } else {
       promptText = buildVoiceTranscriptText(transcription.text)
       transcriptQuoteHtml = buildTranscriptQuoteHtml(transcription.text)
-      if (transcriptQuoteHtml) editPlaceholder(progress.current())
+      if (transcriptQuoteHtml) editPlaceholder(progress.snapshot())
     }
   }
 

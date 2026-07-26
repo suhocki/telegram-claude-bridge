@@ -134,6 +134,20 @@ export function markdownToTelegramHtmlChunks(text, limit = 4096) {
   return chunks
 }
 
+const STREAM_TAIL_NOTICE = '⋯ (showing latest part)\n\n'
+
+export function renderStreamingTail(text, limit = 4096) {
+  const src = String(text ?? '')
+  if (!src.trim()) return null
+
+  const chunks = markdownToTelegramHtmlChunks(src, limit)
+  if (!chunks.length) return null
+  if (chunks.length === 1) return chunks[0]
+
+  const tailChunks = markdownToTelegramHtmlChunks(src, limit - STREAM_TAIL_NOTICE.length)
+  return `${STREAM_TAIL_NOTICE}${tailChunks[tailChunks.length - 1]}`
+}
+
 export function htmlToPlainFallback(html) {
   return String(html ?? '')
     .replace(/<[^>]*>/g, '')

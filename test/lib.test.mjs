@@ -1044,6 +1044,24 @@ test('buildPlaceholderEditParams: with a quote, prepends it and escapes the stat
   })
 })
 
+test('buildPlaceholderEditParams: without a quote but isHtml=true, passes the status through with parse_mode HTML and no escaping', () => {
+  assert.deepEqual(buildPlaceholderEditParams('123', 456, '<b>hi</b>', null, true), {
+    chat_id: '123',
+    message_id: 456,
+    text: '<b>hi</b>',
+    parse_mode: 'HTML',
+  })
+})
+
+test('buildPlaceholderEditParams: with a quote and isHtml=true, prepends the quote without escaping the already-safe HTML status', () => {
+  assert.deepEqual(buildPlaceholderEditParams('123', 456, '<b>hi</b>', '<blockquote>quote</blockquote>', true), {
+    chat_id: '123',
+    message_id: 456,
+    text: '<blockquote>quote</blockquote>\n<b>hi</b>',
+    parse_mode: 'HTML',
+  })
+})
+
 test('parseVoiceToggleCommand: recognizes /voice on and /voice off case-insensitively', () => {
   assert.equal(parseVoiceToggleCommand('/voice on'), 'on')
   assert.equal(parseVoiceToggleCommand('/voice OFF'), 'off')

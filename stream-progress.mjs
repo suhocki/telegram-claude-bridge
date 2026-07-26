@@ -90,10 +90,12 @@ export function formatRunOutcomeStatus(isError) {
   return isError ? '❌ failed' : '✅ done'
 }
 
-export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS) {
+export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS, { renderText } = {}) {
   const seenToolIds = new Set()
   let textBuffer = ''
   let status = initialStatus
+  let statusIsHtml = false
+  let snapshotCache = { text: status, html: statusIsHtml }
 
   function ingest(event) {
     let changed = false
@@ -101,17 +103,20 @@ export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS) {
       if (seenToolIds.has(block.id)) continue
       seenToolIds.add(block.id)
       status = formatToolStatusLine(block.name, block.input)
+      statusIsHtml = false
       changed = true
     }
     const delta = extractTextDelta(event)
     if (delta) {
       textBuffer += delta
-      const preview = formatTextPreviewStatus(textBuffer)
+      const preview = renderText ? renderText(textBuffer) : formatTextPreviewStatus(textBuffer)
       if (preview) {
         status = preview
+        statusIsHtml = Boolean(renderText)
         changed = true
       }
     }
+    if (changed) snapshotCache = { text: status, html: statusIsHtml }
     return changed ? status : null
   }
 
@@ -119,7 +124,13 @@ export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS) {
     return status
   }
 
-  return { ingest, current }
+  // stable object reference across ticks unless ingest() actually changed something,
+  // so createStatusUpdater's `latest === lastSent` dedupe keeps working with this shape too
+  function snapshot() {
+    return snapshotCache
+  }
+
+  return { ingest, current, snapshot }
 }
 
 export function createStatusUpdater({ getStatus, onUpdate, initialStatus = DEFAULT_WORKING_STATUS, intervalMs = 3000 }) {
