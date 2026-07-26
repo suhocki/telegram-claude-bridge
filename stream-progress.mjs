@@ -90,10 +90,12 @@ export function formatRunOutcomeStatus(isError) {
   return isError ? '❌ failed' : '✅ done'
 }
 
-export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS) {
+export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS, { renderText } = {}) {
   const seenToolIds = new Set()
   let textBuffer = ''
   let status = initialStatus
+  let statusIsHtml = false
+  let snapshotCache = { text: status, html: statusIsHtml }
 
   function ingest(event) {
     let changed = false
@@ -101,17 +103,20 @@ export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS) {
       if (seenToolIds.has(block.id)) continue
       seenToolIds.add(block.id)
       status = formatToolStatusLine(block.name, block.input)
+      statusIsHtml = false
       changed = true
     }
     const delta = extractTextDelta(event)
     if (delta) {
       textBuffer += delta
-      const preview = formatTextPreviewStatus(textBuffer)
+      const preview = renderText ? renderText(textBuffer) : formatTextPreviewStatus(textBuffer)
       if (preview) {
         status = preview
+        statusIsHtml = Boolean(renderText)
         changed = true
       }
     }
+    if (changed) snapshotCache = { text: status, html: statusIsHtml }
     return changed ? status : null
   }
 
@@ -119,14 +124,25 @@ export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS) {
     return status
   }
 
-  return { ingest, current }
+  // stable object reference across ticks unless ingest() actually changed something,
+  // so createStatusUpdater's `latest === lastSent` dedupe keeps working with this shape too
+  function snapshot() {
+    return snapshotCache
+  }
+
+  return { ingest, current, snapshot }
 }
 
 export function createStatusUpdater({ getStatus, onUpdate, initialStatus = DEFAULT_WORKING_STATUS, intervalMs = 3000 }) {
   let alive = true
   let lastSent = initialStatus
+  let skipTicks = 0
   const timer = setInterval(() => {
     if (!alive) return
+    if (skipTicks > 0) {
+      skipTicks -= 1
+      return
+    }
     const latest = getStatus()
     if (latest === lastSent) return
     lastSent = latest
@@ -138,6 +154,11 @@ export function createStatusUpdater({ getStatus, onUpdate, initialStatus = DEFAU
       if (!alive) return
       alive = false
       clearInterval(timer)
+    },
+    // back off after a rate-limit response (e.g. Telegram's 429 retry_after) by
+    // skipping however many ticks roughly cover the requested wait
+    pauseFor(ms) {
+      skipTicks = Math.max(skipTicks, Math.ceil(ms / intervalMs))
     },
     get alive() {
       return alive

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { markdownToTelegramHtml, markdownToTelegramHtmlChunks, htmlToPlainFallback } from '../markdown-html.mjs'
+import { markdownToTelegramHtml, markdownToTelegramHtmlChunks, htmlToPlainFallback, renderStreamingTail } from '../markdown-html.mjs'
 
 test('markdownToTelegramHtml: escapes bare &, <, > outside any markdown construct', () => {
   assert.equal(markdownToTelegramHtml('1 < 2 && 3 > 1'), '1 &lt; 2 &amp;&amp; 3 &gt; 1')
@@ -203,4 +203,38 @@ test('markdownToTelegramHtmlChunks: hard-splitting an over-long last line of a f
 test('markdownToTelegramHtmlChunks: a message that is only an empty fenced code block still yields one chunk instead of none', () => {
   const chunks = markdownToTelegramHtmlChunks('```\n```', 4096)
   assert.deepEqual(chunks, ['<pre></pre>'])
+})
+
+test('renderStreamingTail: empty/null/undefined/whitespace-only input yields null', () => {
+  assert.equal(renderStreamingTail(''), null)
+  assert.equal(renderStreamingTail(null), null)
+  assert.equal(renderStreamingTail(undefined), null)
+  assert.equal(renderStreamingTail('   \n  '), null)
+})
+
+test('renderStreamingTail: text under the limit renders in full with no truncation notice', () => {
+  const text = 'Hello **world**, this is *streaming*.'
+  assert.equal(renderStreamingTail(text, 4096), markdownToTelegramHtml(text))
+})
+
+test('renderStreamingTail: text over the limit is truncated to a tail chunk under the limit, prefixed with a notice', () => {
+  const text = Array.from({ length: 200 }, (_, i) => `line ${i} ${'x'.repeat(30)}`).join('\n')
+  const result = renderStreamingTail(text, 4096)
+  assert.ok(result.length <= 4096, `result length ${result.length} exceeds the limit`)
+  assert.ok(result.startsWith('⋯'), 'truncated tail should be prefixed with a notice')
+  assert.ok(result.includes(`line 199`), 'tail should carry the most recent content')
+  assert.ok(!result.includes('line 0 '), 'tail should not carry the earliest content')
+})
+
+test('renderStreamingTail: an unclosed fenced code block mid-stream renders as valid, balanced HTML', () => {
+  const text = 'intro\n```js\nconst a = 1\nconst b = 2'
+  const result = renderStreamingTail(text, 4096)
+  assert.ok(result.includes('<pre><code class="language-js">'))
+  assert.ok(result.includes('</code></pre>'))
+})
+
+test('renderStreamingTail: an unclosed inline bold/italic marker mid-stream stays literal instead of producing an unclosed tag', () => {
+  const result = renderStreamingTail('this is **not yet closed', 4096)
+  assert.ok(!result.includes('<b>'), 'should not open a <b> tag without its closing marker')
+  assert.ok(result.includes('**not yet closed'))
 })

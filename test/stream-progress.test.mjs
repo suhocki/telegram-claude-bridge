@@ -174,6 +174,56 @@ test('createProgressTracker accumulates text deltas into a growing preview', () 
   assert.equal(tracker.ingest(delta(' world')), '✍️ Hello world')
 })
 
+test('createProgressTracker.snapshot starts as { text: initialStatus, html: false }', () => {
+  const tracker = createProgressTracker()
+  assert.deepEqual(tracker.snapshot(), { text: DEFAULT_WORKING_STATUS, html: false })
+})
+
+test('createProgressTracker.snapshot reflects a tool status line as non-html', () => {
+  const tracker = createProgressTracker()
+  const event = {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
+  }
+  tracker.ingest(event)
+  assert.deepEqual(tracker.snapshot(), { text: '⏳ Bash: npm test…', html: false })
+})
+
+test('createProgressTracker.snapshot returns the same object reference across ingests that report no change', () => {
+  const tracker = createProgressTracker()
+  const before = tracker.snapshot()
+  tracker.ingest({ type: 'system', subtype: 'init' })
+  assert.equal(tracker.snapshot(), before)
+})
+
+test('createProgressTracker: without a renderText option, text deltas still fall back to the truncated plain-text preview', () => {
+  const tracker = createProgressTracker()
+  const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
+  tracker.ingest(delta('Hello world'))
+  assert.deepEqual(tracker.snapshot(), { text: '✍️ Hello world', html: false })
+})
+
+test('createProgressTracker: with a renderText option, text deltas are rendered through it and marked html', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, { renderText: buf => `<b>${buf}</b>` })
+  const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
+  assert.equal(tracker.ingest(delta('Hello')), '<b>Hello</b>')
+  assert.deepEqual(tracker.snapshot(), { text: '<b>Hello</b>', html: true })
+  tracker.ingest(delta(' world'))
+  assert.deepEqual(tracker.snapshot(), { text: '<b>Hello world</b>', html: true })
+})
+
+test('createProgressTracker: a tool status line after a renderText text preview resets html back to false', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, { renderText: buf => `<b>${buf}</b>` })
+  const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
+  tracker.ingest(delta('Hello'))
+  const toolEvent = {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
+  }
+  tracker.ingest(toolEvent)
+  assert.deepEqual(tracker.snapshot(), { text: '⏳ Bash: npm test…', html: false })
+})
+
 test('createProgressTracker ignores events with nothing new to report', () => {
   const tracker = createProgressTracker()
   assert.equal(tracker.ingest({ type: 'system', subtype: 'init' }), null)
@@ -213,6 +263,41 @@ test('createStatusUpdater.stop is idempotent and safe to call from multiple code
   updater.stop()
   assert.doesNotThrow(() => updater.stop())
   assert.equal(updater.alive, false)
+})
+
+test('createStatusUpdater.pauseFor skips enough ticks to cover the requested backoff, then resumes', t => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  let status = 'first'
+  const updates = []
+  const updater = createStatusUpdater({ getStatus: () => status, onUpdate: s => updates.push(s), initialStatus: status, intervalMs: 1000 })
+  status = 'second'
+  updater.pauseFor(2500)
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, [])
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, [])
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, [])
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, ['second'])
+  updater.stop()
+})
+
+test('createStatusUpdater.pauseFor calls during an active pause extend it rather than shortening it', t => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  let status = 'first'
+  const updates = []
+  const updater = createStatusUpdater({ getStatus: () => status, onUpdate: s => updates.push(s), initialStatus: status, intervalMs: 1000 })
+  status = 'second'
+  updater.pauseFor(3000)
+  updater.pauseFor(500)
+  t.mock.timers.tick(1000)
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, [], 'a shorter pauseFor call should not cut the longer pause short')
+  t.mock.timers.tick(1000)
+  t.mock.timers.tick(1000)
+  assert.deepEqual(updates, ['second'])
+  updater.stop()
 })
 
 test('regression: stopping before writing an error message prevents a later stale tick from clobbering it (bridge.mjs catch-path ordering)', t => {
