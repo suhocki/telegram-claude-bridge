@@ -144,8 +144,43 @@ export function renderStreamingTail(text, limit = 4096) {
   if (!chunks.length) return null
   if (chunks.length === 1) return chunks[0]
 
-  const tailChunks = markdownToTelegramHtmlChunks(src, limit - STREAM_TAIL_NOTICE.length)
+  const tailLimit = limit - STREAM_TAIL_NOTICE.length
+  // if there isn't even enough room for the notice itself, drop the tail rather than
+  // returning something longer than the caller's limit
+  if (tailLimit <= 0) return null
+  const tailChunks = markdownToTelegramHtmlChunks(src, tailLimit)
   return `${STREAM_TAIL_NOTICE}${tailChunks[tailChunks.length - 1]}`
+}
+
+// Drops whole lines from the front until what's left fits — always HTML-safe since the
+// input here is already-escaped plain text with no tags that a truncation could break.
+function tailPlainTextLines(text, limit) {
+  if (text.length <= limit) return text
+  const lines = text.split('\n')
+  let acc = ''
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const candidate = acc ? `${lines[i]}\n${acc}` : lines[i]
+    if (candidate.length > limit) break
+    acc = candidate
+  }
+  return acc || lines[lines.length - 1].slice(-limit)
+}
+
+// Renders a progress transcript (frozen history lines + the segment currently streaming
+// in) as Telegram-safe HTML. History lines are escaped-but-not-markdown-parsed plain text
+// (so an arbitrary tool command/path can never be misread as formatting); only the live
+// segment gets full markdown rendering, tail-capped to whatever budget remains after the
+// (always-safe-to-truncate) history.
+export function renderTranscriptHtml(historyLines, liveText, limit = 4096) {
+  const lines = (historyLines ?? []).filter(Boolean)
+  const historyText = tailPlainTextLines(lines.map(escapeHtml).join('\n'), limit)
+
+  const reserved = historyText ? historyText.length + 1 : 0
+  const liveBudget = limit - reserved
+  const liveHtml = liveBudget > 0 && String(liveText ?? '').trim() ? renderStreamingTail(liveText, liveBudget) : null
+
+  if (!historyText) return liveHtml
+  return liveHtml ? `${historyText}\n${liveHtml}` : historyText
 }
 
 export function htmlToPlainFallback(html) {

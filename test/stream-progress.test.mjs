@@ -7,6 +7,8 @@ import {
   isResultEvent,
   extractToolUseBlocks,
   extractTextDelta,
+  extractThinkingDelta,
+  extractToolResults,
   summarizeToolInput,
   truncateStatus,
   formatToolStatusLine,
@@ -89,6 +91,46 @@ test('extractTextDelta ignores other delta/event types', () => {
   assert.equal(extractTextDelta(null), null)
 })
 
+test('extractThinkingDelta reads extended-thinking deltas from partial-message stream events', () => {
+  const event = { type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'Let me check' } } }
+  assert.equal(extractThinkingDelta(event), 'Let me check')
+})
+
+test('extractThinkingDelta ignores other delta/event types', () => {
+  assert.equal(extractThinkingDelta({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'hi' } } }), null)
+  assert.equal(extractThinkingDelta({ type: 'stream_event', event: { type: 'message_start' } }), null)
+  assert.equal(extractThinkingDelta({ type: 'assistant' }), null)
+  assert.equal(extractThinkingDelta(null), null)
+})
+
+test('extractToolResults reads tool_result blocks off a user message', () => {
+  const event = { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'hi', is_error: false }] } }
+  assert.deepEqual(extractToolResults(event), [{ id: 'toolu_1', isError: false }])
+})
+
+test('extractToolResults reads multiple parallel tool_result blocks and defaults is_error to false', () => {
+  const event = {
+    type: 'user',
+    message: {
+      content: [
+        { type: 'tool_result', tool_use_id: 'toolu_1', content: 'hi' },
+        { type: 'tool_result', tool_use_id: 'toolu_2', content: 'boom', is_error: true },
+      ],
+    },
+  }
+  assert.deepEqual(extractToolResults(event), [
+    { id: 'toolu_1', isError: false },
+    { id: 'toolu_2', isError: true },
+  ])
+})
+
+test('extractToolResults returns empty for non-user or malformed events', () => {
+  assert.deepEqual(extractToolResults({ type: 'assistant' }), [])
+  assert.deepEqual(extractToolResults({ type: 'user', message: { content: 'nope' } }), [])
+  assert.deepEqual(extractToolResults({ type: 'user', message: { content: [{ type: 'tool_result' }] } }), [])
+  assert.deepEqual(extractToolResults(null), [])
+})
+
 test('summarizeToolInput picks the right field per tool and basenames paths', () => {
   assert.equal(summarizeToolInput('Bash', { command: 'npm test' }), 'npm test')
   assert.equal(summarizeToolInput('Edit', { file_path: '/repo/src/foo.py' }), 'foo.py')
@@ -147,7 +189,7 @@ test('createProgressTracker reports a new status line on a fresh tool_use block'
   assert.equal(tracker.current(), '⏳ Bash: npm test…')
 })
 
-test('createProgressTracker does not re-announce a tool_use block already seen', () => {
+test('createProgressTracker does not re-announce a tool_use block already seen, and appends (not replaces) on a new one', () => {
   const tracker = createProgressTracker()
   const event = {
     type: 'assistant',
@@ -164,7 +206,63 @@ test('createProgressTracker does not re-announce a tool_use block already seen',
       ],
     },
   }
-  assert.equal(tracker.ingest(grown), '⏳ Edit: foo.py…')
+  assert.equal(tracker.ingest(grown), '⏳ Bash: npm test…\n⏳ Edit: foo.py…')
+})
+
+test('createProgressTracker: a tool_result marks its history line done (✅) or failed (❌)', () => {
+  const tracker = createProgressTracker()
+  tracker.ingest({
+    type: 'assistant',
+    message: {
+      content: [
+        { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } },
+        { type: 'tool_use', id: 'toolu_2', name: 'Edit', input: { file_path: '/a/foo.py' } },
+      ],
+    },
+  })
+  const status = tracker.ingest({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok', is_error: false }] } })
+  assert.equal(status, '✅ Bash: npm test…\n⏳ Edit: foo.py…')
+  const status2 = tracker.ingest({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_2', content: 'boom', is_error: true }] } })
+  assert.equal(status2, '✅ Bash: npm test…\n❌ Edit: foo.py…')
+})
+
+test('createProgressTracker: a tool_result for an unknown or already-finished id is ignored', () => {
+  const tracker = createProgressTracker()
+  tracker.ingest({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
+  })
+  assert.equal(tracker.ingest({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_unknown', is_error: false }] } }), null)
+  tracker.ingest({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: false }] } })
+  assert.equal(tracker.ingest({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: true }] } }), null)
+  assert.equal(tracker.current(), '✅ Bash: npm test…')
+})
+
+test('createProgressTracker: a thinking delta accumulates as a live preview distinct from the text preview', () => {
+  const tracker = createProgressTracker()
+  const thinking = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: text } } })
+  assert.equal(tracker.ingest(thinking('Let me check')), '🤔 Let me check')
+  assert.equal(tracker.ingest(thinking(' the tests')), '🤔 Let me check the tests')
+})
+
+test('createProgressTracker: switching from thinking to text freezes the thinking gist into history', () => {
+  const tracker = createProgressTracker()
+  const thinking = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: text } } })
+  const text = t => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: t } } })
+  tracker.ingest(thinking('Let me check the tests'))
+  const status = tracker.ingest(text('All good'))
+  assert.equal(status, '🤔 Let me check the tests\n✍️ All good')
+})
+
+test('createProgressTracker: a tool call after live text freezes it into history with a 💬 prefix', () => {
+  const tracker = createProgressTracker()
+  const text = t => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: t } } })
+  tracker.ingest(text('Looking into it'))
+  const status = tracker.ingest({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
+  })
+  assert.equal(status, '💬 Looking into it\n⏳ Bash: npm test…')
 })
 
 test('createProgressTracker accumulates text deltas into a growing preview', () => {
@@ -196,24 +294,28 @@ test('createProgressTracker.snapshot returns the same object reference across in
   assert.equal(tracker.snapshot(), before)
 })
 
-test('createProgressTracker: without a renderText option, text deltas still fall back to the truncated plain-text preview', () => {
+test('createProgressTracker: without a renderTranscript option, text deltas still fall back to the truncated plain-text preview', () => {
   const tracker = createProgressTracker()
   const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
   tracker.ingest(delta('Hello world'))
   assert.deepEqual(tracker.snapshot(), { text: '✍️ Hello world', html: false })
 })
 
-test('createProgressTracker: with a renderText option, text deltas are rendered through it and marked html', () => {
-  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, { renderText: buf => `<b>${buf}</b>` })
+test('createProgressTracker: with a renderTranscript option, changes are rendered through it (history, live) and marked html', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
+    renderTranscript: (history, live) => `[${history.join('|')}]<b>${live}</b>`,
+  })
   const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
-  assert.equal(tracker.ingest(delta('Hello')), '<b>Hello</b>')
-  assert.deepEqual(tracker.snapshot(), { text: '<b>Hello</b>', html: true })
+  assert.equal(tracker.ingest(delta('Hello')), '[]<b>Hello</b>')
+  assert.deepEqual(tracker.snapshot(), { text: '[]<b>Hello</b>', html: true })
   tracker.ingest(delta(' world'))
-  assert.deepEqual(tracker.snapshot(), { text: '<b>Hello world</b>', html: true })
+  assert.deepEqual(tracker.snapshot(), { text: '[]<b>Hello world</b>', html: true })
 })
 
-test('createProgressTracker: a tool status line after a renderText text preview resets html back to false', () => {
-  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, { renderText: buf => `<b>${buf}</b>` })
+test('createProgressTracker: a tool_use event freezes live text into history (passed to renderTranscript) and stays html=true', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
+    renderTranscript: (history, live) => JSON.stringify({ history, live }),
+  })
   const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
   tracker.ingest(delta('Hello'))
   const toolEvent = {
@@ -221,7 +323,9 @@ test('createProgressTracker: a tool status line after a renderText text preview 
     message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
   }
   tracker.ingest(toolEvent)
-  assert.deepEqual(tracker.snapshot(), { text: '⏳ Bash: npm test…', html: false })
+  const snap = tracker.snapshot()
+  assert.equal(snap.html, true)
+  assert.deepEqual(JSON.parse(snap.text), { history: ['💬 Hello', '⏳ Bash: npm test…'], live: '' })
 })
 
 test('createProgressTracker ignores events with nothing new to report', () => {

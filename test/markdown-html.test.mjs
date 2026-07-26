@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { markdownToTelegramHtml, markdownToTelegramHtmlChunks, htmlToPlainFallback, renderStreamingTail } from '../markdown-html.mjs'
+import { markdownToTelegramHtml, markdownToTelegramHtmlChunks, htmlToPlainFallback, renderStreamingTail, renderTranscriptHtml } from '../markdown-html.mjs'
 
 test('markdownToTelegramHtml: escapes bare &, <, > outside any markdown construct', () => {
   assert.equal(markdownToTelegramHtml('1 < 2 && 3 > 1'), '1 &lt; 2 &amp;&amp; 3 &gt; 1')
@@ -237,4 +237,62 @@ test('renderStreamingTail: an unclosed inline bold/italic marker mid-stream stay
   const result = renderStreamingTail('this is **not yet closed', 4096)
   assert.ok(!result.includes('<b>'), 'should not open a <b> tag without its closing marker')
   assert.ok(result.includes('**not yet closed'))
+})
+
+test('regression: renderStreamingTail never returns more than the requested limit even when the limit is smaller than the truncation notice itself', () => {
+  const longSingleLine = Array.from({ length: 200 }, (_, i) => `word${i}`).join(' ')
+  for (const limit of [1, 5, 10, 26, 27, 28]) {
+    const result = renderStreamingTail(longSingleLine, limit)
+    assert.ok(result === null || result.length <= limit, `limit ${limit}: result length ${result?.length} exceeds it`)
+  }
+})
+
+test('renderTranscriptHtml: no history, just renders the live text as markdown HTML', () => {
+  assert.equal(renderTranscriptHtml([], '**hi**', 4096), markdownToTelegramHtml('**hi**'))
+})
+
+test('renderTranscriptHtml: no live text, joins history lines as escaped plain text (no markdown interpretation)', () => {
+  const result = renderTranscriptHtml(['⏳ Bash: echo **not bold**…', '✅ Read: foo.py…'], '', 4096)
+  assert.equal(result, '⏳ Bash: echo **not bold**…\n✅ Read: foo.py…')
+  assert.ok(!result.includes('<b>'), 'history lines must not get markdown-interpreted')
+})
+
+test('renderTranscriptHtml: history special characters are HTML-escaped', () => {
+  const result = renderTranscriptHtml(['⏳ Bash: echo <script>&"</script>…'], '', 4096)
+  assert.equal(result, '⏳ Bash: echo &lt;script&gt;&amp;"&lt;/script&gt;…')
+})
+
+test('renderTranscriptHtml: both history and live text combine on separate lines, history escaped-plain, live markdown-rendered', () => {
+  const result = renderTranscriptHtml(['⏳ Bash: npm test…'], '**done**', 4096)
+  assert.equal(result, '⏳ Bash: npm test…\n<b>done</b>')
+})
+
+test('renderTranscriptHtml: falsy history entries are filtered out', () => {
+  const result = renderTranscriptHtml(['⏳ Bash: npm test…', '', null, undefined], '', 4096)
+  assert.equal(result, '⏳ Bash: npm test…')
+})
+
+test('renderTranscriptHtml: empty/whitespace-only live text with history contributes nothing extra', () => {
+  const result = renderTranscriptHtml(['⏳ Bash: npm test…'], '   ', 4096)
+  assert.equal(result, '⏳ Bash: npm test…')
+})
+
+test('renderTranscriptHtml: no history and no live text returns null', () => {
+  assert.equal(renderTranscriptHtml([], '', 4096), null)
+  assert.equal(renderTranscriptHtml(undefined, undefined, 4096), null)
+})
+
+test('renderTranscriptHtml: reserves space for history before rendering the live tail, so the combined output never exceeds the limit', () => {
+  const history = Array.from({ length: 60 }, (_, i) => `⏳ Bash: step ${i}…`)
+  const live = Array.from({ length: 200 }, (_, i) => `word${i}`).join(' ')
+  const result = renderTranscriptHtml(history, live, 500)
+  assert.ok(result.length <= 500, `combined length ${result.length} exceeds the 500 limit`)
+})
+
+test('renderTranscriptHtml: when history alone already fills the limit, it is tail-truncated by whole lines and the live text is dropped', () => {
+  const history = Array.from({ length: 50 }, (_, i) => `⏳ Bash: a fairly long step description number ${i}…`)
+  const result = renderTranscriptHtml(history, 'this should not appear', 200)
+  assert.ok(result.length <= 200, `result length ${result.length} exceeds the 200 limit`)
+  assert.ok(!result.includes('this should not appear'), 'live text should be dropped when there is no budget left for it')
+  assert.ok(result.includes('number 49'), 'the tail should keep the most recent history lines')
 })
