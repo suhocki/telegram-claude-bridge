@@ -296,6 +296,14 @@ test('renderTranscriptHtml: no history and no live text returns null', () => {
   assert.equal(renderTranscriptHtml(undefined, undefined, 4096), null)
 })
 
+test('regression: renderTranscriptHtml with limit 0 (or negative) never returns text longer than the limit', () => {
+  const history = ['a very long history line that would normally need truncating down to size']
+  for (const limit of [0, -1, -100]) {
+    const result = renderTranscriptHtml(history, 'some live text too', limit)
+    assert.ok(result === null || result.length <= Math.max(limit, 0), `limit ${limit}: got ${JSON.stringify(result)}`)
+  }
+})
+
 test('renderTranscriptHtml: reserves space for history before rendering the live tail, so the combined output never exceeds the limit', () => {
   const history = Array.from({ length: 60 }, (_, i) => `⏳ Bash: step ${i}…`)
   const live = Array.from({ length: 200 }, (_, i) => `word${i}`).join(' ')

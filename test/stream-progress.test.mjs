@@ -334,6 +334,25 @@ test('createProgressTracker ignores events with nothing new to report', () => {
   assert.equal(tracker.ingest({ type: 'result', result: 'done' }), null)
 })
 
+test('regression: a renderTranscript that returns null does not clobber the prior status with null (and reports no change)', () => {
+  let renderNull = false
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
+    renderTranscript: (history, live) => (renderNull ? null : `[${history.join('|')}]${live}`),
+  })
+  const toolEvent = {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
+  }
+  const first = tracker.ingest(toolEvent)
+  assert.equal(first, '[⏳ Bash: npm test…]')
+
+  renderNull = true
+  const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
+  const second = tracker.ingest(delta('some text'))
+  assert.equal(second, null, 'ingest should report no visible change when the renderer has nothing to show')
+  assert.deepEqual(tracker.snapshot(), { text: first, html: true }, 'the previous good status must survive a null render')
+})
+
 test('createStatusUpdater fires onUpdate on an interval while the status changes', t => {
   t.mock.timers.enable({ apis: ['setInterval'] })
   let status = 'first'

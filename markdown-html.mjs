@@ -163,6 +163,10 @@ export function renderStreamingTail(text, limit = 4096) {
 // Drops whole lines from the front until what's left fits — always HTML-safe since the
 // input here is already-escaped plain text with no tags that a truncation could break.
 function tailPlainTextLines(text, limit) {
+  // guard against `limit <= 0` explicitly: `slice(-0)` is `slice(0)` in JS (returns the
+  // whole string instead of nothing), so the natural-looking fallback below would
+  // silently violate a zero/negative limit rather than truncating to it
+  if (limit <= 0) return ''
   if (text.length <= limit) return text
   const lines = text.split('\n')
   let acc = ''

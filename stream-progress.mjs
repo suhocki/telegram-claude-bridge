@@ -189,7 +189,13 @@ export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS, { 
 
     if (!changed) return null
 
-    status = renderTranscript ? renderTranscript(historyLines.slice(), liveDisplayText()) : defaultRender()
+    const rendered = renderTranscript ? renderTranscript(historyLines.slice(), liveDisplayText()) : defaultRender()
+    // renderTranscript can legitimately return null (e.g. nothing fits the budget this
+    // tick) — treat that the same as "nothing new to report" rather than letting null
+    // overwrite a perfectly good prior status (and leak downstream into an edit)
+    if (rendered == null) return null
+
+    status = rendered
     statusIsHtml = Boolean(renderTranscript)
     snapshotCache = { text: status, html: statusIsHtml }
     return status
