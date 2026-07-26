@@ -529,6 +529,18 @@ export function shouldHandleGroupMessage(msg, policy, botUsername, botId) {
   return true
 }
 
+// Same authorization rule as shouldHandleGroupMessage, minus the mention requirement —
+// a button click isn't a message that can @-mention the bot.
+export function isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig) {
+  const chatId = String(cq?.message?.chat?.id ?? '')
+  const userId = String(cq?.from?.id ?? '')
+  if (isGroupChatType(cq?.message?.chat?.type)) {
+    const policy = resolveGroupPolicy(groupsConfig, chatId)
+    return Boolean(policy) && isSenderAllowedInGroup(policy, userId)
+  }
+  return allowedUserIds.includes(userId)
+}
+
 export function buildBotIdentity(getMeResult) {
   return { id: String(getMeResult?.id ?? ''), username: getMeResult?.username ?? null }
 }

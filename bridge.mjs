@@ -63,6 +63,7 @@ import {
   buildOutboxFilename,
   isGroupChatType,
   resolveGroupPolicy,
+  isCallbackQueryAuthorized,
   shouldHandleGroupMessage,
   buildBotIdentity,
   createTelegramClient,
@@ -145,6 +146,9 @@ function saveState(state) {
 
 const state = loadState()
 const chatQueue = createKeyedQueue()
+// chatId -> { cancel() }; only ever one entry per chat since handleMessage runs one at
+// a time per chat via chatQueue, populated for the duration of that run's runClaude call
+const activeRuns = new Map()
 // setTimeout handles can't be persisted, so state.pendingCheckins is re-armed into this Map on every boot.
 const checkinTimers = new Map()
 for (const chatId of Object.keys(state.pendingCheckins)) armCheckinTimer(chatId)
@@ -201,59 +205,86 @@ async function sendAttachment(chatId, filePath, replyToMessageId) {
   }
 }
 
-function runClaude(prompt, sessionId, onEvent) {
-  return new Promise((resolve, reject) => {
-    const args = [
-      '-p',
-      prompt,
-      '--output-format',
-      'stream-json',
-      '--include-partial-messages',
-      '--verbose',
-      '--permission-mode',
-      'bypassPermissions',
-    ]
-    if (sessionId) args.push('--resume', sessionId)
-    args.push(
-      '--append-system-prompt',
-      combineSystemPrompts(
-        buildOutboundAttachmentInstructions(),
-        buildReactionMarkerInstructions(),
-        buildCheckinMarkerInstructions(),
-        appendSystemPrompt
-      )
-    )
-    if (Array.isArray(claudeArgs)) args.push(...claudeArgs)
+const CANCEL_SIGKILL_GRACE_MS = 3000
 
-    const child = spawn('claude', args, { cwd, env: process.env })
-    const pushChunk = createLineSplitter()
-    let result = null
-    let err = ''
-    let stdoutTail = ''
-    child.stdout.on('data', d => {
-      const text = d.toString()
-      stdoutTail = (stdoutTail + text).slice(-2000)
-      for (const line of pushChunk(text)) {
-        const event = parseJsonlLine(line)
-        if (!event) continue
-        if (isResultEvent(event)) result = event
-        if (onEvent) {
-          // onEvent may be async (it can send/delete subagent placeholder messages);
-          // fire-and-forget it here, same as before, but catch both sync throws and
-          // async rejections so a failure never crashes the stdout handler
-          Promise.resolve()
-            .then(() => onEvent(event))
-            .catch(e => log('progress onEvent handler failed', e.message))
-        }
+// Returns { promise, cancel } instead of a plain Promise so a caller can kill the run
+// early (e.g. a Telegram "Cancel" button) without waiting for it to finish on its own.
+function runClaude(prompt, sessionId, onEvent) {
+  const args = [
+    '-p',
+    prompt,
+    '--output-format',
+    'stream-json',
+    '--include-partial-messages',
+    '--verbose',
+    '--permission-mode',
+    'bypassPermissions',
+  ]
+  if (sessionId) args.push('--resume', sessionId)
+  args.push(
+    '--append-system-prompt',
+    combineSystemPrompts(
+      buildOutboundAttachmentInstructions(),
+      buildReactionMarkerInstructions(),
+      buildCheckinMarkerInstructions(),
+      appendSystemPrompt
+    )
+  )
+  if (Array.isArray(claudeArgs)) args.push(...claudeArgs)
+
+  // detached so `child.pid` is its own process-group leader: killing -child.pid kills
+  // the whole tree (claude itself plus any Bash-spawned OS subprocesses), not just claude
+  const child = spawn('claude', args, { cwd, env: process.env, detached: true })
+  const pushChunk = createLineSplitter()
+  let result = null
+  let err = ''
+  let stdoutTail = ''
+  child.stdout.on('data', d => {
+    const text = d.toString()
+    stdoutTail = (stdoutTail + text).slice(-2000)
+    for (const line of pushChunk(text)) {
+      const event = parseJsonlLine(line)
+      if (!event) continue
+      if (isResultEvent(event)) result = event
+      if (onEvent) {
+        // onEvent may be async (it can send/delete subagent placeholder messages);
+        // fire-and-forget it here, same as before, but catch both sync throws and
+        // async rejections so a failure never crashes the stdout handler
+        Promise.resolve()
+          .then(() => onEvent(event))
+          .catch(e => log('progress onEvent handler failed', e.message))
       }
-    })
-    child.stderr.on('data', d => (err += d))
+    }
+  })
+  child.stderr.on('data', d => (err += d))
+
+  const promise = new Promise((resolve, reject) => {
     child.on('error', reject)
     child.on('close', code => {
       if (result) return resolve(result)
       reject(new Error(err || `claude exited ${code} with no result event\n${stdoutTail}`))
     })
   })
+
+  function cancel() {
+    if (child.exitCode != null || child.signalCode != null) return
+    try {
+      process.kill(-child.pid, 'SIGTERM')
+    } catch (e) {
+      log('cancel: SIGTERM failed', e.message)
+    }
+    setTimeout(() => {
+      if (child.exitCode == null && child.signalCode == null) {
+        try {
+          process.kill(-child.pid, 'SIGKILL')
+        } catch (e) {
+          log('cancel: SIGKILL failed', e.message)
+        }
+      }
+    }, CANCEL_SIGKILL_GRACE_MS)
+  }
+
+  return { promise, cancel }
 }
 
 function clearCheckinTimer(chatId) {
@@ -305,7 +336,8 @@ async function runCheckin(chatId) {
   }
 
   try {
-    const result = await runClaude(buildCheckinFollowupPrompt(pending.instruction), sessionId)
+    const { promise: checkinPromise } = runClaude(buildCheckinFollowupPrompt(pending.instruction), sessionId)
+    const result = await checkinPromise
     let newSession = normalizeSession(state.sessions[chatId])
     if (result.session_id) {
       newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
@@ -586,6 +618,7 @@ async function handleMessage(msg) {
       chat_id: chatId,
       text: DEFAULT_WORKING_STATUS,
       reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
+      reply_markup: { inline_keyboard: [[{ text: '🚫 Cancel', callback_data: `cancel:${chatId}` }]] },
     })
     placeholderId = placeholder.message_id
   } catch (e) {
@@ -676,8 +709,17 @@ async function handleMessage(msg) {
       ? content
       : buildChannelPrompt(chatId, meta.messageId, meta.user, meta.ts, promptText, attachmentAttrs)
 
+  let cancelled = false
   try {
-    const result = await runClaude(prompt, sessionId, event => routeEvent(event))
+    const { promise: claudePromise, cancel: cancelClaude } = runClaude(prompt, sessionId, event => routeEvent(event))
+    activeRuns.set(chatId, {
+      cancel() {
+        if (cancelled) return
+        cancelled = true
+        cancelClaude()
+      },
+    })
+    const result = await claudePromise
     await rootController.stop(formatRunOutcomeStatus(result.is_error))
     let newSession = session
     if (result.session_id) {
@@ -707,14 +749,22 @@ async function handleMessage(msg) {
     }
     await setReaction(chatId, msg.message_id, reactionEmoji || (result.is_error ? ERROR_REACTION : SUCCESS_REACTION))
   } catch (e) {
-    log('handleMessage error', e)
     rootController.statusUpdater.stop()
-    await sendReply(chatId, `⚠️ bridge error: ${e.message}`, msg.message_id, placeholderId).catch(() => {})
-    await setReaction(chatId, msg.message_id, ERROR_REACTION)
+    if (cancelled) {
+      await sendReply(chatId, '🚫 cancelled', msg.message_id, placeholderId).catch(() => {})
+    } else {
+      log('handleMessage error', e)
+      await sendReply(chatId, `⚠️ bridge error: ${e.message}`, msg.message_id, placeholderId).catch(() => {})
+      await setReaction(chatId, msg.message_id, ERROR_REACTION)
+    }
   } finally {
     typingAlive = false
     clearInterval(typing)
     rootController.statusUpdater.stop()
+    activeRuns.delete(chatId)
+    if (placeholderId != null) {
+      await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: placeholderId, reply_markup: { inline_keyboard: [] } }).catch(() => {})
+    }
     // safety net: normally every subagent's tool_result already deletes its own
     // placeholder as it happens; this only catches leftovers from a crash or a missed
     // event. Registration into subagentControllers happens synchronously (see routeEvent),
@@ -734,6 +784,31 @@ async function handleMessage(msg) {
 }
 
 let botIdentity = { id: null, username: null }
+
+// Handled directly, not via chatQueue: a cancel needs to interrupt the run that's
+// already sitting at the head of that same chat's queue, not wait behind it.
+async function handleCallbackQuery(cq) {
+  const data = cq.data ?? ''
+  if (!data.startsWith('cancel:')) {
+    await tg('answerCallbackQuery', { callback_query_id: cq.id }).catch(() => {})
+    return
+  }
+
+  const chatId = String(cq.message?.chat?.id ?? '')
+  if (!isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig)) {
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'not authorized', show_alert: true }).catch(() => {})
+    return
+  }
+
+  const run = activeRuns.get(chatId)
+  if (!run) {
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'nothing to cancel' }).catch(() => {})
+    return
+  }
+
+  run.cancel()
+  await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'cancelling…' }).catch(() => {})
+}
 
 async function poll() {
   try {
@@ -755,6 +830,8 @@ async function poll() {
         if (u.message) {
           const chatId = String(u.message.chat.id)
           chatQueue.enqueue(chatId, () => handleMessage(u.message)).catch(e => log('queued handleMessage rejected', e))
+        } else if (u.callback_query) {
+          handleCallbackQuery(u.callback_query).catch(e => log('callback query handling rejected', e))
         }
       }
     } catch (e) {

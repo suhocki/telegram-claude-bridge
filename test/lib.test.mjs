@@ -68,6 +68,7 @@ import {
   isReplyToBot,
   isMentioned,
   shouldHandleGroupMessage,
+  isCallbackQueryAuthorized,
   buildBotIdentity,
   buildTtsRequestOptions,
   buildOutboxFilename,
@@ -1290,6 +1291,36 @@ test('shouldHandleGroupMessage: allowFrom restricts to listed senders even when 
   const policy = { requireMention: true, allowFrom: ['2'] }
   const msg = { from: { id: 1 }, text: '@mybot hi', entities: [{ type: 'mention', offset: 0, length: 6 }] }
   assert.equal(shouldHandleGroupMessage(msg, policy, 'mybot', '111'), false)
+})
+
+test('isCallbackQueryAuthorized: private chat allows only ids in allowedUserIds', () => {
+  const cq = { from: { id: 1 }, message: { chat: { id: 1, type: 'private' } } }
+  assert.equal(isCallbackQueryAuthorized(cq, ['1'], {}), true)
+  assert.equal(isCallbackQueryAuthorized(cq, ['2'], {}), false)
+})
+
+test('isCallbackQueryAuthorized: group chat with no configured policy is rejected', () => {
+  const cq = { from: { id: 1 }, message: { chat: { id: -100, type: 'group' } } }
+  assert.equal(isCallbackQueryAuthorized(cq, ['1'], {}), false)
+})
+
+test('isCallbackQueryAuthorized: group chat with an empty allowFrom allows any sender', () => {
+  const cq = { from: { id: 1 }, message: { chat: { id: -100, type: 'supergroup' } } }
+  const groupsConfig = { '-100': { allowFrom: [] } }
+  assert.equal(isCallbackQueryAuthorized(cq, [], groupsConfig), true)
+})
+
+test('isCallbackQueryAuthorized: group chat with an allowFrom list restricts to listed senders', () => {
+  const cq = { from: { id: 1 }, message: { chat: { id: -100, type: 'group' } } }
+  const groupsConfig = { '-100': { allowFrom: ['2'] } }
+  assert.equal(isCallbackQueryAuthorized(cq, [], groupsConfig), false)
+  assert.equal(isCallbackQueryAuthorized({ ...cq, from: { id: 2 } }, [], groupsConfig), true)
+})
+
+test('isCallbackQueryAuthorized: does not require a mention, unlike shouldHandleGroupMessage', () => {
+  const cq = { from: { id: 1 }, message: { chat: { id: -100, type: 'group' } } }
+  const groupsConfig = { '-100': { requireMention: true, allowFrom: [] } }
+  assert.equal(isCallbackQueryAuthorized(cq, [], groupsConfig), true)
 })
 
 test('buildBotIdentity: extracts id and username from a getMe result', () => {
