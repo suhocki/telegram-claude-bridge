@@ -77,6 +77,7 @@ import {
   createProgressTracker,
   formatRunOutcomeStatus,
   createStatusUpdater,
+  createChatRateGate,
   extractNewSubagentBlocks,
   extractFinishedSubagentIds,
 } from './stream-progress.mjs'
@@ -432,7 +433,8 @@ async function sendVoiceReply(chatId, text, replyToMessageId) {
 // Drives one Telegram message's live "⏳ working…" placeholder: a progress tracker plus
 // the periodic editMessageText loop that renders it. Used both for the root placeholder
 // of a run and for each parallel subagent (Agent tool) placeholder spawned during it.
-function createPlaceholderController(chatId, messageId, getQuoteHtml = () => null) {
+function createPlaceholderController(chatId, initialMessageId, getQuoteHtml = () => null, sharedGate = null) {
+  let messageId = initialMessageId
   const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
     renderTranscript: (historyLines, liveText) =>
       renderTranscriptHtml(historyLines, liveText, computeStreamingTextLimit(getQuoteHtml())),
@@ -466,6 +468,7 @@ function createPlaceholderController(chatId, messageId, getQuoteHtml = () => nul
     onUpdate: latestStatus => editPlaceholder(latestStatus),
     initialStatus: tracker.snapshot(),
     intervalMs: STREAM_EDIT_INTERVAL_MS,
+    sharedGate,
   })
 
   return {
@@ -474,6 +477,11 @@ function createPlaceholderController(chatId, messageId, getQuoteHtml = () => nul
     statusUpdater,
     ingest(event) {
       tracker.ingest(event)
+    },
+    // subagent placeholders are registered before their sendMessage call resolves
+    // (see routeEvent), so their messageId isn't known yet at construction time
+    setMessageId(id) {
+      messageId = id
     },
     async stop(finalStatus) {
       statusUpdater.stop()
@@ -585,7 +593,10 @@ async function handleMessage(msg) {
   }
 
   let transcriptQuoteHtml = null
-  const rootController = createPlaceholderController(chatId, placeholderId, () => transcriptQuoteHtml)
+  // shared by root + every subagent placeholder below, so a 429 on any one of them
+  // backs off every concurrent edit loop writing to this same chat
+  const chatRateGate = createChatRateGate()
+  const rootController = createPlaceholderController(chatId, placeholderId, () => transcriptQuoteHtml, chatRateGate)
 
   // one placeholder message per parallel subagent (Agent tool call), keyed by that
   // tool_use's id; created when it starts, deleted once its tool_result comes back
@@ -597,16 +608,25 @@ async function handleMessage(msg) {
     ;(parentEntry ? parentEntry.controller : rootController).ingest(event)
 
     for (const block of extractNewSubagentBlocks(event, subagentControllers)) {
-      try {
-        const sub = await tg('sendMessage', {
-          chat_id: chatId,
-          text: DEFAULT_WORKING_STATUS,
-          ...(placeholderId != null ? { reply_parameters: { message_id: placeholderId, allow_sending_without_reply: true } } : {}),
+      const controller = createPlaceholderController(chatId, null, undefined, chatRateGate)
+      const messageIdPromise = tg('sendMessage', {
+        chat_id: chatId,
+        text: DEFAULT_WORKING_STATUS,
+        ...(placeholderId != null ? { reply_parameters: { message_id: placeholderId, allow_sending_without_reply: true } } : {}),
+      })
+        .then(sub => {
+          controller.setMessageId(sub.message_id)
+          return sub.message_id
         })
-        subagentControllers.set(block.id, { messageId: sub.message_id, controller: createPlaceholderController(chatId, sub.message_id) })
-      } catch (e) {
-        log('failed to send subagent placeholder', e.message)
-      }
+        .catch(e => {
+          log('failed to send subagent placeholder', e.message)
+          return null
+        })
+      // register synchronously, *before* the sendMessage above settles: extractNewSubagentBlocks
+      // is dedup'd against this map, and every event is routed through its own fire-and-forget
+      // microtask (see runClaude's onEvent), so a later event for this same subagent id must see
+      // it as already-tracked immediately rather than racing to spawn a duplicate placeholder
+      subagentControllers.set(block.id, { controller, messageIdPromise })
     }
 
     for (const id of extractFinishedSubagentIds(event, subagentControllers)) {
@@ -614,7 +634,10 @@ async function handleMessage(msg) {
       if (!entry) continue
       subagentControllers.delete(id)
       entry.controller.statusUpdater.stop()
-      await tg('deleteMessage', { chat_id: chatId, message_id: entry.messageId }).catch(e => log('failed to delete subagent placeholder', e.message))
+      const messageId = await entry.messageIdPromise
+      if (messageId != null) {
+        await tg('deleteMessage', { chat_id: chatId, message_id: messageId }).catch(e => log('failed to delete subagent placeholder', e.message))
+      }
     }
   }
 
@@ -692,12 +715,18 @@ async function handleMessage(msg) {
     typingAlive = false
     clearInterval(typing)
     rootController.statusUpdater.stop()
-    // safety net: normally every Task's tool_result already deletes its own placeholder
-    // as it happens; this only catches leftovers from a crash or a missed event
+    // safety net: normally every subagent's tool_result already deletes its own
+    // placeholder as it happens; this only catches leftovers from a crash or a missed
+    // event. Registration into subagentControllers happens synchronously (see routeEvent),
+    // so any subagent spawned during the run is guaranteed to be in this map by now, even
+    // if its sendMessage call is still in flight — hence awaiting messageIdPromise here too.
     await Promise.all(
-      Array.from(subagentControllers.values()).map(entry => {
+      Array.from(subagentControllers.values()).map(async entry => {
         entry.controller.statusUpdater.stop()
-        return tg('deleteMessage', { chat_id: chatId, message_id: entry.messageId }).catch(() => {})
+        const messageId = await entry.messageIdPromise
+        if (messageId != null) {
+          await tg('deleteMessage', { chat_id: chatId, message_id: messageId }).catch(() => {})
+        }
       })
     )
     subagentControllers.clear()
