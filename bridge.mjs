@@ -49,6 +49,7 @@ import {
   parseWhisperTranscript,
   buildVoiceTranscriptText,
   buildTranscriptQuoteHtml,
+  buildCancelKeyboard,
   buildPlaceholderEditParams,
   computeStreamingTextLimit,
   parseVoiceToggleCommand,
@@ -467,7 +468,7 @@ async function sendVoiceReply(chatId, text, replyToMessageId) {
 // Drives one Telegram message's live "⏳ working…" placeholder: a progress tracker plus
 // the periodic editMessageText loop that renders it. Used both for the root placeholder
 // of a run and for each parallel subagent (Agent tool) placeholder spawned during it.
-function createPlaceholderController(chatId, initialMessageId, getQuoteHtml = () => null, sharedGate = null) {
+function createPlaceholderController(chatId, initialMessageId, getQuoteHtml = () => null, sharedGate = null, keyboard = null) {
   let messageId = initialMessageId
   const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
     renderTranscript: (historyLines, liveText) =>
@@ -476,7 +477,7 @@ function createPlaceholderController(chatId, initialMessageId, getQuoteHtml = ()
 
   async function editPlaceholder({ text, html }) {
     if (messageId == null) return
-    const params = buildPlaceholderEditParams(chatId, messageId, text, getQuoteHtml(), html)
+    const params = buildPlaceholderEditParams(chatId, messageId, text, getQuoteHtml(), html, keyboard)
     try {
       await tg('editMessageText', params)
     } catch (e) {
@@ -491,9 +492,12 @@ function createPlaceholderController(chatId, initialMessageId, getQuoteHtml = ()
         log('editMessageText failed', e.message)
         return
       }
-      await tg('editMessageText', { chat_id: chatId, message_id: messageId, text: htmlToPlainFallback(params.text) }).catch(e2 =>
-        log('editMessageText fallback failed', e2.message)
-      )
+      await tg('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text: htmlToPlainFallback(params.text),
+        ...(keyboard ? { reply_markup: keyboard } : {}),
+      }).catch(e2 => log('editMessageText fallback failed', e2.message))
     }
   }
 
@@ -620,7 +624,7 @@ async function handleMessage(msg) {
       chat_id: chatId,
       text: DEFAULT_WORKING_STATUS,
       reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
-      reply_markup: { inline_keyboard: [[{ text: '🚫 Cancel', callback_data: `cancel:${chatId}` }]] },
+      reply_markup: buildCancelKeyboard(chatId),
     })
     placeholderId = placeholder.message_id
   } catch (e) {
@@ -631,7 +635,7 @@ async function handleMessage(msg) {
   // shared by root + every subagent placeholder below, so a 429 on any one of them
   // backs off every concurrent edit loop writing to this same chat
   const chatRateGate = createChatRateGate()
-  const rootController = createPlaceholderController(chatId, placeholderId, () => transcriptQuoteHtml, chatRateGate)
+  const rootController = createPlaceholderController(chatId, placeholderId, () => transcriptQuoteHtml, chatRateGate, buildCancelKeyboard(chatId))
 
   // one placeholder message per parallel subagent (Agent tool call), keyed by that
   // tool_use's id; created when it starts, deleted once its tool_result comes back

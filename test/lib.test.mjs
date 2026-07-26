@@ -54,6 +54,7 @@ import {
   buildTranscriptQuoteHtml,
   TRANSCRIPT_QUOTE_MAX_CHARS,
   buildPlaceholderEditParams,
+  buildCancelKeyboard,
   computeStreamingTextLimit,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
@@ -1062,6 +1063,33 @@ test('buildPlaceholderEditParams: with a quote and isHtml=true, prepends the quo
     message_id: 456,
     text: '<blockquote>quote</blockquote>\n<b>hi</b>',
     parse_mode: 'HTML',
+  })
+})
+
+test('buildCancelKeyboard: builds a single-button inline keyboard scoped to the chat', () => {
+  assert.deepEqual(buildCancelKeyboard('123'), {
+    inline_keyboard: [[{ text: '🚫 Cancel', callback_data: 'cancel:123' }]],
+  })
+})
+
+test('buildPlaceholderEditParams: with a keyboard but no quote, attaches reply_markup so editMessageText does not drop the Cancel button', () => {
+  const keyboard = buildCancelKeyboard('123')
+  assert.deepEqual(buildPlaceholderEditParams('123', 456, '⏳ working…', null, false, keyboard), {
+    chat_id: '123',
+    message_id: 456,
+    text: '⏳ working…',
+    reply_markup: keyboard,
+  })
+})
+
+test('buildPlaceholderEditParams: with a keyboard and a quote, attaches reply_markup alongside parse_mode HTML', () => {
+  const keyboard = buildCancelKeyboard('123')
+  assert.deepEqual(buildPlaceholderEditParams('123', 456, '⏳ working…', '<blockquote>hi</blockquote>', false, keyboard), {
+    chat_id: '123',
+    message_id: 456,
+    text: '<blockquote>hi</blockquote>\n⏳ working…',
+    parse_mode: 'HTML',
+    reply_markup: keyboard,
   })
 })
 

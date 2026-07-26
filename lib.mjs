@@ -407,18 +407,25 @@ export function computeStreamingTextLimit(quoteHtml, limit = 4096) {
   return Math.max(0, limit - quoteHtml.length - 1)
 }
 
-export function buildPlaceholderEditParams(chatId, messageId, status, quoteHtml, isHtml = false) {
-  if (!quoteHtml) {
-    return isHtml
+export function buildCancelKeyboard(chatId) {
+  return { inline_keyboard: [[{ text: '🚫 Cancel', callback_data: `cancel:${chatId}` }]] }
+}
+
+// editMessageText drops any existing inline keyboard unless reply_markup is passed again on
+// every edit, so the caller must thread `keyboard` through each streaming update or the Cancel
+// button vanishes the moment the placeholder's first edit lands.
+export function buildPlaceholderEditParams(chatId, messageId, status, quoteHtml, isHtml = false, keyboard = null) {
+  const base = !quoteHtml
+    ? isHtml
       ? { chat_id: chatId, message_id: messageId, text: status, parse_mode: 'HTML' }
       : { chat_id: chatId, message_id: messageId, text: status }
-  }
-  return {
-    chat_id: chatId,
-    message_id: messageId,
-    text: `${quoteHtml}\n${isHtml ? status : escapeHtml(status)}`,
-    parse_mode: 'HTML',
-  }
+    : {
+        chat_id: chatId,
+        message_id: messageId,
+        text: `${quoteHtml}\n${isHtml ? status : escapeHtml(status)}`,
+        parse_mode: 'HTML',
+      }
+  return keyboard ? { ...base, reply_markup: keyboard } : base
 }
 
 const VOICE_TOGGLE_RE = /^\/voice\s+(on|off)$/i
