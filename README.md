@@ -1,5 +1,13 @@
 # telegram-claude-bridge
 
+![Peak output, zero laptop time](assets/peak-productivity.jpg)
+
+**You never have to touch your laptop again.** Dictate a task on your commute, review a diff from the couch, kick off a fix while you're making coffee — Claude Code runs entirely from Telegram, on your phone, in your pocket. No lid to open, no context-switch tax, no hunching over a desk.
+
+**Run as many projects in parallel as you want.** Each bot is scoped to its own working directory with its own persistent session — spin one up per project and check on each for thirty seconds at a time instead of babysitting one terminal all day. That's what the graph above is: the highest sustained output of an entire career, and it happened without sitting at a desk for most of it.
+
+**Why Telegram?** Because it already solved the hard parts — voice notes, push notifications, file transfer, multi-device sync, offline queuing — for free. This bridge just plugs Claude Code into all of that instead of reinventing it.
+
 Standalone bridge between Telegram and Claude Code. Polls the Telegram Bot API
 directly and shells out to `claude -p --resume <session>` for every message —
 no dependency on `claude --channels` (useful when that's blocked by org
