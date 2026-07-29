@@ -126,3 +126,15 @@ node --test
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same on every push/PR against `main` with Node 20.
+
+<details>
+<summary>Security considerations (click to expand)</summary>
+
+- All chat content (including anything Claude reads or does via connected tools) transits Telegram's servers as a third-party relay — treat it as leaving your own infrastructure.
+- On a managed/corporate machine, EDR and web proxies can typically see the process spawning `claude`/`node` and the outbound HTTPS calls; TLS-inspecting proxies can see payload content too.
+- If Claude has other integrations connected (e.g. via MCP) with access to internal systems, running this bridge extends that access to a personal chat channel outside normal oversight — that's a bigger risk than network detection itself.
+- Using this on a corporate device may violate acceptable-use, data-handling, or (in regulated industries) communication record-keeping policies, independent of whether it's ever technically detected.
+- Won't run / won't reach anything on: air-gapped machines, egress-allowlisted networks (only pre-approved domains reachable), locked-down devices with application allow-listing, or ephemeral VDI sessions with no persistent background process.
+- Recommendation: keep this bridge scoped to personal/non-sensitive projects; don't route anything through it that touches employer systems or regulated data.
+
+</details>
