@@ -31,9 +31,6 @@ persistent session per Telegram chat.
 
 ## Requirements
 
-<details>
-<summary>Show ▾</summary>
-
 - Node.js 20+ (uses built-in `fetch`, no npm dependencies)
 - [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) installed and logged in (`claude` must work in your shell)
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
@@ -41,12 +38,7 @@ persistent session per Telegram chat.
 - Optional: `whisper-cli` + a whisper.cpp model for voice message transcription
 - Optional: an ElevenLabs API key for voice replies
 
-</details>
-
 ## Setup
-
-<details>
-<summary>Show ▾</summary>
 
 1. Clone the repo and install nothing extra — it's dependency-free.
 
@@ -92,12 +84,7 @@ persistent session per Telegram chat.
 
    Message the bot on Telegram from an allowed user ID and it will run Claude in `cwd` and reply.
 
-</details>
-
 ## Running persistently (macOS launchd)
-
-<details>
-<summary>Show ▾</summary>
 
 A plain `node bridge.mjs ...` in a terminal dies on logout/reboot/terminal close.
 Generate and install a `launchd` agent instead:
@@ -119,12 +106,7 @@ launchctl kickstart -k gui/$UID/com.tgbridge.mybot
 
 Run multiple bots/projects by repeating this with a different label and config file.
 
-</details>
-
 ## Sending proactive messages
-
-<details>
-<summary>Show ▾</summary>
 
 `notify.mjs` lets any script push a message through a bot's token without
 going through Telegram polling — handy for background jobs to report back:
@@ -137,12 +119,7 @@ node notify.mjs my-bot.config.json "custom text" 123456789   # explicit chat ID
 
 Target chat defaults to `config.notifyChatId`, then `config.allowedUserIds[0]`.
 
-</details>
-
 ## In-chat commands
-
-<details>
-<summary>Show ▾</summary>
 
 - `/new` or `/reset` — start a fresh Claude session for this chat
 - `/compact` — compact the current session
@@ -150,12 +127,7 @@ Target chat defaults to `config.notifyChatId`, then `config.allowedUserIds[0]`.
 - `/voice on` / `/voice off` — toggle sending replies as a voice note (requires `voiceReply` config)
 - Replying `CONFIRM` to a risky-command warning lets it proceed; anything else cancels it
 
-</details>
-
 ## Live progress in chat
-
-<details>
-<summary>Show ▾</summary>
 
 This isn't "send message, wait, get one reply back" — you watch the agent work in real time, the same way you'd watch it in a terminal:
 
@@ -167,12 +139,7 @@ This isn't "send message, wait, get one reply back" — you watch the agent work
 - **Full formatting.** Replies render Telegram's real formatting — **bold**, *italic*, ~~strikethrough~~, inline `code`, fenced code blocks with syntax highlighting, links, and blockquotes — converted straight from Claude's Markdown and chunked to fit Telegram's message-length limit.
 - **Reactions as status.** On completion the placeholder's reaction flips to 👍 (success) or 😢 (error) and the Cancel button disappears — glance at a chat full of bots and read the outcome from the reactions alone.
 
-</details>
-
 ## Other behavior
-
-<details>
-<summary>Show ▾</summary>
 
 - **Attachments**: photos, documents, voice/audio/video sent to the bot are downloaded and passed to Claude via an `attachment_path` on the channel tag (voice messages get transcribed first if `voiceTranscription` is configured).
 - **Voice-driving agents**: with `voiceTranscription` set up, sending a voice note works just as well as typing — dictate a task on the go and Claude runs it the same as a text message. Worth setting up the whisper model up front if you plan to mostly drive the bot by voice.
@@ -183,12 +150,7 @@ This isn't "send message, wait, get one reply back" — you watch the agent work
 - **Cost warnings**: once a session's cumulative cost crosses `costWarnUsd`, the bot warns in-chat and suggests `/new`.
 - **Groups**: group chats are ignored unless configured under `groups`; `requireMention` restricts replies to messages that @-mention the bot.
 
-</details>
-
 ## Testing
-
-<details>
-<summary>Show ▾</summary>
 
 Zero-dependency Node test runner:
 
@@ -198,12 +160,7 @@ node --test
 
 CI (`.github/workflows/ci.yml`) runs the same on every push/PR against `main` with Node 20.
 
-</details>
-
 ## Security considerations
-
-<details>
-<summary>Show ▾</summary>
 
 - All chat content (including anything Claude reads or does via connected tools) transits Telegram's servers as a third-party relay — treat it as leaving your own infrastructure.
 - On a managed/corporate machine, EDR and web proxies can typically see the process spawning `claude`/`node` and the outbound HTTPS calls; TLS-inspecting proxies can see payload content too.
@@ -211,5 +168,3 @@ CI (`.github/workflows/ci.yml`) runs the same on every push/PR against `main` wi
 - Using this on a corporate device may violate acceptable-use, data-handling, or (in regulated industries) communication record-keeping policies, independent of whether it's ever technically detected.
 - Won't run / won't reach anything on: air-gapped machines, egress-allowlisted networks (only pre-approved domains reachable), locked-down devices with application allow-listing, or ephemeral VDI sessions with no persistent background process.
 - Recommendation: keep this bridge scoped to personal/non-sensitive projects; don't route anything through it that touches employer systems or regulated data.
-
-</details>
