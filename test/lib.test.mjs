@@ -78,6 +78,17 @@ import {
   DEFAULT_TTS_VOICE_SETTINGS,
   createTelegramClient,
   fetchWithTimeout,
+  buildBotCommands,
+  appendTurn,
+  findTurnIndexByMessageId,
+  collectBotMessageIdsFrom,
+  claudeProjectDirName,
+  buildSessionTranscriptPath,
+  findRewindCutIndex,
+  hasConversationEntry,
+  buildRewindUnavailableNotice,
+  MAX_TRACKED_TURNS,
+  TELEGRAM_ALLOWED_UPDATES,
 } from '../lib.mjs'
 import { renderStreamingTail } from '../markdown-html.mjs'
 import path from 'node:path'
@@ -1420,4 +1431,102 @@ test('createTelegramClient: a per-call timeoutMs aborts and rejects instead of h
   const start = Date.now()
   await assert.rejects(() => tg('getUpdates', {}, { timeoutMs: 20 }), /aborted/)
   assert.ok(Date.now() - start < 5000)
+})
+
+const transcriptLine = (entry) => JSON.stringify(entry)
+const userTurnLine = (messageId, text = 'hi') =>
+  transcriptLine({
+    type: 'user',
+    message: { role: 'user', content: `<channel source="telegram" chat_id="1" message_id="${messageId}" user="u" ts="t">\n${text}\n</channel>` },
+  })
+
+test('buildBotCommands: registers /new, /status and /compact with descriptions', () => {
+  const commands = buildBotCommands()
+  assert.deepEqual(commands.map(c => c.command), ['new', 'status', 'compact'])
+  for (const { command, description } of commands) {
+    assert.match(command, /^[a-z0-9_]{1,32}$/)
+    assert.ok(description.length > 0 && description.length <= 256)
+  }
+})
+
+test('appendTurn: appends without mutating and coerces the chat id to a string', () => {
+  const turns = { '1': [{ userMessageId: 10 }] }
+  const next = appendTurn(turns, 1, { userMessageId: 11 })
+  assert.deepEqual(next['1'].map(t => t.userMessageId), [10, 11])
+  assert.deepEqual(turns['1'].map(t => t.userMessageId), [10])
+})
+
+test('appendTurn: keeps only the most recent turns', () => {
+  let turns = {}
+  for (let i = 0; i < MAX_TRACKED_TURNS + 5; i++) turns = appendTurn(turns, '7', { userMessageId: i })
+  assert.equal(turns['7'].length, MAX_TRACKED_TURNS)
+  assert.equal(turns['7'][0].userMessageId, 5)
+})
+
+test('findTurnIndexByMessageId: matches across string/number ids and reports -1 when absent', () => {
+  const list = [{ userMessageId: 10 }, { userMessageId: 11 }]
+  assert.equal(findTurnIndexByMessageId(list, '11'), 1)
+  assert.equal(findTurnIndexByMessageId(list, 10), 0)
+  assert.equal(findTurnIndexByMessageId(list, 99), -1)
+  assert.equal(findTurnIndexByMessageId(undefined, 10), -1)
+})
+
+test('collectBotMessageIdsFrom: flattens from the given turn onwards, deduped', () => {
+  const list = [
+    { botMessageIds: [1, 2] },
+    { botMessageIds: [3, null, 3] },
+    { botMessageIds: [4] },
+    {},
+  ]
+  assert.deepEqual(collectBotMessageIdsFrom(list, 1), [3, 4])
+  assert.deepEqual(collectBotMessageIdsFrom(list, 0), [1, 2, 3, 4])
+  assert.deepEqual(collectBotMessageIdsFrom([], 0), [])
+})
+
+test('claudeProjectDirName: mirrors how claude munges a cwd into a project dir name', () => {
+  assert.equal(claudeProjectDirName('/Users/me/projects/foo.bar'), '-Users-me-projects-foo-bar')
+  assert.equal(
+    buildSessionTranscriptPath('/home/.claude', '/private/tmp/x', 'abc-123'),
+    path.join('/home/.claude', 'projects', '-private-tmp-x', 'abc-123.jsonl')
+  )
+})
+
+test('findRewindCutIndex: cuts at the user line carrying that telegram message id', () => {
+  const lines = [
+    transcriptLine({ type: 'queue-operation' }),
+    userTurnLine(100),
+    transcriptLine({ type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }),
+    userTurnLine(101),
+    transcriptLine({ type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } }),
+  ]
+  assert.equal(findRewindCutIndex(lines, 101), 3)
+  assert.equal(findRewindCutIndex(lines, '100'), 1)
+  assert.equal(findRewindCutIndex(lines, 999), -1)
+})
+
+test('findRewindCutIndex: matches array content blocks and ignores sidechains and junk lines', () => {
+  const lines = [
+    'not json at all',
+    transcriptLine({ type: 'assistant', message: { content: [{ type: 'text', text: 'quoting message_id="55" back' }] } }),
+    transcriptLine({ type: 'user', isSidechain: true, message: { content: 'subagent saw message_id="55"' } }),
+    transcriptLine({ type: 'user', message: { content: [{ type: 'text', text: 'wrapped message_id="55" prompt' }] } }),
+  ]
+  assert.equal(findRewindCutIndex(lines, 55), 3)
+})
+
+test('hasConversationEntry: only real main-chain turns count as resumable context', () => {
+  assert.equal(hasConversationEntry([userTurnLine(1)]), true)
+  assert.equal(hasConversationEntry([transcriptLine({ type: 'assistant', message: { content: 'hi' } })]), true)
+  assert.equal(hasConversationEntry([transcriptLine({ type: 'queue-operation' }), transcriptLine({ type: 'mode' })]), false)
+  assert.equal(hasConversationEntry([transcriptLine({ type: 'user', isSidechain: true, message: { content: 'x' } })]), false)
+  assert.equal(hasConversationEntry([]), false)
+  assert.equal(hasConversationEntry(['{broken']), false)
+})
+
+test('buildRewindUnavailableNotice: tells the user the edit could not be rewound', () => {
+  assert.match(buildRewindUnavailableNotice(), /rewind/i)
+})
+
+test('TELEGRAM_ALLOWED_UPDATES: covers every update type the bridge acts on', () => {
+  assert.deepEqual(TELEGRAM_ALLOWED_UPDATES, ['message', 'edited_message', 'callback_query'])
 })
