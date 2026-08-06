@@ -64,6 +64,23 @@ The bot also deletes its own messages from that turn onwards (`state.turns` trac
 chat). It cannot delete the user's own later messages — a bot has no such permission in a
 private chat.
 
+## Bot command menu and scopes
+
+`setMyCommands` without a `scope` only writes the `default` list. Telegram picks the menu from
+the *narrowest* matching scope, so a list left on the token by an earlier bot — these tokens
+previously ran an off-the-shelf client that registered `/start`, `/help`, `/status` under
+`all_private_chats` — keeps winning in DMs and looks exactly like a stale client-side cache. It
+isn't: no amount of blocking/restarting the bot or reinstalling the app changes it. On startup
+the bridge therefore runs `deleteMyCommands` for `all_private_chats`, `all_group_chats` and
+`all_chat_administrators` before `setMyCommands`. Chat-specific scopes can't be enumerated over
+the API — if one ever gets set on a chat, delete it by hand for that `chat_id`.
+
+To check what a token actually serves:
+
+```
+curl -sG "https://api.telegram.org/bot$TOKEN/getMyCommands" --data-urlencode 'scope={"type":"all_private_chats"}'
+```
+
 ## e2e testing constraint
 
 There is no MCP/API access to the human operator's personal Telegram account from a coding

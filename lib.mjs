@@ -565,6 +565,22 @@ export function buildBotCommands() {
   ]
 }
 
+// Telegram resolves the menu from the narrowest matching scope, so a list left on this token
+// by an earlier bot (all_private_chats: /start, /help, /status) shadows the default one we set
+// and no client-side cache flush brings ours back — the narrower list has to be deleted first.
+export const TELEGRAM_COMMAND_SCOPES_TO_CLEAR = [
+  { type: 'all_private_chats' },
+  { type: 'all_group_chats' },
+  { type: 'all_chat_administrators' },
+]
+
+export function buildBotMenuCalls() {
+  return [
+    ...TELEGRAM_COMMAND_SCOPES_TO_CLEAR.map(scope => ({ method: 'deleteMyCommands', params: { scope } })),
+    { method: 'setMyCommands', params: { commands: buildBotCommands() } },
+  ]
+}
+
 export const MAX_TRACKED_TURNS = 40
 
 export function appendTurn(turns, chatId, turn, maxTurns = MAX_TRACKED_TURNS) {
