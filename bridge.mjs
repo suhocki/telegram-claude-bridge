@@ -78,7 +78,7 @@ import {
   isCallbackQueryAuthorized,
   shouldHandleGroupMessage,
   buildBotIdentity,
-  buildBotCommands,
+  buildBotMenuCalls,
   TELEGRAM_ALLOWED_UPDATES,
   appendTurn,
   findTurnIndexByMessageId,
@@ -974,10 +974,12 @@ async function poll() {
   } catch (e) {
     log('getMe failed, group mention-gating will not resolve @mentions or reply-to-bot', e.message)
   }
-  try {
-    await tg('setMyCommands', { commands: buildBotCommands() })
-  } catch (e) {
-    log('setMyCommands failed, the bot menu may be stale', e.message)
+  for (const { method, params } of buildBotMenuCalls()) {
+    try {
+      await tg(method, params)
+    } catch (e) {
+      log(`${method} failed, the bot menu may be stale`, e.message)
+    }
   }
   log('bridge started, cwd=', cwd, 'offset=', state.offset, 'bot=', botIdentity.username)
   for (;;) {

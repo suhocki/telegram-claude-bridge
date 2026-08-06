@@ -79,6 +79,8 @@ import {
   createTelegramClient,
   fetchWithTimeout,
   buildBotCommands,
+  buildBotMenuCalls,
+  TELEGRAM_COMMAND_SCOPES_TO_CLEAR,
   appendTurn,
   findTurnIndexByMessageId,
   collectBotMessageIdsFrom,
@@ -1446,6 +1448,32 @@ test('buildBotCommands: registers /new, /status and /compact with descriptions',
   for (const { command, description } of commands) {
     assert.match(command, /^[a-z0-9_]{1,32}$/)
     assert.ok(description.length > 0 && description.length <= 256)
+  }
+})
+
+test('TELEGRAM_COMMAND_SCOPES_TO_CLEAR: covers every scope narrower than the default one', () => {
+  assert.deepEqual(TELEGRAM_COMMAND_SCOPES_TO_CLEAR.map(s => s.type), [
+    'all_private_chats',
+    'all_group_chats',
+    'all_chat_administrators',
+  ])
+})
+
+test('buildBotMenuCalls: clears the narrower scopes before setting the default menu', () => {
+  const calls = buildBotMenuCalls()
+  const setIndex = calls.findIndex(c => c.method === 'setMyCommands')
+  assert.equal(setIndex, calls.length - 1)
+  assert.ok(calls.slice(0, setIndex).every(c => c.method === 'deleteMyCommands'))
+  assert.deepEqual(
+    calls.slice(0, setIndex).map(c => c.params.scope),
+    TELEGRAM_COMMAND_SCOPES_TO_CLEAR
+  )
+  assert.deepEqual(calls[setIndex].params, { commands: buildBotCommands() })
+})
+
+test('buildBotMenuCalls: deletes without a commands payload so no scope keeps a stale list', () => {
+  for (const call of buildBotMenuCalls().filter(c => c.method === 'deleteMyCommands')) {
+    assert.deepEqual(Object.keys(call.params), ['scope'])
   }
 })
 
