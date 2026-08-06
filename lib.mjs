@@ -552,6 +552,96 @@ export function buildBotIdentity(getMeResult) {
   return { id: String(getMeResult?.id ?? ''), username: getMeResult?.username ?? null }
 }
 
+// Passed explicitly on every getUpdates call: the token may carry an allowed_updates
+// whitelist left over from an earlier bot setup, and edited_message missing from it would
+// silently disable rewind-on-edit.
+export const TELEGRAM_ALLOWED_UPDATES = ['message', 'edited_message', 'callback_query']
+
+export function buildBotCommands() {
+  return [
+    { command: 'new', description: 'start a new conversation (clears the context)' },
+    { command: 'status', description: 'show the session id and cost so far' },
+    { command: 'compact', description: 'compact the conversation to free up context' },
+  ]
+}
+
+export const MAX_TRACKED_TURNS = 40
+
+export function appendTurn(turns, chatId, turn, maxTurns = MAX_TRACKED_TURNS) {
+  const list = [...(turns?.[String(chatId)] ?? []), turn]
+  return { ...turns, [String(chatId)]: list.slice(-maxTurns) }
+}
+
+export function findTurnIndexByMessageId(turnList, messageId) {
+  if (!Array.isArray(turnList)) return -1
+  return turnList.findIndex(t => String(t?.userMessageId) === String(messageId))
+}
+
+export function collectBotMessageIdsFrom(turnList, fromIndex) {
+  if (!Array.isArray(turnList)) return []
+  const ids = []
+  for (const turn of turnList.slice(Math.max(0, fromIndex))) {
+    for (const id of turn?.botMessageIds ?? []) {
+      if (id != null && !ids.includes(id)) ids.push(id)
+    }
+  }
+  return ids
+}
+
+export function claudeProjectDirName(cwd) {
+  return String(cwd ?? '').replace(/[^a-zA-Z0-9]/g, '-')
+}
+
+export function buildSessionTranscriptPath(claudeConfigDir, cwd, sessionId) {
+  return path.join(claudeConfigDir, 'projects', claudeProjectDirName(cwd), `${sessionId}.jsonl`)
+}
+
+function transcriptEntryText(entry) {
+  const content = entry?.message?.content
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map(block => (typeof block === 'string' ? block : (block?.text ?? (typeof block?.content === 'string' ? block.content : ''))))
+      .join('\n')
+  }
+  return ''
+}
+
+function isMainChainUserEntry(entry) {
+  return entry?.type === 'user' && !entry?.isSidechain
+}
+
+export function findRewindCutIndex(lines, anchorMessageId) {
+  const needle = `message_id="${anchorMessageId}"`
+  for (let i = 0; i < lines.length; i++) {
+    let entry
+    try {
+      entry = JSON.parse(lines[i])
+    } catch {
+      continue
+    }
+    if (isMainChainUserEntry(entry) && transcriptEntryText(entry).includes(needle)) return i
+  }
+  return -1
+}
+
+// A transcript trimmed down to nothing but bookkeeping entries (queue-operation, mode, …)
+// can't be resumed as a conversation, so the caller drops the session instead of reusing it.
+export function hasConversationEntry(lines) {
+  return lines.some(line => {
+    try {
+      const entry = JSON.parse(line)
+      return (entry?.type === 'user' || entry?.type === 'assistant') && !entry?.isSidechain
+    } catch {
+      return false
+    }
+  })
+}
+
+export function buildRewindUnavailableNotice() {
+  return "✏️ can't rewind to that message — it isn't part of the current session's context anymore. Send it as a new message instead."
+}
+
 export function validateNotifyConfig(config) {
   if (!config || typeof config.botToken !== 'string' || !config.botToken.trim()) {
     return 'config is missing "botToken"'

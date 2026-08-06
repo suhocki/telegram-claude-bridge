@@ -49,6 +49,21 @@ launchctl kickstart -k gui/$UID/com.tgbridge.tldr
 For a second bot/project, repeat with a different label, e.g. `com.tgbridge.ig` and
 `ig.config.json`.
 
+## Rewind on an edited message
+
+Editing a Telegram message rewinds the conversation to just before that turn. There is no CLI
+flag for this: `claude -p --resume <id>` keeps appending to the same session transcript at
+`~/.claude/projects/<cwd-with-non-alphanumerics-replaced-by-dashes>/<session-id>.jsonl`, and it
+resumes from the last entry in that file. So the bridge finds the `type: "user"` line carrying
+`message_id="<edited id>"` (the bridge's own `<channel …>` prompt wrapper is the anchor) and
+truncates the file there, backing the original up to `state/rewind-backups/<session-id>.jsonl`
+first. This leans on Claude Code's on-disk transcript layout — if a future version changes it,
+rewind degrades to the "can't rewind" notice rather than breaking normal replies.
+
+The bot also deletes its own messages from that turn onwards (`state.turns` tracks them per
+chat). It cannot delete the user's own later messages — a bot has no such permission in a
+private chat.
+
 ## e2e testing constraint
 
 There is no MCP/API access to the human operator's personal Telegram account from a coding
