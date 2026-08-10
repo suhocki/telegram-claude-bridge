@@ -34,6 +34,7 @@ import {
   resolveMessageMeta,
   extractAttachment,
   buildAttachmentCaption,
+  isServiceMessage,
   exceedsAttachmentLimit,
   buildInboxFilename,
   MAX_ATTACHMENT_BYTES,
@@ -707,9 +708,15 @@ async function handleMessage(msg) {
   const attachment = extractAttachment(msg)
   const content = msg.text ?? msg.caption ?? null
   if (content == null && !attachment) {
-    // service messages (member joined/left, chat photo/title changed, pinned message, …) and any
-    // other content type we don't handle yet — silently skip instead of noisily replying to them
-    log('ignoring unsupported message', chatId, msg.message_id)
+    if (isServiceMessage(msg)) {
+      log('ignoring service message', chatId, msg.message_id)
+      return
+    }
+    await sendReply(
+      chatId,
+      '(bridge v1 only handles text messages, photos, documents, voice, audio, and video — this message type is not supported yet)',
+      msg.message_id
+    ).catch(() => {})
     return
   }
 
