@@ -247,6 +247,25 @@ test('classifyCommand: null/undefined/empty text is not a command', () => {
   assert.equal(classifyCommand(''), null)
 })
 
+test('classifyCommand: strips a "@botusername" suffix (group command-menu picks add it)', () => {
+  assert.equal(classifyCommand('/new@cntnt237_bot', 'cntnt237_bot'), 'reset')
+  assert.equal(classifyCommand('/reset@cntnt237_bot', 'cntnt237_bot'), 'reset')
+  assert.equal(classifyCommand('/compact@cntnt237_bot', 'cntnt237_bot'), 'compact')
+  assert.equal(classifyCommand('/status@cntnt237_bot', 'cntnt237_bot'), 'status')
+})
+
+test('classifyCommand: "@botusername" suffix matching is case-insensitive', () => {
+  assert.equal(classifyCommand('/new@CntNt237_Bot', 'cntnt237_bot'), 'reset')
+})
+
+test('classifyCommand: without botUsername, an "@bot" suffix is not stripped', () => {
+  assert.equal(classifyCommand('/new@cntnt237_bot'), null)
+})
+
+test('classifyCommand: a suffix for a different bot is not stripped', () => {
+  assert.equal(classifyCommand('/new@some_other_bot', 'cntnt237_bot'), null)
+})
+
 test('normalizeSession: null/undefined stays null', () => {
   assert.equal(normalizeSession(null), null)
   assert.equal(normalizeSession(undefined), null)
@@ -1131,6 +1150,11 @@ test('parseVoiceToggleCommand: recognizes /voice on and /voice off case-insensit
   assert.equal(parseVoiceToggleCommand('/voice on'), 'on')
   assert.equal(parseVoiceToggleCommand('/voice OFF'), 'off')
   assert.equal(parseVoiceToggleCommand('  /voice On  '), 'on')
+})
+
+test('parseVoiceToggleCommand: tolerates a "@botusername" suffix from the group command menu', () => {
+  assert.equal(parseVoiceToggleCommand('/voice@cntnt237_bot on'), 'on')
+  assert.equal(parseVoiceToggleCommand('/voice@cntnt237_bot off'), 'off')
 })
 
 test('parseVoiceToggleCommand: returns null for anything else', () => {

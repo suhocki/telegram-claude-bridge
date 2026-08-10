@@ -78,6 +78,55 @@ export function buildBridgeLaunchAgentPlist({
   })
 }
 
+// For a once-a-day job (StartCalendarInterval), not the always-on bridge process — no
+// KeepAlive/RunAtLoad, since launchd already fires this at Hour:Minute every day and
+// catches up on a missed run once the machine wakes.
+export function buildCalendarLaunchAgentPlist({ label, programArguments, workingDirectory, logPath, hour, minute, env = {} }) {
+  if (!label) throw new Error('label is required')
+  if (!Array.isArray(programArguments) || programArguments.length === 0) {
+    throw new Error('programArguments must be a non-empty array')
+  }
+  if (!workingDirectory) throw new Error('workingDirectory is required')
+  if (!logPath) throw new Error('logPath is required')
+  if (!Number.isInteger(hour) || hour < 0 || hour > 23) throw new Error('hour must be an integer 0-23')
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) throw new Error('minute must be an integer 0-59')
+
+  const argsXml = programArguments.map(a => `    ${stringEl(a)}`).join('\n')
+  const envEntries = Object.entries(env ?? {})
+  const envXml = envEntries.length
+    ? `  <key>EnvironmentVariables</key>\n  <dict>\n${envEntries
+        .map(([k, v]) => `    <key>${xmlEscape(k)}</key>\n    ${stringEl(v)}`)
+        .join('\n')}\n  </dict>\n`
+    : ''
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  ${stringEl(label)}
+  <key>ProgramArguments</key>
+  <array>
+${argsXml}
+  </array>
+  <key>WorkingDirectory</key>
+  ${stringEl(workingDirectory)}
+${envXml}  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>${hour}</integer>
+    <key>Minute</key>
+    <integer>${minute}</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  ${stringEl(logPath)}
+  <key>StandardErrorPath</key>
+  ${stringEl(logPath)}
+</dict>
+</plist>
+`
+}
+
 export function launchAgentNameFromLabel(label) {
   const normalized = String(label ?? '')
   const parts = normalized.split('.')

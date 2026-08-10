@@ -38,11 +38,17 @@ export function buildSendMessageCalls(chatId, text, replyToMessageId, limit = 40
   return buildSendMessageCallsFromChunks(chatId, chunk(text, limit), replyToMessageId, parseMode)
 }
 
-export function classifyCommand(text) {
+// Telegram appends "@<bot_username>" to a command when the user picks it from the
+// group's command-menu suggestion, so a plain t === '/new' equality check silently
+// misses it in groups (works fine in DMs, where Telegram never adds the suffix).
+export function classifyCommand(text, botUsername) {
   const t = String(text ?? '').trim()
-  if (t === '/new' || t === '/reset') return 'reset'
-  if (t === '/compact') return 'compact'
-  if (t === '/status') return 'status'
+  const suffix = botUsername ? `@${botUsername}` : null
+  const normalized =
+    suffix && t.toLowerCase().endsWith(suffix.toLowerCase()) ? t.slice(0, t.length - suffix.length) : t
+  if (normalized === '/new' || normalized === '/reset') return 'reset'
+  if (normalized === '/compact') return 'compact'
+  if (normalized === '/status') return 'status'
   return null
 }
 
@@ -428,7 +434,9 @@ export function buildPlaceholderEditParams(chatId, messageId, status, quoteHtml,
   return keyboard ? { ...base, reply_markup: keyboard } : base
 }
 
-const VOICE_TOGGLE_RE = /^\/voice\s+(on|off)$/i
+// Same "@<bot_username> suffix from the group menu" issue as classifyCommand above —
+// tolerate an optional @mention right after /voice regardless of which bot it names.
+const VOICE_TOGGLE_RE = /^\/voice(?:@\S+)?\s+(on|off)$/i
 
 export function parseVoiceToggleCommand(text) {
   const m = String(text ?? '').trim().match(VOICE_TOGGLE_RE)
