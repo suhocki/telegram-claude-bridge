@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { writeFileSync } from 'node:fs'
+import { writeFileSync, chmodSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildCalendarLaunchAgentPlist } from '../launchagent.mjs'
@@ -14,6 +14,10 @@ if (!home) {
   console.error('HOME is not set in the environment')
   process.exit(1)
 }
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.error('ANTHROPIC_API_KEY is not set in the environment (the generated agent would fall back to the Claude Code subscription login)')
+  process.exit(1)
+}
 const logPath = path.join(home, 'Library', 'Logs', 'telegram-bridge-working-phrases.log')
 
 const plist = buildCalendarLaunchAgentPlist({
@@ -23,11 +27,12 @@ const plist = buildCalendarLaunchAgentPlist({
   logPath,
   hour: 6,
   minute: 0,
-  env: { PATH: process.env.PATH, HOME: home },
+  env: { PATH: process.env.PATH, HOME: home, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY },
 })
 
 if (outputArg) {
-  writeFileSync(outputArg, plist)
+  writeFileSync(outputArg, plist, { mode: 0o600 })
+  chmodSync(outputArg, 0o600)
   console.error(`wrote ${outputArg}`)
   console.error(`install with:\n  cp ${outputArg} ~/Library/LaunchAgents/${LABEL}.plist\n  launchctl bootstrap gui/$UID ~/Library/LaunchAgents/${LABEL}.plist`)
   console.error(`run once by hand to check it works:\n  launchctl kickstart -k gui/$UID/${LABEL}`)
