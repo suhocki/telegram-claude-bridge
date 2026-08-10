@@ -1152,9 +1152,15 @@ test('parseVoiceToggleCommand: recognizes /voice on and /voice off case-insensit
   assert.equal(parseVoiceToggleCommand('  /voice On  '), 'on')
 })
 
-test('parseVoiceToggleCommand: tolerates a "@botusername" suffix from the group command menu', () => {
-  assert.equal(parseVoiceToggleCommand('/voice@cntnt237_bot on'), 'on')
-  assert.equal(parseVoiceToggleCommand('/voice@cntnt237_bot off'), 'off')
+test('parseVoiceToggleCommand: tolerates this bot\'s own "@botusername" suffix from the group command menu', () => {
+  assert.equal(parseVoiceToggleCommand('/voice@cntnt237_bot on', 'cntnt237_bot'), 'on')
+  assert.equal(parseVoiceToggleCommand('/voice@cntnt237_bot off', 'cntnt237_bot'), 'off')
+  assert.equal(parseVoiceToggleCommand('/voice@CntNt237_Bot on', 'cntnt237_bot'), 'on')
+})
+
+test('parseVoiceToggleCommand: an @mention naming a different bot is not ours to act on', () => {
+  assert.equal(parseVoiceToggleCommand('/voice@some_other_bot on', 'cntnt237_bot'), null)
+  assert.equal(parseVoiceToggleCommand('/voice@cntnt237_bot on'), null)
 })
 
 test('parseVoiceToggleCommand: returns null for anything else', () => {

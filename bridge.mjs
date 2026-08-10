@@ -120,8 +120,7 @@ const inboxDir = path.join(stateDir, 'inbox')
 const tmpDir = path.join(stateDir, 'tmp')
 const outboxDir = path.join(stateDir, 'outbox')
 const rewindBackupDir = path.join(stateDir, 'rewind-backups')
-// Resolved against the bridge module's own directory, not cwd/configPath, so every
-// bot/project config shares the one working-phrases.json regardless of where it's launched from.
+// Resolved against the bridge module's own directory, not cwd/configPath, so every config shares one file.
 const workingPhrasesFile = path.join(path.dirname(fileURLToPath(import.meta.url)), 'working-phrases.json')
 const API = `https://api.telegram.org/bot${botToken}`
 const GET_UPDATES_POLL_TIMEOUT_S = 30
@@ -176,9 +175,7 @@ function saveState(state) {
   writeFileSync(stateFile, readFileSync(tmp))
 }
 
-// Reads working-phrases.json fresh each call (cheap — it's small and only read once per
-// incoming message) so a same-day rewrite by scripts/update-working-phrases.mjs is picked
-// up without needing a bridge restart.
+// Reads working-phrases.json fresh each call so a same-day rewrite is picked up without a restart.
 function nextWorkingPhrase() {
   const { phrase, nextState } = pickWorkingPhrase(
     state.workingPhraseQueue,
@@ -724,7 +721,7 @@ async function handleMessage(msg) {
     return
   }
 
-  const voiceToggle = parseVoiceToggleCommand(content)
+  const voiceToggle = parseVoiceToggleCommand(content, botIdentity.username)
   if (voiceToggle) {
     state.voiceReply = setVoiceReplyPreference(state.voiceReply, chatId, voiceToggle === 'on')
     saveState(state)
@@ -911,8 +908,7 @@ async function handleMessage(msg) {
       },
     })
     const result = await claudePromise
-    // no finalStatus edit here: the placeholder gets deleted outright once the real
-    // reply is sent below, so editing it to a transient "done" text first is wasted work
+    // no finalStatus edit: the placeholder gets deleted outright below, once the real reply is sent
     rootController.statusUpdater.stop()
     let newSession = session
     if (result.session_id) {
@@ -932,12 +928,15 @@ async function handleMessage(msg) {
     // new message, not an edit of the placeholder, so Telegram pushes a notification
     botMessageIds.push(...(await sendReply(chatId, replyText, msg.message_id)))
     if (placeholderId != null) {
-      await tg('deleteMessage', { chat_id: chatId, message_id: placeholderId }).catch(e =>
+      // only untrack on a confirmed delete, so a failed one still gets the finally block's cleanup + a rewind retry
+      try {
+        await tg('deleteMessage', { chat_id: chatId, message_id: placeholderId })
+        const idx = botMessageIds.indexOf(placeholderId)
+        if (idx !== -1) botMessageIds.splice(idx, 1)
+        placeholderId = null
+      } catch (e) {
         log('failed to delete working placeholder', e.message)
-      )
-      const idx = botMessageIds.indexOf(placeholderId)
-      if (idx !== -1) botMessageIds.splice(idx, 1)
-      placeholderId = null
+      }
     }
     if (!result.is_error) {
       for (const attachPath of attachPaths) {
@@ -948,8 +947,7 @@ async function handleMessage(msg) {
       }
       if (checkin) scheduleCheckin(chatId, newSession?.id ?? sessionId, checkin)
     }
-    // on success, clear the 👀 receipt reaction instead of swapping in a 👍 — the reply
-    // message itself is the completion signal now that the placeholder gets deleted too
+    // on success, clear the 👀 receipt reaction instead of swapping in a 👍 — the reply itself is the signal now
     await setReaction(chatId, msg.message_id, reactionEmoji || (result.is_error ? ERROR_REACTION : null))
   } catch (e) {
     rootController.statusUpdater.stop()

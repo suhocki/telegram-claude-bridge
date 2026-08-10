@@ -78,9 +78,7 @@ export function buildBridgeLaunchAgentPlist({
   })
 }
 
-// For a once-a-day job (StartCalendarInterval), not the always-on bridge process — no
-// KeepAlive/RunAtLoad, since launchd already fires this at Hour:Minute every day and
-// catches up on a missed run once the machine wakes.
+// For a once-a-day job (StartCalendarInterval) — no KeepAlive/RunAtLoad, unlike the always-on bridge process.
 export function buildCalendarLaunchAgentPlist({ label, programArguments, workingDirectory, logPath, hour, minute, env = {} }) {
   if (!label) throw new Error('label is required')
   if (!Array.isArray(programArguments) || programArguments.length === 0) {

@@ -38,9 +38,7 @@ export function buildSendMessageCalls(chatId, text, replyToMessageId, limit = 40
   return buildSendMessageCallsFromChunks(chatId, chunk(text, limit), replyToMessageId, parseMode)
 }
 
-// Telegram appends "@<bot_username>" to a command when the user picks it from the
-// group's command-menu suggestion, so a plain t === '/new' equality check silently
-// misses it in groups (works fine in DMs, where Telegram never adds the suffix).
+// Telegram appends "@<bot_username>" when a command is picked from a group's command-menu suggestion.
 export function classifyCommand(text, botUsername) {
   const t = String(text ?? '').trim()
   const suffix = botUsername ? `@${botUsername}` : null
@@ -434,13 +432,16 @@ export function buildPlaceholderEditParams(chatId, messageId, status, quoteHtml,
   return keyboard ? { ...base, reply_markup: keyboard } : base
 }
 
-// Same "@<bot_username> suffix from the group menu" issue as classifyCommand above —
-// tolerate an optional @mention right after /voice regardless of which bot it names.
-const VOICE_TOGGLE_RE = /^\/voice(?:@\S+)?\s+(on|off)$/i
+// Same "@<bot_username> suffix from the group menu" issue as classifyCommand above.
+const VOICE_TOGGLE_RE = /^\/voice(?:@(\S+))?\s+(on|off)$/i
 
-export function parseVoiceToggleCommand(text) {
+export function parseVoiceToggleCommand(text, botUsername) {
   const m = String(text ?? '').trim().match(VOICE_TOGGLE_RE)
-  return m ? m[1].toLowerCase() : null
+  if (!m) return null
+  const mentioned = m[1]
+  // an @mention naming a different bot isn't ours to act on, even in a requireMention: false group
+  if (mentioned && mentioned.toLowerCase() !== String(botUsername ?? '').toLowerCase()) return null
+  return m[2].toLowerCase()
 }
 
 export function setVoiceReplyPreference(voiceReplyState, chatId, enabled) {

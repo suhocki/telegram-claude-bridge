@@ -1,8 +1,5 @@
 #!/usr/bin/env node
-// Regenerates working-phrases.json with a fresh batch of Russian "still working" phrases
-// for the bridge's placeholder message. Meant to run once a day via
-// com.tgbridge.working-phrases.plist (see scripts/gen-working-phrases-launchagent.mjs) —
-// on failure it leaves the existing file untouched so a bad generation never empties it.
+// On failure, leaves the existing working-phrases.json untouched rather than emptying it.
 
 import { writeFileSync, renameSync } from 'node:fs'
 import path from 'node:path'
