@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { writeFileSync } from 'node:fs'
+import { writeFileSync, chmodSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildCalendarLaunchAgentPlist } from '../launchagent.mjs'
@@ -31,7 +31,8 @@ const plist = buildCalendarLaunchAgentPlist({
 })
 
 if (outputArg) {
-  writeFileSync(outputArg, plist)
+  writeFileSync(outputArg, plist, { mode: 0o600 })
+  chmodSync(outputArg, 0o600)
   console.error(`wrote ${outputArg}`)
   console.error(`install with:\n  cp ${outputArg} ~/Library/LaunchAgents/${LABEL}.plist\n  launchctl bootstrap gui/$UID ~/Library/LaunchAgents/${LABEL}.plist`)
   console.error(`run once by hand to check it works:\n  launchctl kickstart -k gui/$UID/${LABEL}`)

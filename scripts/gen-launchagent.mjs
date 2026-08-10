@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { writeFileSync, existsSync } from 'node:fs'
+import { writeFileSync, chmodSync, existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { buildBridgeLaunchAgentPlist, launchAgentNameFromLabel } from '../launchagent.mjs'
@@ -42,7 +42,8 @@ const plist = buildBridgeLaunchAgentPlist({
 })
 
 if (outputArg) {
-  writeFileSync(outputArg, plist)
+  writeFileSync(outputArg, plist, { mode: 0o600 })
+  chmodSync(outputArg, 0o600)
   console.error(`wrote ${outputArg}`)
   console.error(`install with:\n  cp ${outputArg} ~/Library/LaunchAgents/${label}.plist\n  launchctl bootstrap gui/$UID ~/Library/LaunchAgents/${label}.plist`)
   console.error(`restart with:\n  launchctl kickstart -k gui/$UID/${label}`)
