@@ -468,12 +468,8 @@ export function buildPlaceholderEditParams(chatId, messageId, status, isHtml = f
 }
 
 export function buildWorkingPlaceholderParams(chatId, text, replyToMessageId, keyboard) {
-  return {
-    chat_id: chatId,
-    text,
-    reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true },
-    reply_markup: keyboard,
-  }
+  const base = { chat_id: chatId, text, reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true } }
+  return keyboard ? { ...base, reply_markup: keyboard } : base
 }
 
 const VOICE_TOGGLE_ARG_RE = /^\s+(on|off)$/i

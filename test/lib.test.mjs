@@ -1080,6 +1080,14 @@ test('buildWorkingPlaceholderParams: builds a threaded sendMessage call with the
   })
 })
 
+test('buildWorkingPlaceholderParams: omits reply_markup entirely when no keyboard is given', () => {
+  assert.deepEqual(buildWorkingPlaceholderParams('123', '⏳ working…', 42, null), {
+    chat_id: '123',
+    text: '⏳ working…',
+    reply_parameters: { message_id: 42, allow_sending_without_reply: true },
+  })
+})
+
 test('parseVoiceToggleCommand: recognizes /voice on and /voice off case-insensitively', () => {
   assert.equal(parseVoiceToggleCommand('/voice on'), 'on')
   assert.equal(parseVoiceToggleCommand('/voice OFF'), 'off')
