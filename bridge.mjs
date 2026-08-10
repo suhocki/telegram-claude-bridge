@@ -175,16 +175,21 @@ function saveState(state) {
   writeFileSync(stateFile, readFileSync(tmp))
 }
 
-// Reads working-phrases.json fresh each call so a same-day rewrite is picked up without a restart.
+// Reads working-phrases.json fresh each call; never throws, since it runs before handleMessage's own try/catch.
 function nextWorkingPhrase() {
-  const { phrase, nextState } = pickWorkingPhrase(
-    state.workingPhraseQueue,
-    loadWorkingPhrases(workingPhrasesFile),
-    todayDateString()
-  )
-  state.workingPhraseQueue = nextState
-  saveState(state)
-  return phrase
+  try {
+    const { phrase, nextState } = pickWorkingPhrase(
+      state.workingPhraseQueue,
+      loadWorkingPhrases(workingPhrasesFile),
+      todayDateString()
+    )
+    state.workingPhraseQueue = nextState
+    saveState(state)
+    return phrase
+  } catch (e) {
+    log('failed to rotate working phrase', e.message)
+    return DEFAULT_WORKING_STATUS
+  }
 }
 
 const state = loadState()
