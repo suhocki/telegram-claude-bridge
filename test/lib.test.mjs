@@ -51,8 +51,8 @@ import {
   buildWhisperArgs,
   parseWhisperTranscript,
   buildVoiceTranscriptText,
-  buildVoiceTranscriptMessage,
-  VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS,
+  buildTranscriptQuoteHtml,
+  TRANSCRIPT_QUOTE_MAX_CHARS,
   buildPlaceholderEditParams,
   buildCancelKeyboard,
   parseVoiceToggleCommand,
@@ -1061,22 +1061,31 @@ test('buildVoiceTranscriptText: empty/whitespace-only transcript yields an unava
   assert.equal(buildVoiceTranscriptText('   '), '(voice message transcript unavailable)')
 })
 
-test('buildVoiceTranscriptMessage: prefixes a trimmed transcript for the standalone chat message', () => {
-  assert.equal(buildVoiceTranscriptMessage('  what is the weather in Budapest?  '), '🎙️ what is the weather in Budapest?')
+test('buildTranscriptQuoteHtml: wraps a trimmed transcript in a blockquote', () => {
+  assert.equal(buildTranscriptQuoteHtml('  what is the weather in Budapest?  '), '<blockquote>what is the weather in Budapest?</blockquote>')
 })
 
-test('buildVoiceTranscriptMessage: empty/whitespace-only transcript yields null (nothing to send)', () => {
-  assert.equal(buildVoiceTranscriptMessage(''), null)
-  assert.equal(buildVoiceTranscriptMessage('   '), null)
-  assert.equal(buildVoiceTranscriptMessage(undefined), null)
+test('buildTranscriptQuoteHtml: escapes HTML-significant characters', () => {
+  assert.equal(buildTranscriptQuoteHtml('<b>a & b</b>'), '<blockquote>&lt;b&gt;a &amp; b&lt;/b&gt;</blockquote>')
 })
 
-test('buildVoiceTranscriptMessage: truncates a transcript longer than VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS', () => {
-  const longTranscript = 'a'.repeat(VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS + 500)
-  const result = buildVoiceTranscriptMessage(longTranscript)
-  assert.ok(result.startsWith('🎙️ '))
-  assert.ok(result.endsWith('…'))
+test('buildTranscriptQuoteHtml: empty/whitespace-only transcript yields null', () => {
+  assert.equal(buildTranscriptQuoteHtml(''), null)
+  assert.equal(buildTranscriptQuoteHtml('   '), null)
+})
+
+test('buildTranscriptQuoteHtml: truncates a transcript longer than TRANSCRIPT_QUOTE_MAX_CHARS', () => {
+  const longTranscript = 'a'.repeat(TRANSCRIPT_QUOTE_MAX_CHARS + 500)
+  const result = buildTranscriptQuoteHtml(longTranscript)
+  assert.ok(result.startsWith('<blockquote>'))
+  assert.ok(result.endsWith('…</blockquote>'))
   assert.ok(result.length < longTranscript.length)
+})
+
+test('buildTranscriptQuoteHtml: bounds the final size even when escaping expands a transcript past the cap', () => {
+  const longTranscript = '&'.repeat(TRANSCRIPT_QUOTE_MAX_CHARS)
+  const result = buildTranscriptQuoteHtml(longTranscript)
+  assert.ok(result.length <= TRANSCRIPT_QUOTE_MAX_CHARS + '<blockquote></blockquote>'.length)
 })
 
 test('buildPlaceholderEditParams: plain status text, no HTML', () => {

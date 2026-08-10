@@ -43,7 +43,6 @@ import {
   buildOutboundAttachmentInstructions,
   combineSystemPrompts,
   buildReplyCallsFromChunks,
-  buildSendMessageCalls,
   buildReactionMarkerInstructions,
   buildCheckinMarkerInstructions,
   buildCheckinFollowupPrompt,
@@ -61,7 +60,7 @@ import {
   buildWhisperArgs,
   parseWhisperTranscript,
   buildVoiceTranscriptText,
-  buildVoiceTranscriptMessage,
+  buildTranscriptQuoteHtml,
   buildCancelKeyboard,
   buildPlaceholderEditParams,
   parseVoiceToggleCommand,
@@ -218,20 +217,6 @@ async function sendReply(chatId, text, replyToMessageId, editMessageId) {
       sent = await tg(method, { ...plainParams, text: htmlToPlainFallback(params.text) })
     }
     if (method === 'sendMessage' && sent?.message_id != null) sentIds.push(sent.message_id)
-  }
-  return sentIds
-}
-
-// Unlike sendReply, no parse_mode — text (e.g. a Whisper transcript) shows verbatim, not Markdown-rendered.
-async function sendPlainMessage(chatId, text, replyToMessageId) {
-  const sentIds = []
-  for (const params of buildSendMessageCalls(chatId, text, replyToMessageId)) {
-    try {
-      const sent = await tg('sendMessage', params)
-      if (sent?.message_id != null) sentIds.push(sent.message_id)
-    } catch (e) {
-      log('sendPlainMessage failed', e.message)
-    }
   }
   return sentIds
 }
@@ -811,6 +796,45 @@ async function handleMessage(msg) {
     log('failed to send working placeholder', e.message)
   }
 
+  let attachmentResult = null
+  if (attachment) {
+    attachmentResult = await downloadAttachment(attachment)
+    if (attachmentResult.error) log('attachment download failed', attachment.kind, attachmentResult.error)
+  }
+
+  let transcriptionError = null
+  if (attachment?.kind === 'voice' && attachmentResult?.path) {
+    const transcription = await transcribeVoice(attachmentResult.path)
+    if (transcription.error) {
+      transcriptionError = transcription.error
+      log('voice transcription failed', transcriptionError)
+    } else {
+      promptText = buildVoiceTranscriptText(transcription.text)
+      const quoteHtml = buildTranscriptQuoteHtml(transcription.text)
+      if (quoteHtml && placeholderId != null) {
+        // freeze this placeholder as a permanent record of what was heard, instead of the fancy
+        // phrase it started with — dropping reply_markup here also drops its Cancel button, since
+        // live progress (and Cancel) move to a fresh placeholder below
+        await tg('editMessageText', { chat_id: chatId, message_id: placeholderId, text: quoteHtml, parse_mode: 'HTML' }).catch(e =>
+          log('failed to freeze placeholder as transcript quote', e.message)
+        )
+        try {
+          const progressPlaceholder = await tg('sendMessage', {
+            chat_id: chatId,
+            text: workingStatus,
+            reply_parameters: { message_id: placeholderId, allow_sending_without_reply: true },
+            reply_markup: cancelKeyboard,
+          })
+          placeholderId = progressPlaceholder.message_id
+          botMessageIds.push(placeholderId)
+        } catch (e) {
+          log('failed to send post-transcript working placeholder', e.message)
+          placeholderId = null
+        }
+      }
+    }
+  }
+
   // shared by root + every subagent placeholder below, so a 429 on any one of them
   // backs off every concurrent edit loop writing to this same chat
   const chatRateGate = createChatRateGate()
@@ -855,28 +879,6 @@ async function handleMessage(msg) {
       const messageId = await entry.messageIdPromise
       if (messageId != null) {
         await tg('deleteMessage', { chat_id: chatId, message_id: messageId }).catch(e => log('failed to delete subagent placeholder', e.message))
-      }
-    }
-  }
-
-  let attachmentResult = null
-  if (attachment) {
-    attachmentResult = await downloadAttachment(attachment)
-    if (attachmentResult.error) log('attachment download failed', attachment.kind, attachmentResult.error)
-  }
-
-  let transcriptionError = null
-  if (attachment?.kind === 'voice' && attachmentResult?.path) {
-    const transcription = await transcribeVoice(attachmentResult.path)
-    if (transcription.error) {
-      transcriptionError = transcription.error
-      log('voice transcription failed', transcriptionError)
-    } else {
-      promptText = buildVoiceTranscriptText(transcription.text)
-      const transcriptMessage = buildVoiceTranscriptMessage(transcription.text)
-      // a separate, permanent message — the placeholder it'd otherwise ride along on gets deleted once the real reply lands
-      if (transcriptMessage) {
-        botMessageIds.push(...(await sendPlainMessage(chatId, transcriptMessage, msg.message_id)))
       }
     }
   }

@@ -1,7 +1,7 @@
 // Pure, testable helpers extracted out of bridge.mjs's imperative poll loop.
 
 import path from 'node:path'
-import { markdownToTelegramHtml, htmlToPlainFallback } from './markdown-html.mjs'
+import { markdownToTelegramHtml, htmlToPlainFallback, escapeHtml } from './markdown-html.mjs'
 import { truncateStatus } from './stream-progress.mjs'
 
 export function chunk(text, limit = 4096) {
@@ -443,11 +443,14 @@ export function buildVoiceTranscriptText(transcript) {
   return trimmed ? `(voice message transcript)\n${trimmed}` : '(voice message transcript unavailable)'
 }
 
-export const VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS = 3000
+export const TRANSCRIPT_QUOTE_MAX_CHARS = 3000
 
-export function buildVoiceTranscriptMessage(transcript) {
+export function buildTranscriptQuoteHtml(transcript) {
   const trimmed = String(transcript ?? '').trim()
-  return trimmed ? `🎙️ ${truncateStatus(trimmed, VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS)}` : null
+  if (!trimmed) return null
+  const escaped = escapeHtml(truncateStatus(trimmed, TRANSCRIPT_QUOTE_MAX_CHARS))
+  // escaping can expand length (e.g. "&" -> "&amp;"); truncate again to bound the final size regardless of expansion
+  return `<blockquote>${truncateStatus(escaped, TRANSCRIPT_QUOTE_MAX_CHARS)}</blockquote>`
 }
 
 export function buildCancelKeyboard(chatId) {
