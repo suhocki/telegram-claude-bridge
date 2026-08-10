@@ -2,6 +2,7 @@
 
 import path from 'node:path'
 import { markdownToTelegramHtml, htmlToPlainFallback } from './markdown-html.mjs'
+import { truncateStatus } from './stream-progress.mjs'
 
 export function chunk(text, limit = 4096) {
   const out = []
@@ -442,9 +443,11 @@ export function buildVoiceTranscriptText(transcript) {
   return trimmed ? `(voice message transcript)\n${trimmed}` : '(voice message transcript unavailable)'
 }
 
+export const VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS = 3000
+
 export function buildVoiceTranscriptMessage(transcript) {
   const trimmed = String(transcript ?? '').trim()
-  return trimmed ? `🎙️ ${trimmed}` : null
+  return trimmed ? `🎙️ ${truncateStatus(trimmed, VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS)}` : null
 }
 
 export function buildCancelKeyboard(chatId) {

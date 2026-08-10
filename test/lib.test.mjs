@@ -52,6 +52,7 @@ import {
   parseWhisperTranscript,
   buildVoiceTranscriptText,
   buildVoiceTranscriptMessage,
+  VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS,
   buildPlaceholderEditParams,
   buildCancelKeyboard,
   parseVoiceToggleCommand,
@@ -1068,6 +1069,14 @@ test('buildVoiceTranscriptMessage: empty/whitespace-only transcript yields null 
   assert.equal(buildVoiceTranscriptMessage(''), null)
   assert.equal(buildVoiceTranscriptMessage('   '), null)
   assert.equal(buildVoiceTranscriptMessage(undefined), null)
+})
+
+test('buildVoiceTranscriptMessage: truncates a transcript longer than VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS', () => {
+  const longTranscript = 'a'.repeat(VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS + 500)
+  const result = buildVoiceTranscriptMessage(longTranscript)
+  assert.ok(result.startsWith('🎙️ '))
+  assert.ok(result.endsWith('…'))
+  assert.ok(result.length < longTranscript.length)
 })
 
 test('buildPlaceholderEditParams: plain status text, no HTML', () => {
