@@ -176,7 +176,7 @@ This defaults to 06:00 local time and logs to
 ## Other behavior
 
 - **Attachments**: photos, documents, voice/audio/video sent to the bot are downloaded and passed to Claude via an `attachment_path` on the channel tag (voice messages get transcribed first if `voiceTranscription` is configured).
-- **Voice-driving agents**: with `voiceTranscription` set up, sending a voice note works just as well as typing — dictate a task on the go and Claude runs it the same as a text message. The transcript is posted back as its own permanent message (separate from the final reply), so in a group everyone can see what was actually dictated. Worth setting up the whisper model up front if you plan to mostly drive the bot by voice.
+- **Voice-driving agents**: with `voiceTranscription` set up, sending a voice note works just as well as typing — dictate a task on the go and Claude runs it the same as a text message. The opening placeholder freezes into a permanent, quoted transcript instead of the usual fancy phrase, and live progress (plus the Cancel button) moves to a second, ordinary placeholder — so in a group everyone can see what was actually dictated, and it doesn't disappear once the run finishes. Worth setting up the whisper model up front if you plan to mostly drive the bot by voice.
 - **Outbound files**: Claude can send files back by writing `ATTACH: /absolute/path` lines in its reply.
 - **Reactions**: Claude can react to the triggering message with `REACT: <emoji>`.
 - **Check-ins**: Claude can schedule a follow-up turn with `CHECKIN: <minutes> <what to check>` for work that keeps running after the reply is sent.

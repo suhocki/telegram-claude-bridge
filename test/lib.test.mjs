@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import {
   chunk,
   sanitizeAttr,
-  buildSendMessageCalls,
   buildSendMessageCallsFromChunks,
   createKeyedQueue,
   classifyCommand,
@@ -51,9 +50,10 @@ import {
   buildWhisperArgs,
   parseWhisperTranscript,
   buildVoiceTranscriptText,
-  buildVoiceTranscriptMessage,
-  VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS,
+  buildTranscriptQuoteHtml,
+  TRANSCRIPT_QUOTE_MAX_CHARS,
   buildPlaceholderEditParams,
+  buildWorkingPlaceholderParams,
   buildCancelKeyboard,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
@@ -141,65 +141,6 @@ test('sanitizeAttr: passes through a plain username untouched', () => {
 test('sanitizeAttr: null/undefined become an empty string, not "null"/"undefined"', () => {
   assert.equal(sanitizeAttr(undefined), '')
   assert.equal(sanitizeAttr(null), '')
-})
-
-test('buildSendMessageCalls: single chunk gets reply_parameters when a message id is given', () => {
-  const calls = buildSendMessageCalls('123', 'hello', 42)
-  assert.deepEqual(calls, [
-    { chat_id: '123', text: 'hello', reply_parameters: { message_id: 42, allow_sending_without_reply: true } },
-  ])
-})
-
-test('buildSendMessageCalls: no reply_parameters when message id is omitted', () => {
-  const calls = buildSendMessageCalls('123', 'hello')
-  assert.deepEqual(calls, [{ chat_id: '123', text: 'hello' }])
-})
-
-test('buildSendMessageCalls: no reply_parameters when message id is null', () => {
-  const calls = buildSendMessageCalls('123', 'hello', null)
-  assert.deepEqual(calls, [{ chat_id: '123', text: 'hello' }])
-})
-
-test('buildSendMessageCalls: only the first chunk threads under the triggering message', () => {
-  const text = 'a'.repeat(6) + '\n' + 'b'.repeat(6)
-  const calls = buildSendMessageCalls('123', text, 99, 10)
-  assert.deepEqual(calls, [
-    { chat_id: '123', text: 'a'.repeat(6), reply_parameters: { message_id: 99, allow_sending_without_reply: true } },
-    { chat_id: '123', text: 'b'.repeat(6) },
-  ])
-})
-
-test('buildSendMessageCalls: with three or more chunks, only the first threads and the rest do not', () => {
-  const text = 'a'.repeat(6) + '\n' + 'b'.repeat(6) + '\n' + 'c'.repeat(6)
-  const calls = buildSendMessageCalls('123', text, 99, 10)
-  assert.deepEqual(calls, [
-    { chat_id: '123', text: 'a'.repeat(6), reply_parameters: { message_id: 99, allow_sending_without_reply: true } },
-    { chat_id: '123', text: 'b'.repeat(6) },
-    { chat_id: '123', text: 'c'.repeat(6) },
-  ])
-})
-
-test('buildSendMessageCalls: message id 0 is a valid id and still threads', () => {
-  const calls = buildSendMessageCalls('123', 'hi', 0)
-  assert.deepEqual(calls, [
-    { chat_id: '123', text: 'hi', reply_parameters: { message_id: 0, allow_sending_without_reply: true } },
-  ])
-})
-
-test('buildSendMessageCalls: adds parse_mode to every chunk when given', () => {
-  const text = 'a'.repeat(6) + '\n' + 'b'.repeat(6)
-  const calls = buildSendMessageCalls('123', text, 99, 10, 'HTML')
-  assert.deepEqual(calls, [
-    { chat_id: '123', text: 'a'.repeat(6), parse_mode: 'HTML', reply_parameters: { message_id: 99, allow_sending_without_reply: true } },
-    { chat_id: '123', text: 'b'.repeat(6), parse_mode: 'HTML' },
-  ])
-})
-
-test('buildSendMessageCalls: no parse_mode key when omitted (back-compat)', () => {
-  const calls = buildSendMessageCalls('123', 'hello', 42)
-  assert.deepEqual(calls, [
-    { chat_id: '123', text: 'hello', reply_parameters: { message_id: 42, allow_sending_without_reply: true } },
-  ])
 })
 
 test('buildSendMessageCallsFromChunks: builds params straight from pre-chunked parts, no re-chunking', () => {
@@ -1061,22 +1002,39 @@ test('buildVoiceTranscriptText: empty/whitespace-only transcript yields an unava
   assert.equal(buildVoiceTranscriptText('   '), '(voice message transcript unavailable)')
 })
 
-test('buildVoiceTranscriptMessage: prefixes a trimmed transcript for the standalone chat message', () => {
-  assert.equal(buildVoiceTranscriptMessage('  what is the weather in Budapest?  '), '🎙️ what is the weather in Budapest?')
+test('buildTranscriptQuoteHtml: wraps a trimmed transcript in a blockquote', () => {
+  assert.equal(buildTranscriptQuoteHtml('  what is the weather in Budapest?  '), '<blockquote>what is the weather in Budapest?</blockquote>')
 })
 
-test('buildVoiceTranscriptMessage: empty/whitespace-only transcript yields null (nothing to send)', () => {
-  assert.equal(buildVoiceTranscriptMessage(''), null)
-  assert.equal(buildVoiceTranscriptMessage('   '), null)
-  assert.equal(buildVoiceTranscriptMessage(undefined), null)
+test('buildTranscriptQuoteHtml: escapes HTML-significant characters', () => {
+  assert.equal(buildTranscriptQuoteHtml('<b>a & b</b>'), '<blockquote>&lt;b&gt;a &amp; b&lt;/b&gt;</blockquote>')
 })
 
-test('buildVoiceTranscriptMessage: truncates a transcript longer than VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS', () => {
-  const longTranscript = 'a'.repeat(VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS + 500)
-  const result = buildVoiceTranscriptMessage(longTranscript)
-  assert.ok(result.startsWith('🎙️ '))
-  assert.ok(result.endsWith('…'))
+test('buildTranscriptQuoteHtml: empty/whitespace-only/undefined transcript yields null', () => {
+  assert.equal(buildTranscriptQuoteHtml(''), null)
+  assert.equal(buildTranscriptQuoteHtml('   '), null)
+  assert.equal(buildTranscriptQuoteHtml(undefined), null)
+})
+
+test('buildTranscriptQuoteHtml: truncates a transcript longer than TRANSCRIPT_QUOTE_MAX_CHARS', () => {
+  const longTranscript = 'a'.repeat(TRANSCRIPT_QUOTE_MAX_CHARS + 500)
+  const result = buildTranscriptQuoteHtml(longTranscript)
+  assert.ok(result.startsWith('<blockquote>'))
+  assert.ok(result.endsWith('…</blockquote>'))
   assert.ok(result.length < longTranscript.length)
+})
+
+test('buildTranscriptQuoteHtml: bounds the final size even when escaping expands a transcript past the cap', () => {
+  const longTranscript = '&'.repeat(TRANSCRIPT_QUOTE_MAX_CHARS)
+  const result = buildTranscriptQuoteHtml(longTranscript)
+  assert.ok(result.length <= TRANSCRIPT_QUOTE_MAX_CHARS + '<blockquote></blockquote>'.length)
+})
+
+test('buildTranscriptQuoteHtml: never cuts an escaped entity in half, even when the raw cut point lands inside one', () => {
+  const longTranscript = '&'.repeat(TRANSCRIPT_QUOTE_MAX_CHARS)
+  const result = buildTranscriptQuoteHtml(longTranscript)
+  // the raw slice(0, 2999) lands mid-"&amp;" — that dangling "&amp" fragment must be dropped
+  assert.equal(result, `<blockquote>${'&amp;'.repeat(599)}…</blockquote>`)
 })
 
 test('buildPlaceholderEditParams: plain status text, no HTML', () => {
@@ -1109,6 +1067,24 @@ test('buildPlaceholderEditParams: with a keyboard, attaches reply_markup so edit
     message_id: 456,
     text: '⏳ working…',
     reply_markup: keyboard,
+  })
+})
+
+test('buildWorkingPlaceholderParams: builds a threaded sendMessage call with the Cancel keyboard attached', () => {
+  const keyboard = buildCancelKeyboard('123')
+  assert.deepEqual(buildWorkingPlaceholderParams('123', '⏳ working…', 42, keyboard), {
+    chat_id: '123',
+    text: '⏳ working…',
+    reply_parameters: { message_id: 42, allow_sending_without_reply: true },
+    reply_markup: keyboard,
+  })
+})
+
+test('buildWorkingPlaceholderParams: omits reply_markup entirely when no keyboard is given', () => {
+  assert.deepEqual(buildWorkingPlaceholderParams('123', '⏳ working…', 42, null), {
+    chat_id: '123',
+    text: '⏳ working…',
+    reply_parameters: { message_id: 42, allow_sending_without_reply: true },
   })
 })
 

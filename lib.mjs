@@ -1,7 +1,7 @@
 // Pure, testable helpers extracted out of bridge.mjs's imperative poll loop.
 
 import path from 'node:path'
-import { markdownToTelegramHtml, htmlToPlainFallback } from './markdown-html.mjs'
+import { markdownToTelegramHtml, htmlToPlainFallback, escapeHtml } from './markdown-html.mjs'
 import { truncateStatus } from './stream-progress.mjs'
 
 export function chunk(text, limit = 4096) {
@@ -30,10 +30,6 @@ export function buildSendMessageCallsFromChunks(chatId, chunks, replyToMessageId
     }
     return params
   })
-}
-
-export function buildSendMessageCalls(chatId, text, replyToMessageId, limit = 4096, parseMode) {
-  return buildSendMessageCallsFromChunks(chatId, chunk(text, limit), replyToMessageId, parseMode)
 }
 
 function mentionNamesBot(mentioned, botUsername) {
@@ -443,11 +439,18 @@ export function buildVoiceTranscriptText(transcript) {
   return trimmed ? `(voice message transcript)\n${trimmed}` : '(voice message transcript unavailable)'
 }
 
-export const VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS = 3000
+export const TRANSCRIPT_QUOTE_MAX_CHARS = 3000
 
-export function buildVoiceTranscriptMessage(transcript) {
+const DANGLING_ENTITY_BEFORE_ELLIPSIS_RE = /&[a-zA-Z0-9#]*(…)$/
+
+export function buildTranscriptQuoteHtml(transcript) {
   const trimmed = String(transcript ?? '').trim()
-  return trimmed ? `🎙️ ${truncateStatus(trimmed, VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS)}` : null
+  if (!trimmed) return null
+  const escaped = escapeHtml(trimmed)
+  const truncated = truncateStatus(escaped, TRANSCRIPT_QUOTE_MAX_CHARS)
+  // a raw-character cut can land inside an entity escapeHtml introduced (e.g. "&amp" missing its ";") — drop it.
+  const safe = truncated === escaped ? truncated : truncated.replace(DANGLING_ENTITY_BEFORE_ELLIPSIS_RE, '$1')
+  return `<blockquote>${safe}</blockquote>`
 }
 
 export function buildCancelKeyboard(chatId) {
@@ -461,6 +464,11 @@ export function buildPlaceholderEditParams(chatId, messageId, status, isHtml = f
   const base = isHtml
     ? { chat_id: chatId, message_id: messageId, text: status, parse_mode: 'HTML' }
     : { chat_id: chatId, message_id: messageId, text: status }
+  return keyboard ? { ...base, reply_markup: keyboard } : base
+}
+
+export function buildWorkingPlaceholderParams(chatId, text, replyToMessageId, keyboard) {
+  const base = { chat_id: chatId, text, reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true } }
   return keyboard ? { ...base, reply_markup: keyboard } : base
 }
 
