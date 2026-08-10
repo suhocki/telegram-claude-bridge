@@ -932,6 +932,8 @@ async function handleMessage(msg) {
         placeholderId = null
       } catch (e) {
         log('failed to delete working placeholder', e.message)
+        // fall back to a terminal status edit so a stuck delete doesn't leave a stale phrase forever
+        await rootController.editPlaceholder({ text: result.is_error ? '❌ failed' : '✅ done', html: false })
       }
     }
     if (!result.is_error) {

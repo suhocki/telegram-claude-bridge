@@ -265,6 +265,10 @@ test('classifyCommand: a suffix for a different bot is not stripped', () => {
   assert.equal(classifyCommand('/new@some_other_bot', 'cntnt237_bot'), null)
 })
 
+test('classifyCommand: punctuation glued to the mention is not swallowed into the username', () => {
+  assert.equal(classifyCommand('/new@cntnt237_bot.', 'cntnt237_bot'), null)
+})
+
 test('normalizeSession: null/undefined stays null', () => {
   assert.equal(normalizeSession(null), null)
   assert.equal(normalizeSession(undefined), null)

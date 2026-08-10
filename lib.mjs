@@ -38,11 +38,9 @@ export function buildSendMessageCalls(chatId, text, replyToMessageId, limit = 40
   return buildSendMessageCallsFromChunks(chatId, chunk(text, limit), replyToMessageId, parseMode)
 }
 
-const COMMAND_WITH_OPTIONAL_MENTION_RE = /^(\/[a-zA-Z]+)(?:@(\S+))?([\s\S]*)$/
+const COMMAND_WITH_OPTIONAL_MENTION_RE = /^(\/[a-zA-Z]+)(?:@([A-Za-z0-9_]+))?([\s\S]*)$/
 
-// Splits a leading "/command", optionally "@mentioned" (Telegram adds this when a command is
-// picked from a group's command-menu suggestion), from the rest of the text. Returns null if
-// there's no leading command, or the mention names a bot other than this one.
+// Returns null if the leading "@mention" (added by Telegram's group command-menu picker) names a different bot.
 function parseCommandMention(text, botUsername) {
   const m = text.match(COMMAND_WITH_OPTIONAL_MENTION_RE)
   if (!m) return null
