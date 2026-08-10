@@ -110,13 +110,18 @@ export function truncateStatus(text, maxLen = 60) {
   return `${t.slice(0, maxLen - 1).trimEnd()}…`
 }
 
-export function formatToolStatusLine(name, input, maxLen = 60) {
+// Shared by formatToolStatusLine (always ⏳) and renderEphemeral's fallback (state emoji varies).
+function formatToolBody(name, input, maxLen = 60) {
   const label = name || 'tool'
   const summary = summarizeToolInput(name, input)
-  if (!summary) return `⏳ ${label}…`
+  if (!summary) return `${label}…`
   const truncated = truncateStatus(summary, maxLen)
   const suffix = truncated.endsWith('…') ? '' : '…'
-  return `⏳ ${label}: ${truncated}${suffix}`
+  return `${label}: ${truncated}${suffix}`
+}
+
+export function formatToolStatusLine(name, input, maxLen = 60) {
+  return `⏳ ${formatToolBody(name, input, maxLen)}`
 }
 
 export function formatTextPreviewStatus(text, maxLen = 80) {
@@ -131,30 +136,17 @@ export function formatRunOutcomeStatus(isError) {
 
 const HISTORY_LINE_MAX_CHARS = 80
 
-// How many "still working" lines (tool calls + frozen thinking) stay visible below the
-// last checkpoint. Older ones just scroll off — they're not the record, the 💬
-// checkpoints are.
+// How many "still working" lines (tool calls + frozen thinking) stay visible below the last checkpoint before the oldest ones scroll off.
 export const MAX_EPHEMERAL_LINES = 6
 
-// Renders one ephemeral (non-checkpoint) entry. Thinking entries are pre-baked text;
-// tool entries carry their own state emoji plus either a human gloss (once one arrives
-// from describeTool) or formatToolStatusLine's raw "Label: summary" fallback — reused
-// verbatim (minus its hardcoded ⏳) so there's always something to show immediately,
-// before any gloss has had a chance to come back, without duplicating its truncation
-// and "always end in an ellipsis" behavior.
+// Renders one ephemeral (non-checkpoint) entry: thinking entries are pre-baked text, tool entries pair their current ⏳/✅/❌ state with either a resolved human gloss or the raw "Label: summary" fallback.
 function renderEphemeral(entry) {
   if (entry.kind === 'thinking') return entry.text
   if (entry.gloss) return `${entry.state} ${truncateStatus(entry.gloss, HISTORY_LINE_MAX_CHARS)}`
-  return `${entry.state}${formatToolStatusLine(entry.name, entry.input).slice(1)}`
+  return `${entry.state} ${formatToolBody(entry.name, entry.input)}`
 }
 
-// Builds a running transcript instead of a single overwritten status line. Only frozen
-// *text* segments — the 💬 lines meant for a human to read — become permanent
-// `checkpointLines`. Tool calls and frozen *thinking* segments are transient: they live
-// in `ephemeral` (capped to MAX_EPHEMERAL_LINES) just to show something is still
-// happening, and the whole batch collapses away the moment the next 💬 checkpoint lands,
-// same as the one live segment (a thinking block or the reply text) that stays fully
-// visible as the tail until the next tool call or kind switch freezes it too.
+// Only frozen *text* segments (💬, for a human) become permanent checkpointLines; tool calls and frozen thinking are ephemeral and collapse away on the next checkpoint.
 export function createProgressTracker(
   initialStatus = DEFAULT_WORKING_STATUS,
   { renderTranscript, maxEphemeralLines = MAX_EPHEMERAL_LINES, glossTool } = {}
@@ -228,9 +220,7 @@ export function createProgressTracker(
       freezeLive()
       pushEphemeral({ kind: 'tool', id: block.id, name: block.name, input: block.input, state: '⏳', gloss: null })
       changed = true
-      // Fire-and-forget: describeTool() applies the gloss (and re-commits the status)
-      // whenever/if it resolves. A slow or failing glossTool just leaves the raw
-      // "Label: summary" fallback on screen — never blocks or breaks ingest() itself.
+      // Fire-and-forget: a slow or failing glossTool just leaves the raw fallback on screen, never blocks ingest().
       if (glossTool) {
         Promise.resolve()
           .then(() => glossTool(block.name, block.input))
@@ -268,10 +258,7 @@ export function createProgressTracker(
     return commit()
   }
 
-  // Applies a short human-language gloss (from a lightweight model, see gloss.mjs) to a
-  // still-visible tool line, replacing its raw "Label: summary" fallback. A no-op if the
-  // line already scrolled out of the ephemeral window by the time the gloss comes back —
-  // there's nothing left on screen to upgrade.
+  // Upgrades a still-visible tool line to a human gloss (see gloss.mjs); a no-op if it already scrolled off.
   function describeTool(id, gloss) {
     const trimmed = String(gloss ?? '').trim()
     if (!trimmed) return null

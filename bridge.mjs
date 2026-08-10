@@ -597,9 +597,7 @@ async function sendVoiceReply(chatId, text, replyToMessageId) {
   }
 }
 
-// One glosser for the whole process: every root and subagent placeholder shares the same
-// request queue, so a busy turn with many parallel subagents doesn't spawn a `claude -p`
-// per tool call all at once.
+// Shared by every root/subagent placeholder so a busy turn doesn't spawn a `claude -p` per tool call at once.
 const glosser = createToolGlosser()
 
 // Drives one Telegram message's live "⏳ working…" placeholder: a progress tracker plus

@@ -3,9 +3,10 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { GLOSS_MODEL, buildGlossPrompt, runClaudeGloss, createToolGlosser } from '../gloss.mjs'
 
-function fakeChild() {
+function fakeChild(pid = 4242) {
   const child = new EventEmitter()
   child.stdout = new EventEmitter()
+  child.pid = pid
   child.killed = null
   child.kill = signal => {
     child.killed = signal
@@ -28,6 +29,13 @@ test('buildGlossPrompt falls back to a generic label when there is no tool name 
   assert.match(prompt, /Действие: a tool call$/m)
 })
 
+test('buildGlossPrompt truncates a huge command instead of embedding it verbatim', () => {
+  const prompt = buildGlossPrompt('Bash', { command: `echo ${'x'.repeat(5000)}` })
+  const actionLine = prompt.split('\n').at(-1)
+  assert.ok(actionLine.length < 250, `expected the action line to be capped, got ${actionLine.length} chars`)
+  assert.ok(actionLine.endsWith('…'))
+})
+
 test('runClaudeGloss resolves to the trimmed stdout on a clean exit', async () => {
   const child = fakeChild()
   const spawnFn = () => child
@@ -48,6 +56,49 @@ test('runClaudeGloss passes the requested model through to the spawned command',
   child.emit('close', 0)
   await promise
   assert.deepEqual(seenArgs, ['-p', 'prompt', '--model', 'claude-haiku-4-5-20251001'])
+})
+
+test('runClaudeGloss spawns the child detached', async () => {
+  let seenOpts
+  const child = fakeChild()
+  const promise = runClaudeGloss('prompt', { spawnFn: (cmd, args, opts) => { seenOpts = opts; return child } })
+  child.emit('close', 0)
+  await promise
+  assert.deepEqual(seenOpts, { detached: true })
+})
+
+test('runClaudeGloss kills the whole process group (not just the child) on timeout', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const child = fakeChild(4242)
+  const originalKill = process.kill
+  const killed = []
+  process.kill = (pid, signal) => killed.push([pid, signal])
+  try {
+    const promise = runClaudeGloss('prompt', { spawnFn: () => child, timeoutMs: 1000 })
+    t.mock.timers.tick(1000)
+    assert.equal(await promise, null)
+    assert.deepEqual(killed, [[-4242, 'SIGKILL']])
+    assert.equal(child.killed, null, 'the group kill should have succeeded, so the single-child fallback must not also fire')
+  } finally {
+    process.kill = originalKill
+  }
+})
+
+test('runClaudeGloss falls back to killing just the child if the process group is already gone', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const child = fakeChild(4242)
+  const originalKill = process.kill
+  process.kill = () => {
+    throw new Error('ESRCH')
+  }
+  try {
+    const promise = runClaudeGloss('prompt', { spawnFn: () => child, timeoutMs: 1000 })
+    t.mock.timers.tick(1000)
+    assert.equal(await promise, null)
+    assert.equal(child.killed, 'SIGKILL')
+  } finally {
+    process.kill = originalKill
+  }
 })
 
 test('runClaudeGloss resolves to null on a non-zero exit', async () => {
@@ -142,6 +193,44 @@ test('createToolGlosser.gloss: one request failing does not block or fail the ne
   const second = await glosser.gloss('Bash', { command: 'b' })
   assert.equal(first, null)
   assert.equal(second, 'ok')
+})
+
+test('createToolGlosser.gloss skips new requests once the backlog hits maxQueueLength, without running claude -p for them', async () => {
+  const started = []
+  const resolvers = []
+  const run = prompt => {
+    started.push(prompt)
+    return new Promise(r => resolvers.push(r))
+  }
+  const glosser = createToolGlosser({ run, maxQueueLength: 2 })
+
+  const p1 = glosser.gloss('Bash', { command: 'a' })
+  const p2 = glosser.gloss('Bash', { command: 'b' })
+  const p3 = glosser.gloss('Bash', { command: 'c' }) // over the cap — must not even call run()
+
+  assert.equal(await p3, null, 'the third request should be skipped immediately, not queued')
+  assert.equal(started.length, 1, 'only the first request should have actually started (the second is still queued behind it)')
+
+  resolvers[0]('done')
+  await new Promise(r => setTimeout(r, 0)) // let the freed slot let run(prompt2) actually start
+  assert.equal(started.length, 2)
+
+  resolvers[1]('done')
+  assert.equal(await p1, 'done')
+  assert.equal(await p2, 'done')
+})
+
+test('createToolGlosser.gloss makes room again once an earlier request settles', async () => {
+  const started = []
+  const run = prompt => {
+    started.push(prompt)
+    return Promise.resolve('done')
+  }
+  const glosser = createToolGlosser({ run, maxQueueLength: 1 })
+
+  await glosser.gloss('Bash', { command: 'a' })
+  await glosser.gloss('Bash', { command: 'b' })
+  assert.equal(started.length, 2, 'the second request should run once the first has fully settled and freed its slot')
 })
 
 test('createToolGlosser.gloss builds a fresh prompt per call from the tool name and input', async () => {
