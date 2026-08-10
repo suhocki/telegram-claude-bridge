@@ -442,6 +442,11 @@ export function buildVoiceTranscriptText(transcript) {
   return trimmed ? `(voice message transcript)\n${trimmed}` : '(voice message transcript unavailable)'
 }
 
+export function buildVoiceTranscriptMessage(transcript) {
+  const trimmed = String(transcript ?? '').trim()
+  return trimmed ? `🎙️ ${trimmed}` : null
+}
+
 export function buildCancelKeyboard(chatId) {
   return { inline_keyboard: [[{ text: '🚫 Cancel', callback_data: `cancel:${chatId}` }]] }
 }

@@ -60,6 +60,7 @@ import {
   buildWhisperArgs,
   parseWhisperTranscript,
   buildVoiceTranscriptText,
+  buildVoiceTranscriptMessage,
   buildCancelKeyboard,
   buildPlaceholderEditParams,
   parseVoiceToggleCommand,
@@ -857,8 +858,11 @@ async function handleMessage(msg) {
       log('voice transcription failed', transcriptionError)
     } else {
       promptText = buildVoiceTranscriptText(transcription.text)
+      const transcriptMessage = buildVoiceTranscriptMessage(transcription.text)
       // a separate, permanent message — the placeholder it'd otherwise ride along on gets deleted once the real reply lands
-      botMessageIds.push(...(await sendReply(chatId, `🎙️ ${transcription.text.trim()}`, msg.message_id).catch(() => [])))
+      if (transcriptMessage) {
+        botMessageIds.push(...(await sendReply(chatId, transcriptMessage, msg.message_id).catch(() => [])))
+      }
     }
   }
 

@@ -51,6 +51,7 @@ import {
   buildWhisperArgs,
   parseWhisperTranscript,
   buildVoiceTranscriptText,
+  buildVoiceTranscriptMessage,
   buildPlaceholderEditParams,
   buildCancelKeyboard,
   parseVoiceToggleCommand,
@@ -1057,6 +1058,16 @@ test('buildVoiceTranscriptText: trims the transcript before tagging', () => {
 test('buildVoiceTranscriptText: empty/whitespace-only transcript yields an unavailable marker', () => {
   assert.equal(buildVoiceTranscriptText(''), '(voice message transcript unavailable)')
   assert.equal(buildVoiceTranscriptText('   '), '(voice message transcript unavailable)')
+})
+
+test('buildVoiceTranscriptMessage: prefixes a trimmed transcript for the standalone chat message', () => {
+  assert.equal(buildVoiceTranscriptMessage('  what is the weather in Budapest?  '), '🎙️ what is the weather in Budapest?')
+})
+
+test('buildVoiceTranscriptMessage: empty/whitespace-only transcript yields null (nothing to send)', () => {
+  assert.equal(buildVoiceTranscriptMessage(''), null)
+  assert.equal(buildVoiceTranscriptMessage('   '), null)
+  assert.equal(buildVoiceTranscriptMessage(undefined), null)
 })
 
 test('buildPlaceholderEditParams: plain status text, no HTML', () => {
