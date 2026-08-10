@@ -65,7 +65,19 @@ test('runClaudeGloss spawns the child detached', async () => {
   const promise = runClaudeGloss('prompt', { spawnFn: (cmd, args, opts) => { seenOpts = opts; return child } })
   child.emit('close', 0)
   await promise
-  assert.deepEqual(seenOpts, { detached: true })
+  assert.deepEqual(seenOpts, { detached: true, cwd: undefined })
+})
+
+test('runClaudeGloss passes cwd through to the spawned command, so it runs in the target project instead of the bridge repo', async () => {
+  let seenOpts
+  const child = fakeChild()
+  const promise = runClaudeGloss('prompt', {
+    spawnFn: (cmd, args, opts) => { seenOpts = opts; return child },
+    cwd: '/Users/maksim.sukhotski/projects/smm-assistant',
+  })
+  child.emit('close', 0)
+  await promise
+  assert.equal(seenOpts.cwd, '/Users/maksim.sukhotski/projects/smm-assistant')
 })
 
 test('runClaudeGloss kills the whole process group (not just the child) on timeout, escalating from SIGTERM to SIGKILL', async t => {
@@ -306,4 +318,15 @@ test('createToolGlosser.gloss builds a fresh prompt per call from the tool name 
   const glosser = createToolGlosser({ run })
   await glosser.gloss('chat1', 'Edit', { file_path: '/a/foo.py' })
   assert.match(prompts[0], /Действие: Edit: foo.py$/m)
+})
+
+test('createToolGlosser.gloss threads its configured cwd through to run', async () => {
+  const seenOpts = []
+  const run = (prompt, opts) => {
+    seenOpts.push(opts)
+    return Promise.resolve('gloss')
+  }
+  const glosser = createToolGlosser({ run, cwd: '/Users/maksim.sukhotski/projects/ig-trading' })
+  await glosser.gloss('chat1', 'Bash', { command: 'a' })
+  assert.equal(seenOpts[0].cwd, '/Users/maksim.sukhotski/projects/ig-trading')
 })

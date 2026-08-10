@@ -597,11 +597,10 @@ async function sendVoiceReply(chatId, text, replyToMessageId) {
   }
 }
 
-// Keyed by chatId (separate from chatQueue, which already serializes whole message turns per
-// chat — reusing that one here would make a gloss request wait behind the very run it's describing).
+// Separate from chatQueue (which already serializes whole message turns) so a gloss request never waits behind the run it's describing.
 const glossQueue = createKeyedQueue()
-// Shared by every root/subagent placeholder; glossQueue keeps one busy chat from starving another's.
-const glosser = createToolGlosser({ enqueue: glossQueue.enqueue })
+// Runs from the bot's own target project, same as runClaude, so a gloss call sees the right CLAUDE.md/context instead of the bridge repo's.
+const glosser = createToolGlosser({ enqueue: glossQueue.enqueue, cwd })
 
 // Drives one Telegram message's live "⏳ working…" placeholder: a progress tracker plus
 // the periodic editMessageText loop that renders it. Used both for the root placeholder

@@ -7,7 +7,7 @@ export const GLOSS_TIMEOUT_MS = 20000
 // Mirrors bridge.mjs's own runClaude cancel(): SIGTERM first, SIGKILL only if it's still alive after this grace period.
 export const GLOSS_KILL_GRACE_MS = 2000
 const GLOSS_PROMPT_SUMMARY_MAX_CHARS = 200
-// Per key (e.g. per chat): matches MAX_EPHEMERAL_LINES, since a queued request beyond that would likely run against an already-scrolled-off line.
+// Per key (e.g. per chat, shared by its root and every subagent tracker): bounds how many `claude -p` processes one chat can have in flight at once.
 const DEFAULT_MAX_QUEUE_LENGTH = 6
 
 export function buildGlossPrompt(name, input) {
@@ -35,7 +35,7 @@ function killIfAlive(child, signal) {
 }
 
 // Resolves to trimmed stdout on a clean exit, or null on any failure — glossing is a nice-to-have, never something the caller must handle as an error.
-export function runClaudeGloss(prompt, { spawnFn = spawn, timeoutMs = GLOSS_TIMEOUT_MS, model = GLOSS_MODEL } = {}) {
+export function runClaudeGloss(prompt, { spawnFn = spawn, timeoutMs = GLOSS_TIMEOUT_MS, model = GLOSS_MODEL, cwd } = {}) {
   return new Promise(resolve => {
     let settled = false
     const finish = value => {
@@ -46,7 +46,7 @@ export function runClaudeGloss(prompt, { spawnFn = spawn, timeoutMs = GLOSS_TIME
 
     let child
     try {
-      child = spawnFn('claude', ['-p', prompt, '--model', model], { detached: true })
+      child = spawnFn('claude', ['-p', prompt, '--model', model], { detached: true, cwd })
     } catch {
       finish(null)
       return
@@ -93,7 +93,7 @@ function defaultEnqueue() {
 }
 
 // enqueue defaults to one global un-keyed tail; inject a real per-key queue (e.g. lib.mjs's createKeyedQueue) so one chat's glossing can't starve another's.
-export function createToolGlosser({ run = runClaudeGloss, enqueue = defaultEnqueue(), maxQueueLength = DEFAULT_MAX_QUEUE_LENGTH } = {}) {
+export function createToolGlosser({ run = runClaudeGloss, enqueue = defaultEnqueue(), maxQueueLength = DEFAULT_MAX_QUEUE_LENGTH, cwd } = {}) {
   const queueLengthByKey = new Map()
 
   function gloss(key, name, input) {
@@ -101,9 +101,11 @@ export function createToolGlosser({ run = runClaudeGloss, enqueue = defaultEnque
     if (current >= maxQueueLength) return Promise.resolve(null)
     queueLengthByKey.set(key, current + 1)
     const prompt = buildGlossPrompt(name, input)
-    const result = enqueue(key, () => run(prompt).catch(() => null))
+    const result = enqueue(key, () => run(prompt, { cwd }).catch(() => null))
     result.finally(() => {
-      queueLengthByKey.set(key, (queueLengthByKey.get(key) ?? 1) - 1)
+      const remaining = queueLengthByKey.get(key) - 1
+      if (remaining > 0) queueLengthByKey.set(key, remaining)
+      else queueLengthByKey.delete(key) // don't hold a zero-valued entry forever in a long-running process
     })
     return result
   }
