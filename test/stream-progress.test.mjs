@@ -1,8 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { setTimeout as delay } from 'node:timers/promises'
+
+// A macrotask flush, simpler than hand-counting how many microtask hops a fire-and-forget .then().then() chain needs to settle.
+const flushAsync = () => delay(0)
 import {
   DEFAULT_WORKING_STATUS,
+  MAX_EPHEMERAL_LINES,
   createLineSplitter,
   parseJsonlLine,
   isResultEvent,
@@ -15,7 +20,6 @@ import {
   SUBAGENT_TOOL_NAME,
   summarizeToolInput,
   truncateStatus,
-  formatToolStatusLine,
   formatTextPreviewStatus,
   formatRunOutcomeStatus,
   createProgressTracker,
@@ -217,19 +221,21 @@ test('truncateStatus leaves short text untouched and ellipsizes long text', () =
   assert.ok(result.endsWith('…'))
 })
 
-test('formatToolStatusLine matches the expected "tool: summary…" shape', () => {
-  assert.equal(formatToolStatusLine('Bash', { command: 'npm test' }), '⏳ Bash: npm test…')
-  assert.equal(formatToolStatusLine('Edit', { file_path: '/a/b/foo.py' }), '⏳ Edit: foo.py…')
+test('createProgressTracker falls back to just the tool name when there is no summary to render', () => {
+  const tracker = createProgressTracker()
+  assert.equal(
+    tracker.ingest({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Task', input: {} }] } }),
+    '⏳ Task…'
+  )
 })
 
-test('formatToolStatusLine falls back to just the tool name when there is no summary', () => {
-  assert.equal(formatToolStatusLine('Task', {}), '⏳ Task…')
-  assert.equal(formatToolStatusLine(null, {}), '⏳ tool…')
-})
-
-test('formatToolStatusLine does not double up ellipses when truncated', () => {
-  const line = formatToolStatusLine('Bash', { command: 'x'.repeat(100) }, 20)
-  assert.equal(line.match(/…/g).length, 1)
+test('createProgressTracker never doubles up the ellipsis on a fallback tool line that needed truncating', () => {
+  const tracker = createProgressTracker()
+  const status = tracker.ingest({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'x'.repeat(100) } }] },
+  })
+  assert.equal(status.match(/…/g).length, 1)
 })
 
 test('formatTextPreviewStatus previews accumulated assistant text', () => {
@@ -569,6 +575,151 @@ test('regression: stopping before writing an error message prevents a later stal
   writes.push('⚠️ bridge error: boom')
   t.mock.timers.tick(10000)
   assert.deepEqual(writes, ['⚠️ bridge error: boom'])
+})
+
+test('createProgressTracker: a checkpoint (💬) collapses every ephemeral tool/thinking line that led up to it', () => {
+  const tracker = createProgressTracker()
+  const tool = (id, name, input) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } })
+  const text = t => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: t } } })
+
+  tracker.ingest(tool('toolu_1', 'Bash', { command: 'grep -rn foo' }))
+  tracker.ingest(tool('toolu_2', 'Edit', { file_path: '/a/foo.py' }))
+  tracker.ingest({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: false }] } })
+  assert.equal(tracker.current(), '✅ Bash: grep -rn foo…\n⏳ Edit: foo.py…')
+
+  const status = tracker.ingest(text('Found it, writing the fix'))
+  assert.equal(
+    status,
+    '✅ Bash: grep -rn foo…\n⏳ Edit: foo.py…\n✍️ Found it, writing the fix',
+    'the working tail stays visible alongside the streaming live preview — nothing collapses yet'
+  )
+
+  const nextTool = tracker.ingest(tool('toolu_3', 'Bash', { command: 'npm test' }))
+  assert.equal(
+    nextTool,
+    '💬 Found it, writing the fix\n⏳ Bash: npm test…',
+    'freezing the text turns it into a permanent checkpoint and drops the two earlier tool lines entirely'
+  )
+})
+
+test('createProgressTracker: ephemeral lines are capped at MAX_EPHEMERAL_LINES, oldest first', () => {
+  const tracker = createProgressTracker()
+  const tool = (id, name, input) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } })
+  let last
+  for (let i = 1; i <= MAX_EPHEMERAL_LINES + 2; i += 1) {
+    last = tracker.ingest(tool(`toolu_${i}`, 'Bash', { command: `step ${i}` }))
+  }
+  const lines = last.split('\n')
+  assert.equal(lines.length, MAX_EPHEMERAL_LINES)
+  assert.equal(lines[0], '⏳ Bash: step 3…', 'the two oldest calls (1 and 2) should have scrolled off')
+  assert.equal(lines[lines.length - 1], `⏳ Bash: step ${MAX_EPHEMERAL_LINES + 2}…`)
+})
+
+test('createProgressTracker: a tool_result for a line already evicted by the cap is quietly ignored', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, { maxEphemeralLines: 2 })
+  const tool = (id, name, input) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } })
+  tracker.ingest(tool('toolu_1', 'Bash', { command: 'a' }))
+  tracker.ingest(tool('toolu_2', 'Bash', { command: 'b' }))
+  tracker.ingest(tool('toolu_3', 'Bash', { command: 'c' })) // evicts toolu_1
+  const status = tracker.ingest({
+    type: 'user',
+    message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: false }] },
+  })
+  assert.equal(status, null)
+  assert.equal(tracker.current(), '⏳ Bash: b…\n⏳ Bash: c…')
+})
+
+test('createProgressTracker.describeTool upgrades a still-visible line to a short human gloss', () => {
+  const tracker = createProgressTracker()
+  tracker.ingest({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'grep -rn QaAccountsApi' } }] },
+  })
+  const status = tracker.describeTool('toolu_1', 'Ищу использование QaAccountsApi')
+  assert.equal(status, '⏳ Ищу использование QaAccountsApi')
+})
+
+test('createProgressTracker.describeTool keeps the current ✅/❌ state when the gloss lands after the result', () => {
+  const tracker = createProgressTracker()
+  tracker.ingest({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'grep -rn QaAccountsApi' } }] },
+  })
+  tracker.ingest({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: false }] } })
+  const status = tracker.describeTool('toolu_1', 'Ищу использование QaAccountsApi')
+  assert.equal(status, '✅ Ищу использование QaAccountsApi')
+})
+
+test('createProgressTracker.describeTool is a no-op for an id that scrolled off or never existed', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, { maxEphemeralLines: 1 })
+  tracker.ingest({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'a' } }] },
+  })
+  tracker.ingest({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_2', name: 'Bash', input: { command: 'b' } }] },
+  }) // evicts toolu_1
+  assert.equal(tracker.describeTool('toolu_1', 'late gloss'), null)
+  assert.equal(tracker.describeTool('toolu_never_existed', 'gloss'), null)
+  assert.equal(tracker.current(), '⏳ Bash: b…')
+})
+
+test('createProgressTracker.describeTool ignores an empty or blank gloss', () => {
+  const tracker = createProgressTracker()
+  tracker.ingest({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'a' } }] },
+  })
+  assert.equal(tracker.describeTool('toolu_1', ''), null)
+  assert.equal(tracker.describeTool('toolu_1', '   '), null)
+  assert.equal(tracker.current(), '⏳ Bash: a…')
+})
+
+test('createProgressTracker: an injected glossTool automatically upgrades a fresh tool line once it resolves', async () => {
+  let resolveGloss
+  const glossTool = () => new Promise(r => { resolveGloss = r })
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, { glossTool })
+  tracker.ingest({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'grep -rn QaAccountsApi' } }] },
+  })
+  assert.equal(tracker.current(), '⏳ Bash: grep -rn QaAccountsApi…', 'the raw fallback shows immediately, before the gloss resolves')
+  await flushAsync() // let the fire-and-forget .then(() => glossTool(...)) chain actually call it
+  resolveGloss('Ищу использование QaAccountsApi')
+  await flushAsync()
+  assert.equal(tracker.current(), '⏳ Ищу использование QaAccountsApi')
+})
+
+test('createProgressTracker: a glossTool that rejects never breaks the tracker, the raw fallback just stays', async () => {
+  const glossTool = () => Promise.reject(new Error('boom'))
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, { glossTool })
+  tracker.ingest({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'a' } }] },
+  })
+  await flushAsync()
+  assert.equal(tracker.current(), '⏳ Bash: a…')
+})
+
+test('createProgressTracker: a glossTool resolving after its line already scrolled off is a harmless no-op', async () => {
+  // one resolver per call, in order — a single shared resolveGloss would get overwritten by the second call
+  const resolvers = []
+  const glossTool = () => new Promise(r => resolvers.push(r))
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, { glossTool, maxEphemeralLines: 1 })
+  tracker.ingest({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'a' } }] },
+  })
+  tracker.ingest({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_2', name: 'Bash', input: { command: 'b' } }] },
+  }) // evicts toolu_1
+  await flushAsync() // let both fire-and-forget .then(() => glossTool(...)) chains actually call it
+  assert.equal(resolvers.length, 2)
+  resolvers[0]('late gloss for a') // resolves toolu_1's request, after its line is already gone
+  await flushAsync()
+  assert.equal(tracker.current(), '⏳ Bash: b…')
 })
 
 test('regression: the subagent tool is really named "Agent" in a real captured claude -p stream, not "Task"', () => {
