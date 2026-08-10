@@ -1,10 +1,7 @@
 // Pure, testable helpers extracted out of bridge.mjs's imperative poll loop.
 
 import path from 'node:path'
-import { markdownToTelegramHtml, htmlToPlainFallback, escapeHtml } from './markdown-html.mjs'
-import { truncateStatus } from './stream-progress.mjs'
-
-export const TRANSCRIPT_QUOTE_MAX_CHARS = 3000
+import { markdownToTelegramHtml, htmlToPlainFallback } from './markdown-html.mjs'
 
 export function chunk(text, limit = 4096) {
   const out = []
@@ -445,22 +442,6 @@ export function buildVoiceTranscriptText(transcript) {
   return trimmed ? `(voice message transcript)\n${trimmed}` : '(voice message transcript unavailable)'
 }
 
-export function buildTranscriptQuoteHtml(transcript) {
-  const trimmed = String(transcript ?? '').trim()
-  if (!trimmed) return null
-  const escaped = escapeHtml(truncateStatus(trimmed, TRANSCRIPT_QUOTE_MAX_CHARS))
-  // escaping can expand length (e.g. "&" -> "&amp;"); truncate again to bound the final size regardless of expansion
-  return `<blockquote>${truncateStatus(escaped, TRANSCRIPT_QUOTE_MAX_CHARS)}</blockquote>`
-}
-
-// buildPlaceholderEditParams joins quoteHtml and the status body with "\n" (1 char),
-// so the body itself must be rendered to fit within (limit - quoteHtml.length - 1)
-// or the combined edit can exceed Telegram's message-length limit.
-export function computeStreamingTextLimit(quoteHtml, limit = 4096) {
-  if (!quoteHtml) return limit
-  return Math.max(0, limit - quoteHtml.length - 1)
-}
-
 export function buildCancelKeyboard(chatId) {
   return { inline_keyboard: [[{ text: '🚫 Cancel', callback_data: `cancel:${chatId}` }]] }
 }
@@ -468,17 +449,10 @@ export function buildCancelKeyboard(chatId) {
 // editMessageText drops any existing inline keyboard unless reply_markup is passed again on
 // every edit, so the caller must thread `keyboard` through each streaming update or the Cancel
 // button vanishes the moment the placeholder's first edit lands.
-export function buildPlaceholderEditParams(chatId, messageId, status, quoteHtml, isHtml = false, keyboard = null) {
-  const base = !quoteHtml
-    ? isHtml
-      ? { chat_id: chatId, message_id: messageId, text: status, parse_mode: 'HTML' }
-      : { chat_id: chatId, message_id: messageId, text: status }
-    : {
-        chat_id: chatId,
-        message_id: messageId,
-        text: `${quoteHtml}\n${isHtml ? status : escapeHtml(status)}`,
-        parse_mode: 'HTML',
-      }
+export function buildPlaceholderEditParams(chatId, messageId, status, isHtml = false, keyboard = null) {
+  const base = isHtml
+    ? { chat_id: chatId, message_id: messageId, text: status, parse_mode: 'HTML' }
+    : { chat_id: chatId, message_id: messageId, text: status }
   return keyboard ? { ...base, reply_markup: keyboard } : base
 }
 

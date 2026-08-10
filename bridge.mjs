@@ -60,10 +60,8 @@ import {
   buildWhisperArgs,
   parseWhisperTranscript,
   buildVoiceTranscriptText,
-  buildTranscriptQuoteHtml,
   buildCancelKeyboard,
   buildPlaceholderEditParams,
-  computeStreamingTextLimit,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
   isVoiceReplyEnabled,
@@ -620,23 +618,15 @@ async function sendVoiceReply(chatId, text, replyToMessageId) {
 // Drives one Telegram message's live "⏳ working…" placeholder: a progress tracker plus
 // the periodic editMessageText loop that renders it. Used both for the root placeholder
 // of a run and for each parallel subagent (Agent tool) placeholder spawned during it.
-function createPlaceholderController(
-  chatId,
-  initialMessageId,
-  getQuoteHtml = () => null,
-  sharedGate = null,
-  keyboard = null,
-  initialStatus = DEFAULT_WORKING_STATUS
-) {
+function createPlaceholderController(chatId, initialMessageId, sharedGate = null, keyboard = null, initialStatus = DEFAULT_WORKING_STATUS) {
   let messageId = initialMessageId
   const tracker = createProgressTracker(initialStatus, {
-    renderTranscript: (historyLines, liveText) =>
-      renderTranscriptHtml(historyLines, liveText, computeStreamingTextLimit(getQuoteHtml())),
+    renderTranscript: (historyLines, liveText) => renderTranscriptHtml(historyLines, liveText),
   })
 
   async function editPlaceholder({ text, html }) {
     if (messageId == null) return
-    const params = buildPlaceholderEditParams(chatId, messageId, text, getQuoteHtml(), html, keyboard)
+    const params = buildPlaceholderEditParams(chatId, messageId, text, html, keyboard)
     try {
       await tg('editMessageText', params)
     } catch (e) {
@@ -805,18 +795,10 @@ async function handleMessage(msg) {
     log('failed to send working placeholder', e.message)
   }
 
-  let transcriptQuoteHtml = null
   // shared by root + every subagent placeholder below, so a 429 on any one of them
   // backs off every concurrent edit loop writing to this same chat
   const chatRateGate = createChatRateGate()
-  const rootController = createPlaceholderController(
-    chatId,
-    placeholderId,
-    () => transcriptQuoteHtml,
-    chatRateGate,
-    cancelKeyboard,
-    workingStatus
-  )
+  const rootController = createPlaceholderController(chatId, placeholderId, chatRateGate, cancelKeyboard, workingStatus)
 
   // one placeholder message per parallel subagent (Agent tool call), keyed by that
   // tool_use's id; created when it starts, deleted once its tool_result comes back
@@ -828,7 +810,7 @@ async function handleMessage(msg) {
     ;(parentEntry ? parentEntry.controller : rootController).ingest(event)
 
     for (const block of extractNewSubagentBlocks(event, subagentControllers)) {
-      const controller = createPlaceholderController(chatId, null, undefined, chatRateGate)
+      const controller = createPlaceholderController(chatId, null, chatRateGate)
       const messageIdPromise = tg('sendMessage', {
         chat_id: chatId,
         text: DEFAULT_WORKING_STATUS,
@@ -875,8 +857,8 @@ async function handleMessage(msg) {
       log('voice transcription failed', transcriptionError)
     } else {
       promptText = buildVoiceTranscriptText(transcription.text)
-      transcriptQuoteHtml = buildTranscriptQuoteHtml(transcription.text)
-      if (transcriptQuoteHtml) rootController.editPlaceholder(rootController.tracker.snapshot())
+      // a separate, permanent message — the placeholder it'd otherwise ride along on gets deleted once the real reply lands
+      botMessageIds.push(...(await sendReply(chatId, `🎙️ ${transcription.text.trim()}`, msg.message_id).catch(() => [])))
     }
   }
 
