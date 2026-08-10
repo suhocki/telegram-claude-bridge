@@ -32,10 +32,6 @@ export function buildSendMessageCallsFromChunks(chatId, chunks, replyToMessageId
   })
 }
 
-export function buildSendMessageCalls(chatId, text, replyToMessageId, limit = 4096, parseMode) {
-  return buildSendMessageCallsFromChunks(chatId, chunk(text, limit), replyToMessageId, parseMode)
-}
-
 function mentionNamesBot(mentioned, botUsername) {
   return String(mentioned ?? '').toLowerCase() === String(botUsername ?? '').toLowerCase()
 }

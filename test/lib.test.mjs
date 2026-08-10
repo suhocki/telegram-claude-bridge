@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import {
   chunk,
   sanitizeAttr,
-  buildSendMessageCalls,
   buildSendMessageCallsFromChunks,
   createKeyedQueue,
   classifyCommand,
@@ -142,65 +141,6 @@ test('sanitizeAttr: passes through a plain username untouched', () => {
 test('sanitizeAttr: null/undefined become an empty string, not "null"/"undefined"', () => {
   assert.equal(sanitizeAttr(undefined), '')
   assert.equal(sanitizeAttr(null), '')
-})
-
-test('buildSendMessageCalls: single chunk gets reply_parameters when a message id is given', () => {
-  const calls = buildSendMessageCalls('123', 'hello', 42)
-  assert.deepEqual(calls, [
-    { chat_id: '123', text: 'hello', reply_parameters: { message_id: 42, allow_sending_without_reply: true } },
-  ])
-})
-
-test('buildSendMessageCalls: no reply_parameters when message id is omitted', () => {
-  const calls = buildSendMessageCalls('123', 'hello')
-  assert.deepEqual(calls, [{ chat_id: '123', text: 'hello' }])
-})
-
-test('buildSendMessageCalls: no reply_parameters when message id is null', () => {
-  const calls = buildSendMessageCalls('123', 'hello', null)
-  assert.deepEqual(calls, [{ chat_id: '123', text: 'hello' }])
-})
-
-test('buildSendMessageCalls: only the first chunk threads under the triggering message', () => {
-  const text = 'a'.repeat(6) + '\n' + 'b'.repeat(6)
-  const calls = buildSendMessageCalls('123', text, 99, 10)
-  assert.deepEqual(calls, [
-    { chat_id: '123', text: 'a'.repeat(6), reply_parameters: { message_id: 99, allow_sending_without_reply: true } },
-    { chat_id: '123', text: 'b'.repeat(6) },
-  ])
-})
-
-test('buildSendMessageCalls: with three or more chunks, only the first threads and the rest do not', () => {
-  const text = 'a'.repeat(6) + '\n' + 'b'.repeat(6) + '\n' + 'c'.repeat(6)
-  const calls = buildSendMessageCalls('123', text, 99, 10)
-  assert.deepEqual(calls, [
-    { chat_id: '123', text: 'a'.repeat(6), reply_parameters: { message_id: 99, allow_sending_without_reply: true } },
-    { chat_id: '123', text: 'b'.repeat(6) },
-    { chat_id: '123', text: 'c'.repeat(6) },
-  ])
-})
-
-test('buildSendMessageCalls: message id 0 is a valid id and still threads', () => {
-  const calls = buildSendMessageCalls('123', 'hi', 0)
-  assert.deepEqual(calls, [
-    { chat_id: '123', text: 'hi', reply_parameters: { message_id: 0, allow_sending_without_reply: true } },
-  ])
-})
-
-test('buildSendMessageCalls: adds parse_mode to every chunk when given', () => {
-  const text = 'a'.repeat(6) + '\n' + 'b'.repeat(6)
-  const calls = buildSendMessageCalls('123', text, 99, 10, 'HTML')
-  assert.deepEqual(calls, [
-    { chat_id: '123', text: 'a'.repeat(6), parse_mode: 'HTML', reply_parameters: { message_id: 99, allow_sending_without_reply: true } },
-    { chat_id: '123', text: 'b'.repeat(6), parse_mode: 'HTML' },
-  ])
-})
-
-test('buildSendMessageCalls: no parse_mode key when omitted (back-compat)', () => {
-  const calls = buildSendMessageCalls('123', 'hello', 42)
-  assert.deepEqual(calls, [
-    { chat_id: '123', text: 'hello', reply_parameters: { message_id: 42, allow_sending_without_reply: true } },
-  ])
 })
 
 test('buildSendMessageCallsFromChunks: builds params straight from pre-chunked parts, no re-chunking', () => {
@@ -1093,8 +1033,7 @@ test('buildTranscriptQuoteHtml: bounds the final size even when escaping expands
 test('buildTranscriptQuoteHtml: never cuts an escaped entity in half, even when the raw cut point lands inside one', () => {
   const longTranscript = '&'.repeat(TRANSCRIPT_QUOTE_MAX_CHARS)
   const result = buildTranscriptQuoteHtml(longTranscript)
-  // truncateStatus's raw slice(0, 2999) lands 4 chars into the 600th "&amp;" unit — the dangling
-  // "&amp" fragment must be dropped rather than left broken right before the ellipsis
+  // the raw slice(0, 2999) lands mid-"&amp;" — that dangling "&amp" fragment must be dropped
   assert.equal(result, `<blockquote>${'&amp;'.repeat(599)}…</blockquote>`)
 })
 
