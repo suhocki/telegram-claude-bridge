@@ -103,6 +103,7 @@ import {
   extractNewSubagentBlocks,
   extractFinishedSubagentIds,
 } from './stream-progress.mjs'
+import { createToolGlosser } from './gloss.mjs'
 
 const configPath = process.argv[2]
 if (!configPath) {
@@ -596,6 +597,11 @@ async function sendVoiceReply(chatId, text, replyToMessageId) {
   }
 }
 
+// One glosser for the whole process: every root and subagent placeholder shares the same
+// request queue, so a busy turn with many parallel subagents doesn't spawn a `claude -p`
+// per tool call all at once.
+const glosser = createToolGlosser()
+
 // Drives one Telegram message's live "⏳ working…" placeholder: a progress tracker plus
 // the periodic editMessageText loop that renders it. Used both for the root placeholder
 // of a run and for each parallel subagent (Agent tool) placeholder spawned during it.
@@ -604,6 +610,7 @@ function createPlaceholderController(chatId, initialMessageId, getQuoteHtml = ()
   const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
     renderTranscript: (historyLines, liveText) =>
       renderTranscriptHtml(historyLines, liveText, computeStreamingTextLimit(getQuoteHtml())),
+    glossTool: (name, input) => glosser.gloss(name, input),
   })
 
   async function editPlaceholder({ text, html }) {

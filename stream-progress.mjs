@@ -131,27 +131,58 @@ export function formatRunOutcomeStatus(isError) {
 
 const HISTORY_LINE_MAX_CHARS = 80
 
-// Builds a running transcript instead of a single overwritten status line: completed
-// tool calls and frozen thinking/text segments accumulate in `historyLines` (each kept
-// brief), while the segment currently streaming in (a thinking block or the reply text)
-// stays fully visible as the "live" tail until the next tool call or kind switch freezes
-// it into history too.
-export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS, { renderTranscript } = {}) {
+// How many "still working" lines (tool calls + frozen thinking) stay visible below the
+// last checkpoint. Older ones just scroll off — they're not the record, the 💬
+// checkpoints are.
+export const MAX_EPHEMERAL_LINES = 6
+
+// Renders one ephemeral (non-checkpoint) entry. Thinking entries are pre-baked text;
+// tool entries carry their own state emoji plus either a human gloss (once one arrives
+// from describeTool) or formatToolStatusLine's raw "Label: summary" fallback — reused
+// verbatim (minus its hardcoded ⏳) so there's always something to show immediately,
+// before any gloss has had a chance to come back, without duplicating its truncation
+// and "always end in an ellipsis" behavior.
+function renderEphemeral(entry) {
+  if (entry.kind === 'thinking') return entry.text
+  if (entry.gloss) return `${entry.state} ${truncateStatus(entry.gloss, HISTORY_LINE_MAX_CHARS)}`
+  return `${entry.state}${formatToolStatusLine(entry.name, entry.input).slice(1)}`
+}
+
+// Builds a running transcript instead of a single overwritten status line. Only frozen
+// *text* segments — the 💬 lines meant for a human to read — become permanent
+// `checkpointLines`. Tool calls and frozen *thinking* segments are transient: they live
+// in `ephemeral` (capped to MAX_EPHEMERAL_LINES) just to show something is still
+// happening, and the whole batch collapses away the moment the next 💬 checkpoint lands,
+// same as the one live segment (a thinking block or the reply text) that stays fully
+// visible as the tail until the next tool call or kind switch freezes it too.
+export function createProgressTracker(
+  initialStatus = DEFAULT_WORKING_STATUS,
+  { renderTranscript, maxEphemeralLines = MAX_EPHEMERAL_LINES, glossTool } = {}
+) {
   const seenToolIds = new Set()
   const finishedToolIds = new Set()
-  const toolLineIndex = new Map()
-  const historyLines = []
+  const checkpointLines = []
+  let ephemeral = []
   let liveText = ''
   let liveKind = null // 'thinking' | 'text' | null
   let status = initialStatus
   let statusIsHtml = false
   let snapshotCache = { text: status, html: statusIsHtml }
 
+  function pushEphemeral(entry) {
+    if (ephemeral.length >= maxEphemeralLines) ephemeral.shift()
+    ephemeral.push(entry)
+  }
+
   function freezeLive() {
     const trimmed = liveText.trim()
     if (trimmed) {
-      const prefix = liveKind === 'thinking' ? '🤔' : '💬'
-      historyLines.push(`${prefix} ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`)
+      if (liveKind === 'thinking') {
+        pushEphemeral({ kind: 'thinking', text: `🤔 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}` })
+      } else {
+        checkpointLines.push(`💬 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`)
+        ephemeral = [] // a checkpoint is the summary of everything that led to it — collapse the rest
+      }
     }
     liveText = ''
     liveKind = null
@@ -162,13 +193,30 @@ export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS, { 
     return liveKind === 'thinking' ? `🤔 thinking…\n${liveText}` : liveText
   }
 
+  function historyLines() {
+    return [...checkpointLines, ...ephemeral.map(renderEphemeral)]
+  }
+
   function defaultRender() {
     const preview = liveText.trim()
       ? liveKind === 'thinking'
         ? `🤔 ${truncateStatus(liveText.trim(), HISTORY_LINE_MAX_CHARS)}`
         : formatTextPreviewStatus(liveText)
       : null
-    return truncateStatus([...historyLines, preview].filter(Boolean).join('\n'), 2000)
+    return truncateStatus([...historyLines(), preview].filter(Boolean).join('\n'), 2000)
+  }
+
+  function commit() {
+    const rendered = renderTranscript ? renderTranscript(historyLines(), liveDisplayText()) : defaultRender()
+    // renderTranscript can legitimately return null (e.g. nothing fits the budget this
+    // tick) — treat that the same as "nothing new to report" rather than letting null
+    // overwrite a perfectly good prior status (and leak downstream into an edit)
+    if (rendered == null) return null
+
+    status = rendered
+    statusIsHtml = Boolean(renderTranscript)
+    snapshotCache = { text: status, html: statusIsHtml }
+    return status
   }
 
   function ingest(event) {
@@ -178,17 +226,25 @@ export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS, { 
       if (seenToolIds.has(block.id)) continue
       seenToolIds.add(block.id)
       freezeLive()
-      historyLines.push(formatToolStatusLine(block.name, block.input))
-      toolLineIndex.set(block.id, historyLines.length - 1)
+      pushEphemeral({ kind: 'tool', id: block.id, name: block.name, input: block.input, state: '⏳', gloss: null })
       changed = true
+      // Fire-and-forget: describeTool() applies the gloss (and re-commits the status)
+      // whenever/if it resolves. A slow or failing glossTool just leaves the raw
+      // "Label: summary" fallback on screen — never blocks or breaks ingest() itself.
+      if (glossTool) {
+        Promise.resolve()
+          .then(() => glossTool(block.name, block.input))
+          .then(text => describeTool(block.id, text))
+          .catch(() => {})
+      }
     }
 
     for (const result of extractToolResults(event)) {
       if (finishedToolIds.has(result.id)) continue
-      const idx = toolLineIndex.get(result.id)
-      if (idx === undefined) continue
+      const entry = ephemeral.find(e => e.kind === 'tool' && e.id === result.id)
+      if (!entry) continue // already scrolled off the ephemeral window, or unknown — nothing to mark
       finishedToolIds.add(result.id)
-      historyLines[idx] = historyLines[idx].replace(/^⏳/, result.isError ? '❌' : '✅')
+      entry.state = result.isError ? '❌' : '✅'
       changed = true
     }
 
@@ -209,17 +265,20 @@ export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS, { 
     }
 
     if (!changed) return null
+    return commit()
+  }
 
-    const rendered = renderTranscript ? renderTranscript(historyLines.slice(), liveDisplayText()) : defaultRender()
-    // renderTranscript can legitimately return null (e.g. nothing fits the budget this
-    // tick) — treat that the same as "nothing new to report" rather than letting null
-    // overwrite a perfectly good prior status (and leak downstream into an edit)
-    if (rendered == null) return null
-
-    status = rendered
-    statusIsHtml = Boolean(renderTranscript)
-    snapshotCache = { text: status, html: statusIsHtml }
-    return status
+  // Applies a short human-language gloss (from a lightweight model, see gloss.mjs) to a
+  // still-visible tool line, replacing its raw "Label: summary" fallback. A no-op if the
+  // line already scrolled out of the ephemeral window by the time the gloss comes back —
+  // there's nothing left on screen to upgrade.
+  function describeTool(id, gloss) {
+    const trimmed = String(gloss ?? '').trim()
+    if (!trimmed) return null
+    const entry = ephemeral.find(e => e.kind === 'tool' && e.id === id)
+    if (!entry) return null
+    entry.gloss = trimmed
+    return commit()
   }
 
   function current() {
@@ -232,7 +291,7 @@ export function createProgressTracker(initialStatus = DEFAULT_WORKING_STATUS, { 
     return snapshotCache
   }
 
-  return { ingest, current, snapshot }
+  return { ingest, describeTool, current, snapshot }
 }
 
 // Shared across every controller writing to the same chat (root + all its parallel
