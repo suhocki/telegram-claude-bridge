@@ -46,7 +46,12 @@ export function runClaudeGloss(prompt, { spawnFn = spawn, timeoutMs = GLOSS_TIME
 
     let child
     try {
-      child = spawnFn('claude', ['-p', prompt, '--model', model], { detached: true, cwd })
+      // bypassPermissions same as bridge.mjs's own runClaude — headless, no TTY to ever approve a tool-use prompt
+      child = spawnFn(
+        'claude',
+        ['-p', prompt, '--model', model, '--permission-mode', 'bypassPermissions'],
+        { detached: true, cwd }
+      )
     } catch {
       finish(null)
       return

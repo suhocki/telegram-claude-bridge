@@ -3,9 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
 
-// A promise chain (fire-and-forget .then().then()) can take more microtask hops to
-// fully settle than is worth hand-counting in a test — a macrotask flush is a simpler,
-// more robust way to say "let every already-scheduled promise reaction run".
+// A macrotask flush, simpler than hand-counting how many microtask hops a fire-and-forget .then().then() chain needs to settle.
 const flushAsync = () => delay(0)
 import {
   DEFAULT_WORKING_STATUS,
@@ -705,8 +703,7 @@ test('createProgressTracker: a glossTool that rejects never breaks the tracker, 
 })
 
 test('createProgressTracker: a glossTool resolving after its line already scrolled off is a harmless no-op', async () => {
-  // one resolver per call, in order — a single shared `resolveGloss` would get overwritten
-  // by the second tool's call before the first one is ever resolved
+  // one resolver per call, in order — a single shared resolveGloss would get overwritten by the second call
   const resolvers = []
   const glossTool = () => new Promise(r => resolvers.push(r))
   const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, { glossTool, maxEphemeralLines: 1 })

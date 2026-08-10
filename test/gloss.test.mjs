@@ -56,7 +56,16 @@ test('runClaudeGloss passes the requested model through to the spawned command',
   const promise = runClaudeGloss('prompt', { spawnFn, model: 'claude-haiku-4-5-20251001' })
   child.emit('close', 0)
   await promise
-  assert.deepEqual(seenArgs, ['-p', 'prompt', '--model', 'claude-haiku-4-5-20251001'])
+  assert.deepEqual(seenArgs, ['-p', 'prompt', '--model', 'claude-haiku-4-5-20251001', '--permission-mode', 'bypassPermissions'])
+})
+
+test('runClaudeGloss always bypasses permissions, since it runs headless with no TTY to ever approve a tool-use prompt', async () => {
+  let seenArgs
+  const child = fakeChild()
+  const promise = runClaudeGloss('prompt', { spawnFn: (cmd, args) => { seenArgs = args; return child } })
+  child.emit('close', 0)
+  await promise
+  assert.deepEqual(seenArgs.slice(-2), ['--permission-mode', 'bypassPermissions'])
 })
 
 test('runClaudeGloss spawns the child detached', async () => {
