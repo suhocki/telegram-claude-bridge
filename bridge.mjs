@@ -222,6 +222,31 @@ async function sendReply(chatId, text, replyToMessageId, editMessageId) {
   return sentIds
 }
 
+// Used when there's no placeholder to freeze into a quote (it never got sent, or freezing it
+// failed) — the transcript still has to reach the chat somehow.
+async function sendTranscriptQuote(chatId, quoteHtml, replyToMessageId) {
+  const params = {
+    chat_id: chatId,
+    text: quoteHtml,
+    parse_mode: 'HTML',
+    reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true },
+  }
+  try {
+    const sent = await tg('sendMessage', params)
+    return sent.message_id
+  } catch (e) {
+    log('failed to send transcript quote as HTML, retrying as plain text', e.message)
+    const { parse_mode, ...plainParams } = params
+    try {
+      const sent = await tg('sendMessage', { ...plainParams, text: htmlToPlainFallback(quoteHtml) })
+      return sent.message_id
+    } catch (e2) {
+      log('plain-text retry also failed to send transcript quote', e2.message)
+      return null
+    }
+  }
+}
+
 async function freezePlaceholderAsTranscript(chatId, placeholderId, quoteHtml, workingStatus, cancelKeyboard) {
   const freezeParams = buildPlaceholderEditParams(chatId, placeholderId, quoteHtml, true)
   try {
@@ -830,11 +855,16 @@ async function handleMessage(msg) {
     } else {
       promptText = buildVoiceTranscriptText(transcription.text)
       const quoteHtml = buildTranscriptQuoteHtml(transcription.text)
-      if (quoteHtml && placeholderId != null) {
-        const frozen = await freezePlaceholderAsTranscript(chatId, placeholderId, quoteHtml, workingStatus, cancelKeyboard)
-        if (frozen.frozen) {
+      if (quoteHtml) {
+        const frozen =
+          placeholderId != null ? await freezePlaceholderAsTranscript(chatId, placeholderId, quoteHtml, workingStatus, cancelKeyboard) : null
+        if (frozen?.frozen) {
           placeholderId = frozen.placeholderId
           if (placeholderId != null) botMessageIds.push(placeholderId)
+        } else {
+          // no placeholder to freeze, or freezing it failed outright — the transcript still has to show up somewhere
+          const quoteMessageId = await sendTranscriptQuote(chatId, quoteHtml, msg.message_id)
+          if (quoteMessageId != null) botMessageIds.push(quoteMessageId)
         }
       }
     }
