@@ -21,7 +21,6 @@ import {
   summarizeToolInput,
   truncateStatus,
   formatTextPreviewStatus,
-  formatRunOutcomeStatus,
   createProgressTracker,
   createStatusUpdater,
   createChatRateGate,
@@ -242,11 +241,6 @@ test('formatTextPreviewStatus previews accumulated assistant text', () => {
   assert.equal(formatTextPreviewStatus('Looking into this now'), '✍️ Looking into this now')
   assert.equal(formatTextPreviewStatus('   '), null)
   assert.equal(formatTextPreviewStatus(''), null)
-})
-
-test('formatRunOutcomeStatus reflects success/failure', () => {
-  assert.equal(formatRunOutcomeStatus(false), '✅ done')
-  assert.equal(formatRunOutcomeStatus(true), '❌ failed')
 })
 
 test('createProgressTracker starts at the default working status', () => {

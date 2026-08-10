@@ -1,6 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildLaunchAgentPlist, buildBridgeLaunchAgentPlist, launchAgentNameFromLabel } from '../launchagent.mjs'
+import {
+  buildLaunchAgentPlist,
+  buildBridgeLaunchAgentPlist,
+  buildCalendarLaunchAgentPlist,
+  launchAgentNameFromLabel,
+} from '../launchagent.mjs'
 
 test('buildLaunchAgentPlist: throws when a required field is missing', () => {
   assert.throws(() => buildLaunchAgentPlist({ programArguments: ['a'], workingDirectory: '/x', logPath: '/l' }), /label/)
@@ -142,6 +147,33 @@ test('buildBridgeLaunchAgentPlist: includes PATH/HOME env only when provided', (
     logPath: '/l',
   })
   assert.doesNotMatch(withoutEnv, /EnvironmentVariables/)
+})
+
+test('buildCalendarLaunchAgentPlist: throws when a required field is missing or hour/minute are out of range', () => {
+  const base = { label: 'l', programArguments: ['/n'], workingDirectory: '/w', logPath: '/l', hour: 6, minute: 0 }
+  assert.throws(() => buildCalendarLaunchAgentPlist({ ...base, label: undefined }), /label/)
+  assert.throws(() => buildCalendarLaunchAgentPlist({ ...base, programArguments: [] }), /programArguments/)
+  assert.throws(() => buildCalendarLaunchAgentPlist({ ...base, workingDirectory: undefined }), /workingDirectory/)
+  assert.throws(() => buildCalendarLaunchAgentPlist({ ...base, logPath: undefined }), /logPath/)
+  assert.throws(() => buildCalendarLaunchAgentPlist({ ...base, hour: 24 }), /hour/)
+  assert.throws(() => buildCalendarLaunchAgentPlist({ ...base, hour: -1 }), /hour/)
+  assert.throws(() => buildCalendarLaunchAgentPlist({ ...base, minute: 60 }), /minute/)
+  assert.throws(() => buildCalendarLaunchAgentPlist({ ...base, minute: 1.5 }), /minute/)
+})
+
+test('buildCalendarLaunchAgentPlist: emits StartCalendarInterval instead of RunAtLoad/KeepAlive', () => {
+  const xml = buildCalendarLaunchAgentPlist({
+    label: 'com.tgbridge.working-phrases',
+    programArguments: ['/usr/bin/node', '/repo/scripts/update-working-phrases.mjs'],
+    workingDirectory: '/repo',
+    logPath: '/logs/telegram-bridge-working-phrases.log',
+    hour: 6,
+    minute: 30,
+  })
+  assert.match(xml, /<key>StartCalendarInterval<\/key>\s*<dict>\s*<key>Hour<\/key>\s*<integer>6<\/integer>\s*<key>Minute<\/key>\s*<integer>30<\/integer>/)
+  assert.doesNotMatch(xml, /<key>RunAtLoad<\/key>/)
+  assert.doesNotMatch(xml, /<key>KeepAlive<\/key>/)
+  assert.equal((xml.match(/<dict>/g) || []).length, (xml.match(/<\/dict>/g) || []).length)
 })
 
 test('launchAgentNameFromLabel: takes the last dot-separated segment', () => {

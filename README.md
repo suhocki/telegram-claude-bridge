@@ -25,6 +25,7 @@ persistent session per Telegram chat.
 - [Sending proactive messages](#sending-proactive-messages)
 - [In-chat commands](#in-chat-commands)
 - [Live progress in chat](#live-progress-in-chat)
+- [Working placeholder phrases](#working-placeholder-phrases)
 - [Other behavior](#other-behavior)
 - [Testing](#testing)
 - [Security considerations](#security-considerations)
@@ -127,17 +128,50 @@ Target chat defaults to `config.notifyChatId`, then `config.allowedUserIds[0]`.
 - `/voice on` / `/voice off` — toggle sending replies as a voice note (requires `voiceReply` config)
 - Replying `CONFIRM` to a risky-command warning lets it proceed; anything else cancels it
 
+In a group, Telegram appends `@yourbotname` when a command is picked from the
+group's command-menu suggestion (e.g. `/new@yourbotname`) — that form and the
+plain typed form both work.
+
 ## Live progress in chat
 
 This isn't "send message, wait, get one reply back" — you watch the agent work in real time, the same way you'd watch it in a terminal:
 
 - **Instant receipt.** The moment your message is accepted, the bot reacts to it with 👀 — no wondering whether it got through.
-- **One message, live-edited.** A single "⏳ working…" placeholder appears and gets edited in place roughly every 1.3 seconds as Claude thinks, writes, and calls tools — a running transcript (tool calls turning ⏳ → ✅/❌, thinking, streamed reply text) inside one message instead of a flood of new ones.
+- **One message, live-edited.** A single placeholder appears — its opening text is a fancy rotating Russian phrase (see [Working placeholder phrases](#working-placeholder-phrases)) instead of a fixed "⏳ working…" — and gets edited in place roughly every 1.3 seconds as Claude thinks, writes, and calls tools — a running transcript (tool calls turning ⏳ → ✅/❌, thinking, streamed reply text) inside one message instead of a flood of new ones. It's deleted outright once the real reply lands, so it never lingers as a stale "done" message.
 - **Parallel agents, each visible.** Every subagent Claude spawns gets its *own* live-updating placeholder, threaded as a reply to the root message — fan work out across several subagents and watch all of them progress side by side, each one quietly disappearing once its piece finishes.
 - **Rate-limit-safe.** All of a run's placeholders (root + every subagent) share one rate gate — if Telegram throttles one edit, every sibling pauses together instead of the others hammering an already-limited chat.
 - **Cancel anytime.** Every in-progress placeholder carries an inline 🚫 Cancel button. Tap it and the run stops immediately (`SIGTERM` to the running `claude` process, `SIGKILL` after a few seconds if it hasn't exited) — no slash command, no waiting for a good moment.
 - **Full formatting.** Replies render Telegram's real formatting — **bold**, *italic*, ~~strikethrough~~, inline `code`, fenced code blocks with syntax highlighting, links, and blockquotes — converted straight from Claude's Markdown and chunked to fit Telegram's message-length limit.
-- **Reactions as status.** On completion the placeholder's reaction flips to 👍 (success) or 😢 (error) and the Cancel button disappears — glance at a chat full of bots and read the outcome from the reactions alone.
+- **Reactions as status.** On completion the 👀 reaction is cleared on success (the reply message itself is the completion signal) or flips to 😢 on error, and the Cancel button disappears — glance at a chat full of bots and read the outcome from the reactions alone.
+
+## Working placeholder phrases
+
+The placeholder's opening text is picked from `working-phrases.json` (repo root, shared
+across every bot/config) instead of a fixed string. `working-phrases.mjs` keeps a
+per-bot queue in its state file: it hands out phrases one at a time, in file order, with
+no repeats, and reloads the full list from `working-phrases.json` once the queue runs dry
+or the date rolls over.
+
+`scripts/update-working-phrases.mjs` regenerates `working-phrases.json` with a fresh
+batch by asking `claude -p` for new Russian phrases; run it by hand or on a schedule:
+
+```
+node scripts/update-working-phrases.mjs
+```
+
+On failure (e.g. `claude` not on `PATH`, or a malformed response) it leaves the
+existing file untouched rather than emptying it.
+
+To run it automatically once a day via `launchd`:
+
+```
+node scripts/gen-working-phrases-launchagent.mjs com.tgbridge.working-phrases.plist
+cp com.tgbridge.working-phrases.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.tgbridge.working-phrases.plist
+```
+
+This defaults to 06:00 local time and logs to
+`~/Library/Logs/telegram-bridge-working-phrases.log`.
 
 ## Other behavior
 

@@ -18,6 +18,7 @@ import {
 import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { homedir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import {
   sanitizeAttr,
   createKeyedQueue,
@@ -49,7 +50,6 @@ import {
   CHECKIN_MAX_CHAINED_HOPS,
   buildSetMessageReactionParams,
   RECEIPT_REACTION,
-  SUCCESS_REACTION,
   ERROR_REACTION,
   expandHome,
   DEFAULT_WHISPER_BIN,
@@ -97,13 +97,13 @@ import {
   parseJsonlLine,
   isResultEvent,
   createProgressTracker,
-  formatRunOutcomeStatus,
   createStatusUpdater,
   createChatRateGate,
   extractNewSubagentBlocks,
   extractFinishedSubagentIds,
 } from './stream-progress.mjs'
 import { createToolGlosser } from './gloss.mjs'
+import { loadWorkingPhrases, pickWorkingPhrase, todayDateString } from './working-phrases.mjs'
 
 const configPath = process.argv[2]
 if (!configPath) {
@@ -120,6 +120,8 @@ const inboxDir = path.join(stateDir, 'inbox')
 const tmpDir = path.join(stateDir, 'tmp')
 const outboxDir = path.join(stateDir, 'outbox')
 const rewindBackupDir = path.join(stateDir, 'rewind-backups')
+// Resolved against the bridge module's own directory, not cwd/configPath, so every config shares one file.
+const workingPhrasesFile = path.join(path.dirname(fileURLToPath(import.meta.url)), 'working-phrases.json')
 const API = `https://api.telegram.org/bot${botToken}`
 const GET_UPDATES_POLL_TIMEOUT_S = 30
 const GET_UPDATES_FETCH_TIMEOUT_MS = 50000
@@ -149,7 +151,7 @@ function log(...args) {
 }
 
 function emptyState() {
-  return { offset: 0, sessions: {}, pendingRisky: {}, voiceReply: {}, pendingCheckins: {}, turns: {} }
+  return { offset: 0, sessions: {}, pendingRisky: {}, voiceReply: {}, pendingCheckins: {}, turns: {}, workingPhraseQueue: null }
 }
 
 function loadState() {
@@ -160,6 +162,7 @@ function loadState() {
     state.voiceReply ??= {}
     state.pendingCheckins ??= {}
     state.turns ??= {}
+    state.workingPhraseQueue ??= null
     return state
   } catch {
     return emptyState()
@@ -170,6 +173,23 @@ function saveState(state) {
   const tmp = stateFile + '.tmp'
   writeFileSync(tmp, JSON.stringify(state, null, 2))
   writeFileSync(stateFile, readFileSync(tmp))
+}
+
+// Reads working-phrases.json fresh each call; never throws, since it runs before handleMessage's own try/catch.
+function nextWorkingPhrase() {
+  try {
+    const { phrase, nextState } = pickWorkingPhrase(
+      state.workingPhraseQueue,
+      loadWorkingPhrases(workingPhrasesFile),
+      todayDateString()
+    )
+    state.workingPhraseQueue = nextState
+    saveState(state)
+    return phrase
+  } catch (e) {
+    log('failed to rotate working phrase', e.message)
+    return DEFAULT_WORKING_STATUS
+  }
 }
 
 const state = loadState()
@@ -605,9 +625,16 @@ const glosser = createToolGlosser({ enqueue: glossQueue.enqueue, cwd })
 // Drives one Telegram message's live "⏳ working…" placeholder: a progress tracker plus
 // the periodic editMessageText loop that renders it. Used both for the root placeholder
 // of a run and for each parallel subagent (Agent tool) placeholder spawned during it.
-function createPlaceholderController(chatId, initialMessageId, getQuoteHtml = () => null, sharedGate = null, keyboard = null) {
+function createPlaceholderController(
+  chatId,
+  initialMessageId,
+  getQuoteHtml = () => null,
+  sharedGate = null,
+  keyboard = null,
+  initialStatus = DEFAULT_WORKING_STATUS
+) {
   let messageId = initialMessageId
-  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
+  const tracker = createProgressTracker(initialStatus, {
     renderTranscript: (historyLines, liveText) =>
       renderTranscriptHtml(historyLines, liveText, computeStreamingTextLimit(getQuoteHtml())),
     glossTool: (name, input) => glosser.gloss(chatId, name, input),
@@ -659,10 +686,6 @@ function createPlaceholderController(chatId, initialMessageId, getQuoteHtml = ()
     setMessageId(id) {
       messageId = id
     },
-    async stop(finalStatus) {
-      statusUpdater.stop()
-      if (finalStatus !== undefined) await editPlaceholder({ text: finalStatus, html: false })
-    },
   }
 }
 
@@ -699,7 +722,7 @@ async function handleMessage(msg) {
     return
   }
 
-  const voiceToggle = parseVoiceToggleCommand(content)
+  const voiceToggle = parseVoiceToggleCommand(content, botIdentity.username)
   if (voiceToggle) {
     state.voiceReply = setVoiceReplyPreference(state.voiceReply, chatId, voiceToggle === 'on')
     saveState(state)
@@ -707,7 +730,7 @@ async function handleMessage(msg) {
     return
   }
 
-  const command = classifyCommand(content)
+  const command = classifyCommand(content, botIdentity.username)
 
   if (command === 'reset') {
     delete state.sessions[chatId]
@@ -767,13 +790,14 @@ async function handleMessage(msg) {
   await tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {})
 
   const cancelKeyboard = buildCancelKeyboard(chatId)
+  const workingStatus = nextWorkingPhrase()
   // every message the bot posts for this turn, so a later rewind past this turn can delete them
   const botMessageIds = []
   let placeholderId = null
   try {
     const placeholder = await tg('sendMessage', {
       chat_id: chatId,
-      text: DEFAULT_WORKING_STATUS,
+      text: workingStatus,
       reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
       reply_markup: cancelKeyboard,
     })
@@ -787,7 +811,14 @@ async function handleMessage(msg) {
   // shared by root + every subagent placeholder below, so a 429 on any one of them
   // backs off every concurrent edit loop writing to this same chat
   const chatRateGate = createChatRateGate()
-  const rootController = createPlaceholderController(chatId, placeholderId, () => transcriptQuoteHtml, chatRateGate, cancelKeyboard)
+  const rootController = createPlaceholderController(
+    chatId,
+    placeholderId,
+    () => transcriptQuoteHtml,
+    chatRateGate,
+    cancelKeyboard,
+    workingStatus
+  )
 
   // one placeholder message per parallel subagent (Agent tool call), keyed by that
   // tool_use's id; created when it starts, deleted once its tool_result comes back
@@ -878,7 +909,8 @@ async function handleMessage(msg) {
       },
     })
     const result = await claudePromise
-    await rootController.stop(formatRunOutcomeStatus(result.is_error))
+    // no finalStatus edit: the placeholder gets deleted outright below, once the real reply is sent
+    rootController.statusUpdater.stop()
     let newSession = session
     if (result.session_id) {
       newSession = accumulateSessionCost(session, result.session_id, result.total_cost_usd)
@@ -896,6 +928,19 @@ async function handleMessage(msg) {
     }
     // new message, not an edit of the placeholder, so Telegram pushes a notification
     botMessageIds.push(...(await sendReply(chatId, replyText, msg.message_id)))
+    if (placeholderId != null) {
+      // only untrack on a confirmed delete, so a failed one still gets the finally block's cleanup + a rewind retry
+      try {
+        await tg('deleteMessage', { chat_id: chatId, message_id: placeholderId })
+        const idx = botMessageIds.indexOf(placeholderId)
+        if (idx !== -1) botMessageIds.splice(idx, 1)
+        placeholderId = null
+      } catch (e) {
+        log('failed to delete working placeholder', e.message)
+        // fall back to a terminal status edit so a stuck delete doesn't leave a stale phrase forever
+        await rootController.editPlaceholder({ text: result.is_error ? '❌ failed' : '✅ done', html: false })
+      }
+    }
     if (!result.is_error) {
       for (const attachPath of attachPaths) {
         botMessageIds.push(...(await sendAttachment(chatId, attachPath, msg.message_id)))
@@ -905,7 +950,8 @@ async function handleMessage(msg) {
       }
       if (checkin) scheduleCheckin(chatId, newSession?.id ?? sessionId, checkin)
     }
-    await setReaction(chatId, msg.message_id, reactionEmoji || (result.is_error ? ERROR_REACTION : SUCCESS_REACTION))
+    // on success, clear the 👀 receipt reaction instead of swapping in a 👍 — the reply itself is the signal now
+    await setReaction(chatId, msg.message_id, reactionEmoji || (result.is_error ? ERROR_REACTION : null))
   } catch (e) {
     rootController.statusUpdater.stop()
     if (cancelled) {

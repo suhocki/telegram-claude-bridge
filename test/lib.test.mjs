@@ -35,7 +35,6 @@ import {
   buildSetMessageReactionParams,
   buildReactionMarkerInstructions,
   RECEIPT_REACTION,
-  SUCCESS_REACTION,
   ERROR_REACTION,
   ALLOWED_REACTION_EMOJI,
   extractCheckinMarker,
@@ -245,6 +244,29 @@ test('classifyCommand: null/undefined/empty text is not a command', () => {
   assert.equal(classifyCommand(undefined), null)
   assert.equal(classifyCommand(null), null)
   assert.equal(classifyCommand(''), null)
+})
+
+test('classifyCommand: strips a "@botusername" suffix (group command-menu picks add it)', () => {
+  assert.equal(classifyCommand('/new@cntnt237_bot', 'cntnt237_bot'), 'reset')
+  assert.equal(classifyCommand('/reset@cntnt237_bot', 'cntnt237_bot'), 'reset')
+  assert.equal(classifyCommand('/compact@cntnt237_bot', 'cntnt237_bot'), 'compact')
+  assert.equal(classifyCommand('/status@cntnt237_bot', 'cntnt237_bot'), 'status')
+})
+
+test('classifyCommand: "@botusername" suffix matching is case-insensitive', () => {
+  assert.equal(classifyCommand('/new@CntNt237_Bot', 'cntnt237_bot'), 'reset')
+})
+
+test('classifyCommand: without botUsername, an "@bot" suffix is not stripped', () => {
+  assert.equal(classifyCommand('/new@cntnt237_bot'), null)
+})
+
+test('classifyCommand: a suffix for a different bot is not stripped', () => {
+  assert.equal(classifyCommand('/new@some_other_bot', 'cntnt237_bot'), null)
+})
+
+test('classifyCommand: punctuation glued to the mention is not swallowed into the username', () => {
+  assert.equal(classifyCommand('/new@cntnt237_bot.', 'cntnt237_bot'), null)
 })
 
 test('normalizeSession: null/undefined stays null', () => {
@@ -850,13 +872,13 @@ test('buildReactionMarkerInstructions: documents the REACT marker protocol', () 
   assert.match(text, /REACT: <emoji>/)
 })
 
-test('reaction constants: receipt, success, and error emoji are distinct', () => {
-  const emojis = new Set([RECEIPT_REACTION, SUCCESS_REACTION, ERROR_REACTION])
-  assert.equal(emojis.size, 3)
+test('reaction constants: receipt and error emoji are distinct', () => {
+  const emojis = new Set([RECEIPT_REACTION, ERROR_REACTION])
+  assert.equal(emojis.size, 2)
 })
 
 test('reaction constants: all fall inside Telegram\'s setMessageReaction whitelist', () => {
-  for (const emoji of [RECEIPT_REACTION, SUCCESS_REACTION, ERROR_REACTION]) {
+  for (const emoji of [RECEIPT_REACTION, ERROR_REACTION]) {
     assert.ok(ALLOWED_REACTION_EMOJI.has(emoji), `${emoji} is not in Telegram's reaction whitelist (would 400 as REACTION_INVALID)`)
   }
 })
@@ -1133,6 +1155,17 @@ test('parseVoiceToggleCommand: recognizes /voice on and /voice off case-insensit
   assert.equal(parseVoiceToggleCommand('  /voice On  '), 'on')
 })
 
+test('parseVoiceToggleCommand: tolerates this bot\'s own "@botusername" suffix from the group command menu', () => {
+  assert.equal(parseVoiceToggleCommand('/voice@cntnt237_bot on', 'cntnt237_bot'), 'on')
+  assert.equal(parseVoiceToggleCommand('/voice@cntnt237_bot off', 'cntnt237_bot'), 'off')
+  assert.equal(parseVoiceToggleCommand('/voice@CntNt237_Bot on', 'cntnt237_bot'), 'on')
+})
+
+test('parseVoiceToggleCommand: an @mention naming a different bot is not ours to act on', () => {
+  assert.equal(parseVoiceToggleCommand('/voice@some_other_bot on', 'cntnt237_bot'), null)
+  assert.equal(parseVoiceToggleCommand('/voice@cntnt237_bot on'), null)
+})
+
 test('parseVoiceToggleCommand: returns null for anything else', () => {
   assert.equal(parseVoiceToggleCommand('/voice'), null)
   assert.equal(parseVoiceToggleCommand('/voice maybe'), null)
@@ -1277,6 +1310,21 @@ test('isBotMentioned: no entities means no mention', () => {
   assert.equal(isBotMentioned({ text: 'hey @mybot' }, 'mybot', '111'), false)
 })
 
+test('isBotMentioned: a "/cmd@botname" bot_command entity naming this bot counts as a mention', () => {
+  const msg = { text: '/new@mybot', entities: [{ type: 'bot_command', offset: 0, length: 10 }] }
+  assert.equal(isBotMentioned(msg, 'mybot', '111'), true)
+})
+
+test('isBotMentioned: a "/cmd@otherbot" bot_command entity naming a different bot is not a mention', () => {
+  const msg = { text: '/new@otherbot', entities: [{ type: 'bot_command', offset: 0, length: 13 }] }
+  assert.equal(isBotMentioned(msg, 'mybot', '111'), false)
+})
+
+test('isBotMentioned: a bare "/cmd" bot_command entity with no @suffix is not a mention', () => {
+  const msg = { text: '/new', entities: [{ type: 'bot_command', offset: 0, length: 4 }] }
+  assert.equal(isBotMentioned(msg, 'mybot', '111'), false)
+})
+
 test('isReplyToBot: true when replying to a message sent by the bot', () => {
   const msg = { reply_to_message: { from: { id: 111 } } }
   assert.equal(isReplyToBot(msg, '111'), true)
@@ -1325,6 +1373,12 @@ test('shouldHandleGroupMessage: requireMention true allows a message that mentio
 test('shouldHandleGroupMessage: requireMention true allows a reply to the bot without an explicit mention', () => {
   const policy = { requireMention: true, allowFrom: [] }
   const msg = { from: { id: 1 }, text: 'thanks', reply_to_message: { from: { id: 111 } } }
+  assert.equal(shouldHandleGroupMessage(msg, policy, 'mybot', '111'), true)
+})
+
+test('shouldHandleGroupMessage: requireMention true allows a "/new@mybot" command-menu pick', () => {
+  const policy = { requireMention: true, allowFrom: [] }
+  const msg = { from: { id: 1 }, text: '/new@mybot', entities: [{ type: 'bot_command', offset: 0, length: 10 }] }
   assert.equal(shouldHandleGroupMessage(msg, policy, 'mybot', '111'), true)
 })
 

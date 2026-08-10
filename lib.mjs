@@ -38,11 +38,26 @@ export function buildSendMessageCalls(chatId, text, replyToMessageId, limit = 40
   return buildSendMessageCallsFromChunks(chatId, chunk(text, limit), replyToMessageId, parseMode)
 }
 
-export function classifyCommand(text) {
-  const t = String(text ?? '').trim()
-  if (t === '/new' || t === '/reset') return 'reset'
-  if (t === '/compact') return 'compact'
-  if (t === '/status') return 'status'
+function mentionNamesBot(mentioned, botUsername) {
+  return String(mentioned ?? '').toLowerCase() === String(botUsername ?? '').toLowerCase()
+}
+
+const COMMAND_WITH_OPTIONAL_MENTION_RE = /^(\/[a-zA-Z]+)(?:@([A-Za-z0-9_]+))?([\s\S]*)$/
+
+function parseCommandMention(text, botUsername) {
+  const m = text.match(COMMAND_WITH_OPTIONAL_MENTION_RE)
+  if (!m) return null
+  const [, command, mentioned, rest] = m
+  if (mentioned && !mentionNamesBot(mentioned, botUsername)) return null
+  return { command, rest }
+}
+
+export function classifyCommand(text, botUsername) {
+  const parsed = parseCommandMention(String(text ?? '').trim(), botUsername)
+  if (!parsed || parsed.rest !== '') return null
+  if (parsed.command === '/new' || parsed.command === '/reset') return 'reset'
+  if (parsed.command === '/compact') return 'compact'
+  if (parsed.command === '/status') return 'status'
   return null
 }
 
@@ -287,7 +302,6 @@ export const ALLOWED_REACTION_EMOJI = new Set([
 ])
 
 export const RECEIPT_REACTION = '👀'
-export const SUCCESS_REACTION = '👍'
 export const ERROR_REACTION = '😢'
 
 export function buildSetMessageReactionParams(chatId, messageId, emoji) {
@@ -304,7 +318,7 @@ export function buildReactionMarkerInstructions() {
     'To do so, include one line anywhere in your final answer, in exactly this form:',
     'REACT: <emoji>',
     'Use a single standard emoji (e.g. 👍, 🎉, 👀, ❌) that Telegram accepts as a message reaction.',
-    "This marker line is stripped from what the user sees on Telegram. If omitted, the bridge sets a default ✅/❌ reaction based on whether the run succeeded or failed.",
+    "This marker line is stripped from what the user sees on Telegram. If omitted, the bridge clears its receipt reaction on success, or sets 😢 on error.",
   ].join('\n')
 }
 
@@ -428,10 +442,12 @@ export function buildPlaceholderEditParams(chatId, messageId, status, quoteHtml,
   return keyboard ? { ...base, reply_markup: keyboard } : base
 }
 
-const VOICE_TOGGLE_RE = /^\/voice\s+(on|off)$/i
+const VOICE_TOGGLE_ARG_RE = /^\s+(on|off)$/i
 
-export function parseVoiceToggleCommand(text) {
-  const m = String(text ?? '').trim().match(VOICE_TOGGLE_RE)
+export function parseVoiceToggleCommand(text, botUsername) {
+  const parsed = parseCommandMention(String(text ?? '').trim(), botUsername)
+  if (!parsed || parsed.command.toLowerCase() !== '/voice') return null
+  const m = parsed.rest.match(VOICE_TOGGLE_ARG_RE)
   return m ? m[1].toLowerCase() : null
 }
 
@@ -509,12 +525,16 @@ export function isBotMentioned(msg, botUsername, botId) {
   const entities = msg?.entities ?? msg?.caption_entities ?? []
   if (!Array.isArray(entities)) return false
   for (const e of entities) {
-    if (e.type === 'mention' && botUsername) {
-      const mention = text.slice(e.offset, e.offset + e.length)
-      if (mention.toLowerCase() === `@${botUsername}`.toLowerCase()) return true
+    if (e.type === 'mention' && mentionNamesBot(text.slice(e.offset + 1, e.offset + e.length), botUsername)) {
+      return true
     }
     if (e.type === 'text_mention' && e.user?.id != null && botId != null && String(e.user.id) === String(botId)) {
       return true
+    }
+    if (e.type === 'bot_command') {
+      const command = text.slice(e.offset, e.offset + e.length)
+      const at = command.indexOf('@')
+      if (at !== -1 && mentionNamesBot(command.slice(at + 1), botUsername)) return true
     }
   }
   return false
