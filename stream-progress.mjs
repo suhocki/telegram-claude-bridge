@@ -144,7 +144,7 @@ export function createProgressTracker(
   { renderTranscript, maxEphemeralLines = MAX_EPHEMERAL_LINES, maxCheckpointLines = MAX_CHECKPOINT_LINES } = {}
 ) {
   const seenToolIds = new Set()
-  let checkpointLines = []
+  const checkpointLines = []
   let ephemeral = []
   let liveText = ''
   let liveKind = null // 'thinking' | 'text' | null
@@ -152,14 +152,17 @@ export function createProgressTracker(
   let statusIsHtml = false
   let snapshotCache = { text: status, html: statusIsHtml }
 
+  function pushBounded(array, maxLen, item) {
+    if (array.length >= maxLen) array.shift()
+    array.push(item)
+  }
+
   function pushEphemeral(entry) {
-    if (ephemeral.length >= maxEphemeralLines) ephemeral.shift()
-    ephemeral.push(entry)
+    pushBounded(ephemeral, maxEphemeralLines, entry)
   }
 
   function pushCheckpoint(line) {
-    if (checkpointLines.length >= maxCheckpointLines) checkpointLines.shift()
-    checkpointLines.push(line)
+    pushBounded(checkpointLines, maxCheckpointLines, line)
   }
 
   function freezeLive() {
