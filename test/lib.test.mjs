@@ -51,11 +51,10 @@ import {
   buildWhisperArgs,
   parseWhisperTranscript,
   buildVoiceTranscriptText,
-  buildTranscriptQuoteHtml,
-  TRANSCRIPT_QUOTE_MAX_CHARS,
+  buildVoiceTranscriptMessage,
+  VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS,
   buildPlaceholderEditParams,
   buildCancelKeyboard,
-  computeStreamingTextLimit,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
   isVoiceReplyEnabled,
@@ -92,7 +91,6 @@ import {
   MAX_TRACKED_TURNS,
   TELEGRAM_ALLOWED_UPDATES,
 } from '../lib.mjs'
-import { renderStreamingTail } from '../markdown-html.mjs'
 import path from 'node:path'
 
 function deferred() {
@@ -1063,64 +1061,37 @@ test('buildVoiceTranscriptText: empty/whitespace-only transcript yields an unava
   assert.equal(buildVoiceTranscriptText('   '), '(voice message transcript unavailable)')
 })
 
-test('buildTranscriptQuoteHtml: wraps a trimmed transcript in a blockquote', () => {
-  assert.equal(buildTranscriptQuoteHtml('  what is the weather in Budapest?  '), '<blockquote>what is the weather in Budapest?</blockquote>')
+test('buildVoiceTranscriptMessage: prefixes a trimmed transcript for the standalone chat message', () => {
+  assert.equal(buildVoiceTranscriptMessage('  what is the weather in Budapest?  '), '🎙️ what is the weather in Budapest?')
 })
 
-test('buildTranscriptQuoteHtml: escapes HTML-significant characters', () => {
-  assert.equal(buildTranscriptQuoteHtml('<b>a & b</b>'), '<blockquote>&lt;b&gt;a &amp; b&lt;/b&gt;</blockquote>')
+test('buildVoiceTranscriptMessage: empty/whitespace-only transcript yields null (nothing to send)', () => {
+  assert.equal(buildVoiceTranscriptMessage(''), null)
+  assert.equal(buildVoiceTranscriptMessage('   '), null)
+  assert.equal(buildVoiceTranscriptMessage(undefined), null)
 })
 
-test('buildTranscriptQuoteHtml: empty/whitespace-only transcript yields null', () => {
-  assert.equal(buildTranscriptQuoteHtml(''), null)
-  assert.equal(buildTranscriptQuoteHtml('   '), null)
-})
-
-test('buildTranscriptQuoteHtml: truncates a transcript longer than TRANSCRIPT_QUOTE_MAX_CHARS', () => {
-  const longTranscript = 'a'.repeat(TRANSCRIPT_QUOTE_MAX_CHARS + 500)
-  const result = buildTranscriptQuoteHtml(longTranscript)
-  assert.ok(result.startsWith('<blockquote>'))
-  assert.ok(result.endsWith('…</blockquote>'))
+test('buildVoiceTranscriptMessage: truncates a transcript longer than VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS', () => {
+  const longTranscript = 'a'.repeat(VOICE_TRANSCRIPT_MESSAGE_MAX_CHARS + 500)
+  const result = buildVoiceTranscriptMessage(longTranscript)
+  assert.ok(result.startsWith('🎙️ '))
+  assert.ok(result.endsWith('…'))
   assert.ok(result.length < longTranscript.length)
 })
 
-test('buildTranscriptQuoteHtml: bounds the final size even when escaping expands a transcript past the cap', () => {
-  const longTranscript = '&'.repeat(TRANSCRIPT_QUOTE_MAX_CHARS)
-  const result = buildTranscriptQuoteHtml(longTranscript)
-  assert.ok(result.length <= TRANSCRIPT_QUOTE_MAX_CHARS + '<blockquote></blockquote>'.length)
-})
-
-test('buildPlaceholderEditParams: without a quote, passes the status through unchanged', () => {
-  assert.deepEqual(buildPlaceholderEditParams('123', 456, '⏳ working…', null), {
+test('buildPlaceholderEditParams: plain status text, no HTML', () => {
+  assert.deepEqual(buildPlaceholderEditParams('123', 456, '⏳ working…'), {
     chat_id: '123',
     message_id: 456,
     text: '⏳ working…',
   })
 })
 
-test('buildPlaceholderEditParams: with a quote, prepends it and escapes the status as HTML', () => {
-  assert.deepEqual(buildPlaceholderEditParams('123', 456, '⏳ <working>…', '<blockquote>hi</blockquote>'), {
-    chat_id: '123',
-    message_id: 456,
-    text: '<blockquote>hi</blockquote>\n⏳ &lt;working&gt;…',
-    parse_mode: 'HTML',
-  })
-})
-
-test('buildPlaceholderEditParams: without a quote but isHtml=true, passes the status through with parse_mode HTML and no escaping', () => {
-  assert.deepEqual(buildPlaceholderEditParams('123', 456, '<b>hi</b>', null, true), {
+test('buildPlaceholderEditParams: isHtml=true sets parse_mode HTML with no escaping', () => {
+  assert.deepEqual(buildPlaceholderEditParams('123', 456, '<b>hi</b>', true), {
     chat_id: '123',
     message_id: 456,
     text: '<b>hi</b>',
-    parse_mode: 'HTML',
-  })
-})
-
-test('buildPlaceholderEditParams: with a quote and isHtml=true, prepends the quote without escaping the already-safe HTML status', () => {
-  assert.deepEqual(buildPlaceholderEditParams('123', 456, '<b>hi</b>', '<blockquote>quote</blockquote>', true), {
-    chat_id: '123',
-    message_id: 456,
-    text: '<blockquote>quote</blockquote>\n<b>hi</b>',
     parse_mode: 'HTML',
   })
 })
@@ -1131,46 +1102,14 @@ test('buildCancelKeyboard: builds a single-button inline keyboard scoped to the 
   })
 })
 
-test('buildPlaceholderEditParams: with a keyboard but no quote, attaches reply_markup so editMessageText does not drop the Cancel button', () => {
+test('buildPlaceholderEditParams: with a keyboard, attaches reply_markup so editMessageText does not drop the Cancel button', () => {
   const keyboard = buildCancelKeyboard('123')
-  assert.deepEqual(buildPlaceholderEditParams('123', 456, '⏳ working…', null, false, keyboard), {
+  assert.deepEqual(buildPlaceholderEditParams('123', 456, '⏳ working…', false, keyboard), {
     chat_id: '123',
     message_id: 456,
     text: '⏳ working…',
     reply_markup: keyboard,
   })
-})
-
-test('buildPlaceholderEditParams: with a keyboard and a quote, attaches reply_markup alongside parse_mode HTML', () => {
-  const keyboard = buildCancelKeyboard('123')
-  assert.deepEqual(buildPlaceholderEditParams('123', 456, '⏳ working…', '<blockquote>hi</blockquote>', false, keyboard), {
-    chat_id: '123',
-    message_id: 456,
-    text: '<blockquote>hi</blockquote>\n⏳ working…',
-    parse_mode: 'HTML',
-    reply_markup: keyboard,
-  })
-})
-
-test('computeStreamingTextLimit: with no quote, returns the full limit unchanged', () => {
-  assert.equal(computeStreamingTextLimit(null, 4096), 4096)
-  assert.equal(computeStreamingTextLimit(undefined, 4096), 4096)
-})
-
-test('computeStreamingTextLimit: with a quote, reserves its length plus the joining newline', () => {
-  assert.equal(computeStreamingTextLimit('x'.repeat(100), 4096), 4096 - 100 - 1)
-})
-
-test('computeStreamingTextLimit: clamps to 0 instead of going negative for a quote longer than the limit', () => {
-  assert.equal(computeStreamingTextLimit('x'.repeat(5000), 4096), 0)
-})
-
-test('regression: a streaming preview rendered with computeStreamingTextLimit, combined with the worst-case transcript quote, never exceeds the Telegram message limit', () => {
-  const quoteHtml = buildTranscriptQuoteHtml('x'.repeat(TRANSCRIPT_QUOTE_MAX_CHARS * 2))
-  const body = 'y'.repeat(6000)
-  const renderedBody = renderStreamingTail(body, computeStreamingTextLimit(quoteHtml))
-  const params = buildPlaceholderEditParams('123', 456, renderedBody, quoteHtml, true)
-  assert.ok(params.text.length <= 4096, `combined text length ${params.text.length} exceeds the Telegram limit`)
 })
 
 test('parseVoiceToggleCommand: recognizes /voice on and /voice off case-insensitively', () => {
