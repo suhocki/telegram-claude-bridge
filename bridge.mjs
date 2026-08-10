@@ -681,10 +681,6 @@ function createPlaceholderController(
     setMessageId(id) {
       messageId = id
     },
-    async stop(finalStatus) {
-      statusUpdater.stop()
-      if (finalStatus !== undefined) await editPlaceholder({ text: finalStatus, html: false })
-    },
   }
 }
 

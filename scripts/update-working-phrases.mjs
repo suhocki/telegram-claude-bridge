@@ -21,12 +21,23 @@ export const PROMPT = `Придумай ровно ${PHRASE_COUNT} разных 
 
 Выведи ТОЛЬКО валидный JSON-массив из ${PHRASE_COUNT} строк — без пояснений, без markdown-разметки, без обратных кавычек.`
 
+function dedupeNonEmptyStrings(arr) {
+  return [...new Set(arr.map(p => String(p ?? '').trim()).filter(Boolean))]
+}
+
 export function extractPhrasesFromClaudeOutput(raw) {
-  const jsonMatch = String(raw ?? '').match(/\[[\s\S]*\]/)
-  if (!jsonMatch) throw new Error(`no JSON array found in claude output: ${String(raw ?? '').slice(0, 200)}`)
+  const text = String(raw ?? '').trim()
+  try {
+    const direct = JSON.parse(text)
+    if (Array.isArray(direct)) return dedupeNonEmptyStrings(direct)
+  } catch {
+    // fall through to bracket extraction below — claude sometimes wraps the array in prose despite the prompt
+  }
+  const jsonMatch = text.match(/\[[\s\S]*\]/)
+  if (!jsonMatch) throw new Error(`no JSON array found in claude output: ${text.slice(0, 200)}`)
   const parsed = JSON.parse(jsonMatch[0])
   if (!Array.isArray(parsed)) throw new Error('claude output parsed but is not an array')
-  return [...new Set(parsed.map(p => String(p ?? '').trim()).filter(Boolean))]
+  return dedupeNonEmptyStrings(parsed)
 }
 
 function generatePhrases() {
