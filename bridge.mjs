@@ -43,6 +43,7 @@ import {
   buildOutboundAttachmentInstructions,
   combineSystemPrompts,
   buildReplyCallsFromChunks,
+  buildSendMessageCalls,
   buildReactionMarkerInstructions,
   buildCheckinMarkerInstructions,
   buildCheckinFollowupPrompt,
@@ -217,6 +218,21 @@ async function sendReply(chatId, text, replyToMessageId, editMessageId) {
       sent = await tg(method, { ...plainParams, text: htmlToPlainFallback(params.text) })
     }
     if (method === 'sendMessage' && sent?.message_id != null) sentIds.push(sent.message_id)
+  }
+  return sentIds
+}
+
+// Unlike sendReply, sent with no parse_mode — the text (e.g. a Whisper transcript) is shown
+// verbatim, not run through Markdown rendering that could reinterpret stray */_/`/[] in it.
+async function sendPlainMessage(chatId, text, replyToMessageId) {
+  const sentIds = []
+  for (const params of buildSendMessageCalls(chatId, text, replyToMessageId)) {
+    try {
+      const sent = await tg('sendMessage', params)
+      if (sent?.message_id != null) sentIds.push(sent.message_id)
+    } catch (e) {
+      log('sendPlainMessage failed', e.message)
+    }
   }
   return sentIds
 }
@@ -861,7 +877,7 @@ async function handleMessage(msg) {
       const transcriptMessage = buildVoiceTranscriptMessage(transcription.text)
       // a separate, permanent message — the placeholder it'd otherwise ride along on gets deleted once the real reply lands
       if (transcriptMessage) {
-        botMessageIds.push(...(await sendReply(chatId, transcriptMessage, msg.message_id).catch(() => [])))
+        botMessageIds.push(...(await sendPlainMessage(chatId, transcriptMessage, msg.message_id)))
       }
     }
   }
