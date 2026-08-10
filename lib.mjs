@@ -143,8 +143,7 @@ export function exceedsAttachmentLimit(size) {
   return typeof size === 'number' && size > MAX_ATTACHMENT_BYTES
 }
 
-// Fields Telegram sets only on service messages (a chat event, not user-authored content) — not exhaustive, but covers the common ones.
-const SERVICE_MESSAGE_FIELDS = [
+const KNOWN_SERVICE_MESSAGE_FIELDS = [
   'new_chat_members',
   'left_chat_member',
   'new_chat_title',
@@ -174,12 +173,14 @@ const SERVICE_MESSAGE_FIELDS = [
   'proximity_alert_triggered',
   'migrate_to_chat_id',
   'migrate_from_chat_id',
-  'successful_payment',
-  'refunded_payment',
 ]
 
+const BOOLEAN_SERVICE_MESSAGE_FIELDS = new Set(['group_chat_created', 'supergroup_chat_created', 'channel_chat_created', 'delete_chat_photo'])
+
 export function isServiceMessage(msg) {
-  return SERVICE_MESSAGE_FIELDS.some(field => msg?.[field] !== undefined)
+  return KNOWN_SERVICE_MESSAGE_FIELDS.some(field =>
+    BOOLEAN_SERVICE_MESSAGE_FIELDS.has(field) ? msg?.[field] === true : msg?.[field] !== undefined
+  )
 }
 
 export function sanitizeIdForFilename(id) {

@@ -462,6 +462,13 @@ test('isServiceMessage: a plain text/media message, or none of the tracked field
   assert.equal(isServiceMessage(null), false)
 })
 
+test('isServiceMessage: boolean-typed fields require an actual true, not just being present', () => {
+  assert.equal(isServiceMessage({ group_chat_created: true }), true)
+  assert.equal(isServiceMessage({ group_chat_created: false }), false)
+  assert.equal(isServiceMessage({ delete_chat_photo: true }), true)
+  assert.equal(isServiceMessage({ delete_chat_photo: false }), false)
+})
+
 test('resolveAttachmentExtension: takes the extension from the Telegram file_path', () => {
   assert.equal(resolveAttachmentExtension('photos/file_1.jpg', 'photo'), 'jpg')
   assert.equal(resolveAttachmentExtension('documents/file_2.pdf', 'document'), 'pdf')
