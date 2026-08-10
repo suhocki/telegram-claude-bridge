@@ -130,18 +130,18 @@ const HISTORY_LINE_MAX_CHARS = 80
 
 // How many "still working" lines (tool calls + frozen thinking) stay visible below the last checkpoint before the oldest ones scroll off.
 export const MAX_EPHEMERAL_LINES = 6
+// Same idea for frozen 💬 checkpoints themselves — without a cap, a long-running turn's live status grows without bound.
+export const MAX_CHECKPOINT_LINES = 6
 
-// Renders one ephemeral (non-checkpoint) entry: thinking entries are pre-baked text, tool entries pair their current ⏳/✅/❌ state with either a resolved human gloss or the raw "Label: summary" fallback.
 function renderEphemeral(entry) {
   if (entry.kind === 'thinking') return entry.text
-  if (entry.gloss) return `${entry.state} ${truncateStatus(entry.gloss, HISTORY_LINE_MAX_CHARS)}`
   return `${entry.state} ${formatToolBody(entry.name, entry.input)}`
 }
 
 // Only frozen *text* segments (💬, for a human) become permanent checkpointLines; tool calls and frozen thinking are ephemeral and collapse away on the next checkpoint.
 export function createProgressTracker(
   initialStatus = DEFAULT_WORKING_STATUS,
-  { renderTranscript, maxEphemeralLines = MAX_EPHEMERAL_LINES, glossTool } = {}
+  { renderTranscript, maxEphemeralLines = MAX_EPHEMERAL_LINES, maxCheckpointLines = MAX_CHECKPOINT_LINES } = {}
 ) {
   const seenToolIds = new Set()
   const checkpointLines = []
@@ -152,9 +152,17 @@ export function createProgressTracker(
   let statusIsHtml = false
   let snapshotCache = { text: status, html: statusIsHtml }
 
+  function pushBounded(array, maxLen, item) {
+    if (array.length >= maxLen) array.shift()
+    array.push(item)
+  }
+
   function pushEphemeral(entry) {
-    if (ephemeral.length >= maxEphemeralLines) ephemeral.shift()
-    ephemeral.push(entry)
+    pushBounded(ephemeral, maxEphemeralLines, entry)
+  }
+
+  function pushCheckpoint(line) {
+    pushBounded(checkpointLines, maxCheckpointLines, line)
   }
 
   function freezeLive() {
@@ -163,7 +171,7 @@ export function createProgressTracker(
       if (liveKind === 'thinking') {
         pushEphemeral({ kind: 'thinking', text: `🤔 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}` })
       } else {
-        checkpointLines.push(`💬 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`)
+        pushCheckpoint(`💬 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`)
         ephemeral = [] // a checkpoint is the summary of everything that led to it — collapse the rest
       }
     }
@@ -209,15 +217,8 @@ export function createProgressTracker(
       if (seenToolIds.has(block.id)) continue
       seenToolIds.add(block.id)
       freezeLive()
-      pushEphemeral({ kind: 'tool', id: block.id, name: block.name, input: block.input, state: '⏳', gloss: null })
+      pushEphemeral({ kind: 'tool', id: block.id, name: block.name, input: block.input, state: '⏳' })
       changed = true
-      // Fire-and-forget: a slow or failing glossTool just leaves the raw fallback on screen, never blocks ingest().
-      if (glossTool) {
-        Promise.resolve()
-          .then(() => glossTool(block.name, block.input))
-          .then(text => describeTool(block.id, text))
-          .catch(() => {})
-      }
     }
 
     for (const result of extractToolResults(event)) {
@@ -247,16 +248,6 @@ export function createProgressTracker(
     return commit()
   }
 
-  // Upgrades a still-visible tool line to a human gloss (see gloss.mjs); a no-op if it already scrolled off.
-  function describeTool(id, gloss) {
-    const trimmed = String(gloss ?? '').trim()
-    if (!trimmed) return null
-    const entry = ephemeral.find(e => e.kind === 'tool' && e.id === id)
-    if (!entry) return null
-    entry.gloss = trimmed
-    return commit()
-  }
-
   function current() {
     return status
   }
@@ -267,7 +258,7 @@ export function createProgressTracker(
     return snapshotCache
   }
 
-  return { ingest, describeTool, current, snapshot }
+  return { ingest, current, snapshot }
 }
 
 // Shared across every controller writing to the same chat (root + all its parallel

@@ -102,7 +102,6 @@ import {
   extractNewSubagentBlocks,
   extractFinishedSubagentIds,
 } from './stream-progress.mjs'
-import { createToolGlosser } from './gloss.mjs'
 import { loadWorkingPhrases, pickWorkingPhrase, todayDateString } from './working-phrases.mjs'
 
 const configPath = process.argv[2]
@@ -617,11 +616,6 @@ async function sendVoiceReply(chatId, text, replyToMessageId) {
   }
 }
 
-// Separate from chatQueue (which already serializes whole message turns) so a gloss request never waits behind the run it's describing.
-const glossQueue = createKeyedQueue()
-// Runs from the bot's own target project, same as runClaude, so a gloss call sees the right CLAUDE.md/context instead of the bridge repo's.
-const glosser = createToolGlosser({ enqueue: glossQueue.enqueue, cwd })
-
 // Drives one Telegram message's live "⏳ working…" placeholder: a progress tracker plus
 // the periodic editMessageText loop that renders it. Used both for the root placeholder
 // of a run and for each parallel subagent (Agent tool) placeholder spawned during it.
@@ -637,7 +631,6 @@ function createPlaceholderController(
   const tracker = createProgressTracker(initialStatus, {
     renderTranscript: (historyLines, liveText) =>
       renderTranscriptHtml(historyLines, liveText, computeStreamingTextLimit(getQuoteHtml())),
-    glossTool: (name, input) => glosser.gloss(chatId, name, input),
   })
 
   async function editPlaceholder({ text, html }) {
