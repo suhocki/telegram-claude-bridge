@@ -22,7 +22,6 @@ import {
   SUBAGENT_TOOL_NAME,
   summarizeToolInput,
   truncateStatus,
-  formatToolStatusLine,
   formatTextPreviewStatus,
   formatRunOutcomeStatus,
   createProgressTracker,
@@ -224,19 +223,21 @@ test('truncateStatus leaves short text untouched and ellipsizes long text', () =
   assert.ok(result.endsWith('…'))
 })
 
-test('formatToolStatusLine matches the expected "tool: summary…" shape', () => {
-  assert.equal(formatToolStatusLine('Bash', { command: 'npm test' }), '⏳ Bash: npm test…')
-  assert.equal(formatToolStatusLine('Edit', { file_path: '/a/b/foo.py' }), '⏳ Edit: foo.py…')
+test('createProgressTracker falls back to just the tool name when there is no summary to render', () => {
+  const tracker = createProgressTracker()
+  assert.equal(
+    tracker.ingest({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Task', input: {} }] } }),
+    '⏳ Task…'
+  )
 })
 
-test('formatToolStatusLine falls back to just the tool name when there is no summary', () => {
-  assert.equal(formatToolStatusLine('Task', {}), '⏳ Task…')
-  assert.equal(formatToolStatusLine(null, {}), '⏳ tool…')
-})
-
-test('formatToolStatusLine does not double up ellipses when truncated', () => {
-  const line = formatToolStatusLine('Bash', { command: 'x'.repeat(100) }, 20)
-  assert.equal(line.match(/…/g).length, 1)
+test('createProgressTracker never doubles up the ellipsis on a fallback tool line that needed truncating', () => {
+  const tracker = createProgressTracker()
+  const status = tracker.ingest({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'x'.repeat(100) } }] },
+  })
+  assert.equal(status.match(/…/g).length, 1)
 })
 
 test('formatTextPreviewStatus previews accumulated assistant text', () => {

@@ -597,8 +597,11 @@ async function sendVoiceReply(chatId, text, replyToMessageId) {
   }
 }
 
-// Shared by every root/subagent placeholder so a busy turn doesn't spawn a `claude -p` per tool call at once.
-const glosser = createToolGlosser()
+// Keyed by chatId (separate from chatQueue, which already serializes whole message turns per
+// chat — reusing that one here would make a gloss request wait behind the very run it's describing).
+const glossQueue = createKeyedQueue()
+// Shared by every root/subagent placeholder; glossQueue keeps one busy chat from starving another's.
+const glosser = createToolGlosser({ enqueue: glossQueue.enqueue })
 
 // Drives one Telegram message's live "⏳ working…" placeholder: a progress tracker plus
 // the periodic editMessageText loop that renders it. Used both for the root placeholder
@@ -608,7 +611,7 @@ function createPlaceholderController(chatId, initialMessageId, getQuoteHtml = ()
   const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
     renderTranscript: (historyLines, liveText) =>
       renderTranscriptHtml(historyLines, liveText, computeStreamingTextLimit(getQuoteHtml())),
-    glossTool: (name, input) => glosser.gloss(name, input),
+    glossTool: (name, input) => glosser.gloss(chatId, name, input),
   })
 
   async function editPlaceholder({ text, html }) {

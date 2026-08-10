@@ -4,8 +4,10 @@ import { summarizeToolInput, truncateStatus } from './stream-progress.mjs'
 export const GLOSS_MODEL = 'claude-haiku-4-5-20251001'
 // Measured live at ~9-12s wall clock, almost all CLI startup — no faster path exists under the CLI-only, no-API-credits constraint.
 export const GLOSS_TIMEOUT_MS = 20000
+// Mirrors bridge.mjs's own runClaude cancel(): SIGTERM first, SIGKILL only if it's still alive after this grace period.
+export const GLOSS_KILL_GRACE_MS = 2000
 const GLOSS_PROMPT_SUMMARY_MAX_CHARS = 200
-// Matches MAX_EPHEMERAL_LINES: no point queuing more requests than could still be on screen by the time they'd run.
+// Per key (e.g. per chat): matches MAX_EPHEMERAL_LINES, since a queued request beyond that would likely run against an already-scrolled-off line.
 const DEFAULT_MAX_QUEUE_LENGTH = 6
 
 export function buildGlossPrompt(name, input) {
@@ -20,6 +22,18 @@ export function buildGlossPrompt(name, input) {
   ].join('\n')
 }
 
+// Guards against killing an already-exited child, same check bridge.mjs's own cancel() makes before either signal.
+function killIfAlive(child, signal) {
+  if (child.exitCode != null || child.signalCode != null) return
+  try {
+    process.kill(-child.pid, signal)
+  } catch {
+    try {
+      child.kill(signal)
+    } catch {}
+  }
+}
+
 // Resolves to trimmed stdout on a clean exit, or null on any failure — glossing is a nice-to-have, never something the caller must handle as an error.
 export function runClaudeGloss(prompt, { spawnFn = spawn, timeoutMs = GLOSS_TIMEOUT_MS, model = GLOSS_MODEL } = {}) {
   return new Promise(resolve => {
@@ -32,51 +46,64 @@ export function runClaudeGloss(prompt, { spawnFn = spawn, timeoutMs = GLOSS_TIME
 
     let child
     try {
-      // detached so a timeout kills the whole process group, not just the top-level claude
       child = spawnFn('claude', ['-p', prompt, '--model', model], { detached: true })
     } catch {
       finish(null)
       return
     }
 
-    let out = ''
+    const chunks = []
     const timer = setTimeout(() => {
       finish(null)
-      try {
-        process.kill(-child.pid, 'SIGKILL')
-      } catch {
-        child.kill('SIGKILL') // group already gone (e.g. child exited just before the kill) — fall back to the single process
-      }
+      killIfAlive(child, 'SIGTERM')
+      setTimeout(() => killIfAlive(child, 'SIGKILL'), GLOSS_KILL_GRACE_MS)
     }, timeoutMs)
 
-    child.stdout?.on('data', d => (out += d))
+    // Decoded once at the end, not per chunk — a multi-byte character split across chunks would otherwise come out corrupted.
+    child.stdout?.on('data', d => chunks.push(d))
+    child.stderr?.on('data', () => {})
     child.on('error', () => {
       clearTimeout(timer)
       finish(null)
     })
     child.on('close', code => {
       clearTimeout(timer)
-      finish(code === 0 ? out.trim() || null : null)
+      if (code !== 0) {
+        finish(null)
+        return
+      }
+      const out = Buffer.concat(chunks.map(c => (Buffer.isBuffer(c) ? c : Buffer.from(String(c), 'utf8'))))
+        .toString('utf8')
+        .trim()
+      finish(out || null)
     })
   })
 }
 
-// Serializes requests (one `claude -p` at a time) and caps the backlog at maxQueueLength — beyond that, a queued request would only run once its line has likely already scrolled off, so it's skipped instead of wasted.
-export function createToolGlosser({ run = runClaudeGloss, maxQueueLength = DEFAULT_MAX_QUEUE_LENGTH } = {}) {
-  let queue = Promise.resolve()
-  let queueLength = 0
-
-  function gloss(name, input) {
-    if (queueLength >= maxQueueLength) return Promise.resolve(null)
-    queueLength += 1
-    const prompt = buildGlossPrompt(name, input)
-    const result = queue.then(() => run(prompt).catch(() => null))
-    queue = result.then(
+function defaultEnqueue() {
+  let tail = Promise.resolve()
+  return (key, task) => {
+    const result = tail.then(task)
+    tail = result.then(
       () => undefined,
       () => undefined
     )
+    return result
+  }
+}
+
+// enqueue defaults to one global un-keyed tail; inject a real per-key queue (e.g. lib.mjs's createKeyedQueue) so one chat's glossing can't starve another's.
+export function createToolGlosser({ run = runClaudeGloss, enqueue = defaultEnqueue(), maxQueueLength = DEFAULT_MAX_QUEUE_LENGTH } = {}) {
+  const queueLengthByKey = new Map()
+
+  function gloss(key, name, input) {
+    const current = queueLengthByKey.get(key) ?? 0
+    if (current >= maxQueueLength) return Promise.resolve(null)
+    queueLengthByKey.set(key, current + 1)
+    const prompt = buildGlossPrompt(name, input)
+    const result = enqueue(key, () => run(prompt).catch(() => null))
     result.finally(() => {
-      queueLength -= 1
+      queueLengthByKey.set(key, (queueLengthByKey.get(key) ?? 1) - 1)
     })
     return result
   }

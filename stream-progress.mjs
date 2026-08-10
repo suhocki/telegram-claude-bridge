@@ -110,7 +110,7 @@ export function truncateStatus(text, maxLen = 60) {
   return `${t.slice(0, maxLen - 1).trimEnd()}…`
 }
 
-// Shared by formatToolStatusLine (always ⏳) and renderEphemeral's fallback (state emoji varies).
+// The "Label: summary…" body rendered for a tool line, regardless of its current state emoji.
 function formatToolBody(name, input, maxLen = 60) {
   const label = name || 'tool'
   const summary = summarizeToolInput(name, input)
@@ -118,10 +118,6 @@ function formatToolBody(name, input, maxLen = 60) {
   const truncated = truncateStatus(summary, maxLen)
   const suffix = truncated.endsWith('…') ? '' : '…'
   return `${label}: ${truncated}${suffix}`
-}
-
-export function formatToolStatusLine(name, input, maxLen = 60) {
-  return `⏳ ${formatToolBody(name, input, maxLen)}`
 }
 
 export function formatTextPreviewStatus(text, maxLen = 80) {
@@ -152,7 +148,6 @@ export function createProgressTracker(
   { renderTranscript, maxEphemeralLines = MAX_EPHEMERAL_LINES, glossTool } = {}
 ) {
   const seenToolIds = new Set()
-  const finishedToolIds = new Set()
   const checkpointLines = []
   let ephemeral = []
   let liveText = ''
@@ -230,10 +225,8 @@ export function createProgressTracker(
     }
 
     for (const result of extractToolResults(event)) {
-      if (finishedToolIds.has(result.id)) continue
       const entry = ephemeral.find(e => e.kind === 'tool' && e.id === result.id)
-      if (!entry) continue // already scrolled off the ephemeral window, or unknown — nothing to mark
-      finishedToolIds.add(result.id)
+      if (!entry || entry.state !== '⏳') continue // scrolled off, unknown, or already marked — nothing to do
       entry.state = result.isError ? '❌' : '✅'
       changed = true
     }

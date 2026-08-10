@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { GLOSS_MODEL, buildGlossPrompt, runClaudeGloss, createToolGlosser } from '../gloss.mjs'
+import { GLOSS_MODEL, GLOSS_KILL_GRACE_MS, buildGlossPrompt, runClaudeGloss, createToolGlosser } from '../gloss.mjs'
+import { createKeyedQueue } from '../lib.mjs'
 
 function fakeChild(pid = 4242) {
   const child = new EventEmitter()
@@ -67,7 +68,7 @@ test('runClaudeGloss spawns the child detached', async () => {
   assert.deepEqual(seenOpts, { detached: true })
 })
 
-test('runClaudeGloss kills the whole process group (not just the child) on timeout', async t => {
+test('runClaudeGloss kills the whole process group (not just the child) on timeout, escalating from SIGTERM to SIGKILL', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const child = fakeChild(4242)
   const originalKill = process.kill
@@ -77,14 +78,23 @@ test('runClaudeGloss kills the whole process group (not just the child) on timeo
     const promise = runClaudeGloss('prompt', { spawnFn: () => child, timeoutMs: 1000 })
     t.mock.timers.tick(1000)
     assert.equal(await promise, null)
-    assert.deepEqual(killed, [[-4242, 'SIGKILL']])
-    assert.equal(child.killed, null, 'the group kill should have succeeded, so the single-child fallback must not also fire')
+    assert.deepEqual(killed, [[-4242, 'SIGTERM']], 'SIGTERM should fire immediately on timeout')
+    t.mock.timers.tick(GLOSS_KILL_GRACE_MS)
+    assert.deepEqual(
+      killed,
+      [
+        [-4242, 'SIGTERM'],
+        [-4242, 'SIGKILL'],
+      ],
+      'SIGKILL should follow after the grace period since the child never actually exited'
+    )
+    assert.equal(child.killed, null, 'the group kill succeeded both times, so the single-child fallback must never fire')
   } finally {
     process.kill = originalKill
   }
 })
 
-test('runClaudeGloss falls back to killing just the child if the process group is already gone', async t => {
+test('runClaudeGloss falls back to killing just the child (at each stage) if the process group is already gone', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const child = fakeChild(4242)
   const originalKill = process.kill
@@ -95,7 +105,9 @@ test('runClaudeGloss falls back to killing just the child if the process group i
     const promise = runClaudeGloss('prompt', { spawnFn: () => child, timeoutMs: 1000 })
     t.mock.timers.tick(1000)
     assert.equal(await promise, null)
-    assert.equal(child.killed, 'SIGKILL')
+    assert.equal(child.killed, 'SIGTERM', 'the immediate SIGTERM stage should have fallen back to the child')
+    t.mock.timers.tick(GLOSS_KILL_GRACE_MS)
+    assert.equal(child.killed, 'SIGKILL', 'the SIGKILL stage after the grace period should have too')
   } finally {
     process.kill = originalKill
   }
@@ -123,12 +135,14 @@ test('runClaudeGloss resolves to null if the child process errors instead of clo
   assert.equal(await promise, null)
 })
 
-test('runClaudeGloss resolves to null and kills the child if it runs past the timeout', async t => {
+test('runClaudeGloss resolves to null and eventually kills the child if it runs past the timeout', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const child = fakeChild()
   const promise = runClaudeGloss('prompt', { spawnFn: () => child, timeoutMs: 1000 })
   t.mock.timers.tick(1000)
   assert.equal(await promise, null)
+  assert.equal(child.killed, 'SIGTERM')
+  t.mock.timers.tick(GLOSS_KILL_GRACE_MS)
   assert.equal(child.killed, 'SIGKILL')
 })
 
@@ -170,8 +184,8 @@ test('createToolGlosser.gloss runs requests one at a time, in order', async () =
   }
   const glosser = createToolGlosser({ run })
 
-  const firstPromise = glosser.gloss('Bash', { command: 'a' })
-  const secondPromise = glosser.gloss('Bash', { command: 'b' })
+  const firstPromise = glosser.gloss('chat1', 'Bash', { command: 'a' })
+  const secondPromise = glosser.gloss('chat1', 'Bash', { command: 'b' })
   await new Promise(r => setTimeout(r, 0))
   assert.equal(started.length, 1, 'the second request must not start until the first settles')
 
@@ -182,6 +196,56 @@ test('createToolGlosser.gloss runs requests one at a time, in order', async () =
   assert.equal(started.length, 2)
 })
 
+test('createToolGlosser.gloss: with a real keyed queue injected (as bridge.mjs wires it, keyed by chatId), different keys run independently', async () => {
+  let releaseChat1
+  const run = prompt => {
+    if (prompt.endsWith(': a')) return new Promise(r => (releaseChat1 = () => r('chat1 result')))
+    return Promise.resolve('chat2 result')
+  }
+  const glosser = createToolGlosser({ run, enqueue: createKeyedQueue().enqueue })
+
+  const chat1Promise = glosser.gloss('chat1', 'Bash', { command: 'a' })
+  const chat2Promise = glosser.gloss('chat2', 'Bash', { command: 'b' })
+
+  assert.equal(await chat2Promise, 'chat2 result', "chat2's request must resolve without waiting on chat1's still-pending one")
+  releaseChat1()
+  assert.equal(await chat1Promise, 'chat1 result')
+})
+
+test('createToolGlosser.gloss: without a keyed enqueue injected, different keys fall back to sharing one global queue', async () => {
+  let releaseChat1
+  const run = prompt => {
+    if (prompt.endsWith(': a')) return new Promise(r => (releaseChat1 = () => r('chat1 result')))
+    return Promise.resolve('chat2 result')
+  }
+  const glosser = createToolGlosser({ run }) // no enqueue injected — falls back to one global tail
+
+  const chat1Promise = glosser.gloss('chat1', 'Bash', { command: 'a' })
+  const chat2Promise = glosser.gloss('chat2', 'Bash', { command: 'b' })
+
+  await new Promise(r => setTimeout(r, 0)) // let the queued task for chat1 actually start and set releaseChat1
+  releaseChat1()
+  assert.equal(await chat1Promise, 'chat1 result')
+  assert.equal(await chat2Promise, 'chat2 result', "chat2 only runs once chat1 releases — that's the cost of not injecting a keyed queue")
+})
+
+test('createToolGlosser.gloss: the queue backlog is tracked per key, not globally', async () => {
+  const releases = []
+  const run = () => new Promise(r => releases.push(r))
+  const glosser = createToolGlosser({ run, maxQueueLength: 1, enqueue: createKeyedQueue().enqueue })
+
+  const chat1First = glosser.gloss('chat1', 'Bash', { command: 'a' })
+  const chat1Second = glosser.gloss('chat1', 'Bash', { command: 'b' }) // over chat1's own cap
+  const chat2First = glosser.gloss('chat2', 'Bash', { command: 'c' }) // a different key, its own fresh cap
+
+  assert.equal(await chat1Second, null, "chat1's own backlog is already full")
+  await new Promise(r => setTimeout(r, 0))
+  assert.equal(releases.length, 2, 'chat1 (1 running) + chat2 (1 running) — chat1 being full must not affect chat2')
+  releases.forEach(r => r('done'))
+  assert.equal(await chat1First, 'done')
+  assert.equal(await chat2First, 'done')
+})
+
 test('createToolGlosser.gloss: one request failing does not block or fail the next one', async () => {
   let call = 0
   const run = () => {
@@ -189,8 +253,8 @@ test('createToolGlosser.gloss: one request failing does not block or fail the ne
     return call === 1 ? Promise.reject(new Error('boom')) : Promise.resolve('ok')
   }
   const glosser = createToolGlosser({ run })
-  const first = await glosser.gloss('Bash', { command: 'a' })
-  const second = await glosser.gloss('Bash', { command: 'b' })
+  const first = await glosser.gloss('chat1', 'Bash', { command: 'a' })
+  const second = await glosser.gloss('chat1', 'Bash', { command: 'b' })
   assert.equal(first, null)
   assert.equal(second, 'ok')
 })
@@ -204,9 +268,9 @@ test('createToolGlosser.gloss skips new requests once the backlog hits maxQueueL
   }
   const glosser = createToolGlosser({ run, maxQueueLength: 2 })
 
-  const p1 = glosser.gloss('Bash', { command: 'a' })
-  const p2 = glosser.gloss('Bash', { command: 'b' })
-  const p3 = glosser.gloss('Bash', { command: 'c' }) // over the cap — must not even call run()
+  const p1 = glosser.gloss('chat1', 'Bash', { command: 'a' })
+  const p2 = glosser.gloss('chat1', 'Bash', { command: 'b' })
+  const p3 = glosser.gloss('chat1', 'Bash', { command: 'c' }) // over the cap — must not even call run()
 
   assert.equal(await p3, null, 'the third request should be skipped immediately, not queued')
   assert.equal(started.length, 1, 'only the first request should have actually started (the second is still queued behind it)')
@@ -228,8 +292,8 @@ test('createToolGlosser.gloss makes room again once an earlier request settles',
   }
   const glosser = createToolGlosser({ run, maxQueueLength: 1 })
 
-  await glosser.gloss('Bash', { command: 'a' })
-  await glosser.gloss('Bash', { command: 'b' })
+  await glosser.gloss('chat1', 'Bash', { command: 'a' })
+  await glosser.gloss('chat1', 'Bash', { command: 'b' })
   assert.equal(started.length, 2, 'the second request should run once the first has fully settled and freed its slot')
 })
 
@@ -240,6 +304,6 @@ test('createToolGlosser.gloss builds a fresh prompt per call from the tool name 
     return Promise.resolve('gloss')
   }
   const glosser = createToolGlosser({ run })
-  await glosser.gloss('Edit', { file_path: '/a/foo.py' })
+  await glosser.gloss('chat1', 'Edit', { file_path: '/a/foo.py' })
   assert.match(prompts[0], /Действие: Edit: foo.py$/m)
 })
