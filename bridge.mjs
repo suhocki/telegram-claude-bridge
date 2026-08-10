@@ -63,6 +63,7 @@ import {
   buildTranscriptQuoteHtml,
   buildCancelKeyboard,
   buildPlaceholderEditParams,
+  buildWorkingPlaceholderParams,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
   isVoiceReplyEnabled,
@@ -219,6 +220,29 @@ async function sendReply(chatId, text, replyToMessageId, editMessageId) {
     if (method === 'sendMessage' && sent?.message_id != null) sentIds.push(sent.message_id)
   }
   return sentIds
+}
+
+async function freezePlaceholderAsTranscript(chatId, placeholderId, quoteHtml, workingStatus, cancelKeyboard) {
+  const freezeParams = buildPlaceholderEditParams(chatId, placeholderId, quoteHtml, true)
+  try {
+    await tg('editMessageText', freezeParams)
+  } catch (e) {
+    log('failed to freeze placeholder as transcript quote, retrying as plain text', e.message)
+    const { parse_mode, ...plainParams } = freezeParams
+    try {
+      await tg('editMessageText', { ...plainParams, text: htmlToPlainFallback(quoteHtml) })
+    } catch (e2) {
+      log('plain-text retry also failed to freeze placeholder', e2.message)
+      return { frozen: false, placeholderId }
+    }
+  }
+  try {
+    const progressPlaceholder = await tg('sendMessage', buildWorkingPlaceholderParams(chatId, workingStatus, placeholderId, cancelKeyboard))
+    return { frozen: true, placeholderId: progressPlaceholder.message_id }
+  } catch (e) {
+    log('failed to send post-transcript working placeholder', e.message)
+    return { frozen: true, placeholderId: null }
+  }
 }
 
 async function setReaction(chatId, messageId, emoji) {
@@ -784,12 +808,7 @@ async function handleMessage(msg) {
   const botMessageIds = []
   let placeholderId = null
   try {
-    const placeholder = await tg('sendMessage', {
-      chat_id: chatId,
-      text: workingStatus,
-      reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true },
-      reply_markup: cancelKeyboard,
-    })
+    const placeholder = await tg('sendMessage', buildWorkingPlaceholderParams(chatId, workingStatus, msg.message_id, cancelKeyboard))
     placeholderId = placeholder.message_id
     botMessageIds.push(placeholderId)
   } catch (e) {
@@ -812,24 +831,10 @@ async function handleMessage(msg) {
       promptText = buildVoiceTranscriptText(transcription.text)
       const quoteHtml = buildTranscriptQuoteHtml(transcription.text)
       if (quoteHtml && placeholderId != null) {
-        // freeze this placeholder as a permanent record of what was heard, instead of the fancy
-        // phrase it started with — dropping reply_markup here also drops its Cancel button, since
-        // live progress (and Cancel) move to a fresh placeholder below
-        await tg('editMessageText', { chat_id: chatId, message_id: placeholderId, text: quoteHtml, parse_mode: 'HTML' }).catch(e =>
-          log('failed to freeze placeholder as transcript quote', e.message)
-        )
-        try {
-          const progressPlaceholder = await tg('sendMessage', {
-            chat_id: chatId,
-            text: workingStatus,
-            reply_parameters: { message_id: placeholderId, allow_sending_without_reply: true },
-            reply_markup: cancelKeyboard,
-          })
-          placeholderId = progressPlaceholder.message_id
-          botMessageIds.push(placeholderId)
-        } catch (e) {
-          log('failed to send post-transcript working placeholder', e.message)
-          placeholderId = null
+        const frozen = await freezePlaceholderAsTranscript(chatId, placeholderId, quoteHtml, workingStatus, cancelKeyboard)
+        if (frozen.frozen) {
+          placeholderId = frozen.placeholderId
+          if (placeholderId != null) botMessageIds.push(placeholderId)
         }
       }
     }

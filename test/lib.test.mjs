@@ -54,6 +54,7 @@ import {
   buildTranscriptQuoteHtml,
   TRANSCRIPT_QUOTE_MAX_CHARS,
   buildPlaceholderEditParams,
+  buildWorkingPlaceholderParams,
   buildCancelKeyboard,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
@@ -1069,9 +1070,10 @@ test('buildTranscriptQuoteHtml: escapes HTML-significant characters', () => {
   assert.equal(buildTranscriptQuoteHtml('<b>a & b</b>'), '<blockquote>&lt;b&gt;a &amp; b&lt;/b&gt;</blockquote>')
 })
 
-test('buildTranscriptQuoteHtml: empty/whitespace-only transcript yields null', () => {
+test('buildTranscriptQuoteHtml: empty/whitespace-only/undefined transcript yields null', () => {
   assert.equal(buildTranscriptQuoteHtml(''), null)
   assert.equal(buildTranscriptQuoteHtml('   '), null)
+  assert.equal(buildTranscriptQuoteHtml(undefined), null)
 })
 
 test('buildTranscriptQuoteHtml: truncates a transcript longer than TRANSCRIPT_QUOTE_MAX_CHARS', () => {
@@ -1086,6 +1088,14 @@ test('buildTranscriptQuoteHtml: bounds the final size even when escaping expands
   const longTranscript = '&'.repeat(TRANSCRIPT_QUOTE_MAX_CHARS)
   const result = buildTranscriptQuoteHtml(longTranscript)
   assert.ok(result.length <= TRANSCRIPT_QUOTE_MAX_CHARS + '<blockquote></blockquote>'.length)
+})
+
+test('buildTranscriptQuoteHtml: never cuts an escaped entity in half, even when the raw cut point lands inside one', () => {
+  const longTranscript = '&'.repeat(TRANSCRIPT_QUOTE_MAX_CHARS)
+  const result = buildTranscriptQuoteHtml(longTranscript)
+  // truncateStatus's raw slice(0, 2999) lands 4 chars into the 600th "&amp;" unit — the dangling
+  // "&amp" fragment must be dropped rather than left broken right before the ellipsis
+  assert.equal(result, `<blockquote>${'&amp;'.repeat(599)}…</blockquote>`)
 })
 
 test('buildPlaceholderEditParams: plain status text, no HTML', () => {
@@ -1117,6 +1127,16 @@ test('buildPlaceholderEditParams: with a keyboard, attaches reply_markup so edit
     chat_id: '123',
     message_id: 456,
     text: '⏳ working…',
+    reply_markup: keyboard,
+  })
+})
+
+test('buildWorkingPlaceholderParams: builds a threaded sendMessage call with the Cancel keyboard attached', () => {
+  const keyboard = buildCancelKeyboard('123')
+  assert.deepEqual(buildWorkingPlaceholderParams('123', '⏳ working…', 42, keyboard), {
+    chat_id: '123',
+    text: '⏳ working…',
+    reply_parameters: { message_id: 42, allow_sending_without_reply: true },
     reply_markup: keyboard,
   })
 })

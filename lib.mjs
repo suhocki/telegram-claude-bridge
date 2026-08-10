@@ -445,12 +445,16 @@ export function buildVoiceTranscriptText(transcript) {
 
 export const TRANSCRIPT_QUOTE_MAX_CHARS = 3000
 
+const DANGLING_ENTITY_BEFORE_ELLIPSIS_RE = /&[a-zA-Z0-9#]*(…)$/
+
 export function buildTranscriptQuoteHtml(transcript) {
   const trimmed = String(transcript ?? '').trim()
   if (!trimmed) return null
-  const escaped = escapeHtml(truncateStatus(trimmed, TRANSCRIPT_QUOTE_MAX_CHARS))
-  // escaping can expand length (e.g. "&" -> "&amp;"); truncate again to bound the final size regardless of expansion
-  return `<blockquote>${truncateStatus(escaped, TRANSCRIPT_QUOTE_MAX_CHARS)}</blockquote>`
+  const escaped = escapeHtml(trimmed)
+  const truncated = truncateStatus(escaped, TRANSCRIPT_QUOTE_MAX_CHARS)
+  // a raw-character cut can land inside an entity escapeHtml introduced (e.g. "&amp" missing its ";") — drop it.
+  const safe = truncated === escaped ? truncated : truncated.replace(DANGLING_ENTITY_BEFORE_ELLIPSIS_RE, '$1')
+  return `<blockquote>${safe}</blockquote>`
 }
 
 export function buildCancelKeyboard(chatId) {
@@ -465,6 +469,15 @@ export function buildPlaceholderEditParams(chatId, messageId, status, isHtml = f
     ? { chat_id: chatId, message_id: messageId, text: status, parse_mode: 'HTML' }
     : { chat_id: chatId, message_id: messageId, text: status }
   return keyboard ? { ...base, reply_markup: keyboard } : base
+}
+
+export function buildWorkingPlaceholderParams(chatId, text, replyToMessageId, keyboard) {
+  return {
+    chat_id: chatId,
+    text,
+    reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true },
+    reply_markup: keyboard,
+  }
 }
 
 const VOICE_TOGGLE_ARG_RE = /^\s+(on|off)$/i
