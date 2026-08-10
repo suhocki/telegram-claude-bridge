@@ -21,6 +21,7 @@ import {
   extractAttachment,
   buildAttachmentCaption,
   exceedsAttachmentLimit,
+  isServiceMessage,
   resolveAttachmentExtension,
   sanitizeIdForFilename,
   buildInboxFilename,
@@ -443,6 +444,29 @@ test('exceedsAttachmentLimit: flags sizes over the 20MB Telegram bot-download ca
 test('exceedsAttachmentLimit: unknown (non-numeric) size is treated as not exceeding', () => {
   assert.equal(exceedsAttachmentLimit(undefined), false)
   assert.equal(exceedsAttachmentLimit(null), false)
+})
+
+test('isServiceMessage: recognizes common Telegram chat events', () => {
+  assert.equal(isServiceMessage({ new_chat_members: [{ id: 1 }] }), true)
+  assert.equal(isServiceMessage({ left_chat_member: { id: 1 } }), true)
+  assert.equal(isServiceMessage({ new_chat_photo: [{ file_id: 'x' }] }), true)
+  assert.equal(isServiceMessage({ new_chat_title: 'new title' }), true)
+  assert.equal(isServiceMessage({ pinned_message: { message_id: 1 } }), true)
+})
+
+test('isServiceMessage: a plain text/media message, or none of the tracked fields, is not a service message', () => {
+  assert.equal(isServiceMessage({ text: 'hello' }), false)
+  assert.equal(isServiceMessage({ sticker: { file_id: 'x' } }), false)
+  assert.equal(isServiceMessage({}), false)
+  assert.equal(isServiceMessage(undefined), false)
+  assert.equal(isServiceMessage(null), false)
+})
+
+test('isServiceMessage: boolean-typed fields require an actual true, not just being present', () => {
+  assert.equal(isServiceMessage({ group_chat_created: true }), true)
+  assert.equal(isServiceMessage({ group_chat_created: false }), false)
+  assert.equal(isServiceMessage({ delete_chat_photo: true }), true)
+  assert.equal(isServiceMessage({ delete_chat_photo: false }), false)
 })
 
 test('resolveAttachmentExtension: takes the extension from the Telegram file_path', () => {
