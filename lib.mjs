@@ -38,15 +38,25 @@ export function buildSendMessageCalls(chatId, text, replyToMessageId, limit = 40
   return buildSendMessageCallsFromChunks(chatId, chunk(text, limit), replyToMessageId, parseMode)
 }
 
-// Telegram appends "@<bot_username>" when a command is picked from a group's command-menu suggestion.
+const COMMAND_WITH_OPTIONAL_MENTION_RE = /^(\/[a-zA-Z]+)(?:@(\S+))?([\s\S]*)$/
+
+// Splits a leading "/command", optionally "@mentioned" (Telegram adds this when a command is
+// picked from a group's command-menu suggestion), from the rest of the text. Returns null if
+// there's no leading command, or the mention names a bot other than this one.
+function parseCommandMention(text, botUsername) {
+  const m = text.match(COMMAND_WITH_OPTIONAL_MENTION_RE)
+  if (!m) return null
+  const [, command, mentioned, rest] = m
+  if (mentioned && mentioned.toLowerCase() !== String(botUsername ?? '').toLowerCase()) return null
+  return { command, rest }
+}
+
 export function classifyCommand(text, botUsername) {
-  const t = String(text ?? '').trim()
-  const suffix = botUsername ? `@${botUsername}` : null
-  const normalized =
-    suffix && t.toLowerCase().endsWith(suffix.toLowerCase()) ? t.slice(0, t.length - suffix.length) : t
-  if (normalized === '/new' || normalized === '/reset') return 'reset'
-  if (normalized === '/compact') return 'compact'
-  if (normalized === '/status') return 'status'
+  const parsed = parseCommandMention(String(text ?? '').trim(), botUsername)
+  if (!parsed || parsed.rest !== '') return null
+  if (parsed.command === '/new' || parsed.command === '/reset') return 'reset'
+  if (parsed.command === '/compact') return 'compact'
+  if (parsed.command === '/status') return 'status'
   return null
 }
 
@@ -291,7 +301,6 @@ export const ALLOWED_REACTION_EMOJI = new Set([
 ])
 
 export const RECEIPT_REACTION = '👀'
-export const SUCCESS_REACTION = '👍'
 export const ERROR_REACTION = '😢'
 
 export function buildSetMessageReactionParams(chatId, messageId, emoji) {
@@ -432,16 +441,13 @@ export function buildPlaceholderEditParams(chatId, messageId, status, quoteHtml,
   return keyboard ? { ...base, reply_markup: keyboard } : base
 }
 
-// Same "@<bot_username> suffix from the group menu" issue as classifyCommand above.
-const VOICE_TOGGLE_RE = /^\/voice(?:@(\S+))?\s+(on|off)$/i
+const VOICE_TOGGLE_ARG_RE = /^\s+(on|off)$/i
 
 export function parseVoiceToggleCommand(text, botUsername) {
-  const m = String(text ?? '').trim().match(VOICE_TOGGLE_RE)
-  if (!m) return null
-  const mentioned = m[1]
-  // an @mention naming a different bot isn't ours to act on, even in a requireMention: false group
-  if (mentioned && mentioned.toLowerCase() !== String(botUsername ?? '').toLowerCase()) return null
-  return m[2].toLowerCase()
+  const parsed = parseCommandMention(String(text ?? '').trim(), botUsername)
+  if (!parsed || parsed.command.toLowerCase() !== '/voice') return null
+  const m = parsed.rest.match(VOICE_TOGGLE_ARG_RE)
+  return m ? m[1].toLowerCase() : null
 }
 
 export function setVoiceReplyPreference(voiceReplyState, chatId, enabled) {
@@ -524,6 +530,11 @@ export function isBotMentioned(msg, botUsername, botId) {
     }
     if (e.type === 'text_mention' && e.user?.id != null && botId != null && String(e.user.id) === String(botId)) {
       return true
+    }
+    // Telegram tags "/cmd@botname" as one bot_command entity, not a separate mention entity
+    if (e.type === 'bot_command' && botUsername) {
+      const command = text.slice(e.offset, e.offset + e.length)
+      if (command.toLowerCase().endsWith(`@${botUsername}`.toLowerCase())) return true
     }
   }
   return false

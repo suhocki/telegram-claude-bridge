@@ -148,9 +148,9 @@ This isn't "send message, wait, get one reply back" — you watch the agent work
 
 The placeholder's opening text is picked from `working-phrases.json` (repo root, shared
 across every bot/config) instead of a fixed string. `working-phrases.mjs` keeps a
-per-bot queue in its state file: it hands out phrases one at a time with no repeats,
-and reloads the full list — reshuffled from `working-phrases.json` — once the queue
-runs dry or the date rolls over.
+per-bot queue in its state file: it hands out phrases one at a time, in file order, with
+no repeats, and reloads the full list from `working-phrases.json` once the queue runs dry
+or the date rolls over.
 
 `scripts/update-working-phrases.mjs` regenerates `working-phrases.json` with a fresh
 batch by asking `claude -p` for new Russian phrases; run it by hand or on a schedule:

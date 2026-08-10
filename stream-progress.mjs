@@ -126,10 +126,6 @@ export function formatTextPreviewStatus(text, maxLen = 80) {
   return `✍️ ${truncateStatus(t, maxLen)}`
 }
 
-export function formatRunOutcomeStatus(isError) {
-  return isError ? '❌ failed' : '✅ done'
-}
-
 const HISTORY_LINE_MAX_CHARS = 80
 
 // How many "still working" lines (tool calls + frozen thinking) stay visible below the last checkpoint before the oldest ones scroll off.
