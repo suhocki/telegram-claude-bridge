@@ -38,14 +38,17 @@ export function buildSendMessageCalls(chatId, text, replyToMessageId, limit = 40
   return buildSendMessageCallsFromChunks(chatId, chunk(text, limit), replyToMessageId, parseMode)
 }
 
+function mentionNamesBot(mentioned, botUsername) {
+  return String(mentioned ?? '').toLowerCase() === String(botUsername ?? '').toLowerCase()
+}
+
 const COMMAND_WITH_OPTIONAL_MENTION_RE = /^(\/[a-zA-Z]+)(?:@([A-Za-z0-9_]+))?([\s\S]*)$/
 
-// Returns null if the leading "@mention" (added by Telegram's group command-menu picker) names a different bot.
 function parseCommandMention(text, botUsername) {
   const m = text.match(COMMAND_WITH_OPTIONAL_MENTION_RE)
   if (!m) return null
   const [, command, mentioned, rest] = m
-  if (mentioned && mentioned.toLowerCase() !== String(botUsername ?? '').toLowerCase()) return null
+  if (mentioned && !mentionNamesBot(mentioned, botUsername)) return null
   return { command, rest }
 }
 
@@ -315,7 +318,7 @@ export function buildReactionMarkerInstructions() {
     'To do so, include one line anywhere in your final answer, in exactly this form:',
     'REACT: <emoji>',
     'Use a single standard emoji (e.g. 👍, 🎉, 👀, ❌) that Telegram accepts as a message reaction.',
-    "This marker line is stripped from what the user sees on Telegram. If omitted, the bridge sets a default ✅/❌ reaction based on whether the run succeeded or failed.",
+    "This marker line is stripped from what the user sees on Telegram. If omitted, the bridge clears its receipt reaction on success, or sets 😢 on error.",
   ].join('\n')
 }
 
@@ -522,17 +525,16 @@ export function isBotMentioned(msg, botUsername, botId) {
   const entities = msg?.entities ?? msg?.caption_entities ?? []
   if (!Array.isArray(entities)) return false
   for (const e of entities) {
-    if (e.type === 'mention' && botUsername) {
-      const mention = text.slice(e.offset, e.offset + e.length)
-      if (mention.toLowerCase() === `@${botUsername}`.toLowerCase()) return true
+    if (e.type === 'mention' && mentionNamesBot(text.slice(e.offset + 1, e.offset + e.length), botUsername)) {
+      return true
     }
     if (e.type === 'text_mention' && e.user?.id != null && botId != null && String(e.user.id) === String(botId)) {
       return true
     }
-    // Telegram tags "/cmd@botname" as one bot_command entity, not a separate mention entity
-    if (e.type === 'bot_command' && botUsername) {
+    if (e.type === 'bot_command') {
       const command = text.slice(e.offset, e.offset + e.length)
-      if (command.toLowerCase().endsWith(`@${botUsername}`.toLowerCase())) return true
+      const at = command.indexOf('@')
+      if (at !== -1 && mentionNamesBot(command.slice(at + 1), botUsername)) return true
     }
   }
   return false
