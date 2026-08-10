@@ -222,8 +222,7 @@ async function sendReply(chatId, text, replyToMessageId, editMessageId) {
   return sentIds
 }
 
-// Unlike sendReply, sent with no parse_mode — the text (e.g. a Whisper transcript) is shown
-// verbatim, not run through Markdown rendering that could reinterpret stray */_/`/[] in it.
+// Unlike sendReply, no parse_mode — text (e.g. a Whisper transcript) shows verbatim, not Markdown-rendered.
 async function sendPlainMessage(chatId, text, replyToMessageId) {
   const sentIds = []
   for (const params of buildSendMessageCalls(chatId, text, replyToMessageId)) {
