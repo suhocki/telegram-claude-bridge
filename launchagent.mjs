@@ -65,6 +65,7 @@ export function buildBridgeLaunchAgentPlist({
   logPath,
   pathEnv,
   home,
+  apiKey,
 }) {
   if (!nodePath) throw new Error('nodePath is required')
   if (!bridgeScriptPath) throw new Error('bridgeScriptPath is required')
@@ -73,6 +74,9 @@ export function buildBridgeLaunchAgentPlist({
   const env = {}
   if (pathEnv) env.PATH = pathEnv
   if (home) env.HOME = home
+  // launchd doesn't source ~/.zshrc, so without this the spawned `claude` CLI has no
+  // ANTHROPIC_API_KEY and silently falls back to the interactive subscription login.
+  if (apiKey) env.ANTHROPIC_API_KEY = apiKey
 
   return buildLaunchAgentPlist({
     label,

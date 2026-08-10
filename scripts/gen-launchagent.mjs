@@ -22,6 +22,10 @@ if (!home) {
   console.error('HOME is not set in the environment')
   process.exit(1)
 }
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.error('ANTHROPIC_API_KEY is not set in the environment (the generated agent would fall back to the Claude Code subscription login)')
+  process.exit(1)
+}
 const name = launchAgentNameFromLabel(label)
 const logPath = path.join(home, 'Library', 'Logs', `telegram-bridge-${name}.log`)
 
@@ -34,6 +38,7 @@ const plist = buildBridgeLaunchAgentPlist({
   logPath,
   pathEnv: process.env.PATH,
   home,
+  apiKey: process.env.ANTHROPIC_API_KEY,
 })
 
 if (outputArg) {
