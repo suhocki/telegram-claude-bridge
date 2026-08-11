@@ -315,15 +315,19 @@ test('buildCostWarning: formats cost and threshold with a suggestion to /new', (
 })
 
 test('formatStatusText: no session yet', () => {
-  assert.equal(formatStatusText(null), 'ℹ️ no active session yet — send a message to start one.')
+  assert.equal(formatStatusText(null), 'ℹ️ no active session yet — send a message to start one.\nauth mode: API key')
 })
 
 test('formatStatusText: reports session id and accumulated cost', () => {
-  assert.equal(formatStatusText({ id: 'sess-1', costUsd: 0.1234 }), 'session: sess-1\ncost so far: $0.1234')
+  assert.equal(formatStatusText({ id: 'sess-1', costUsd: 0.1234 }), 'session: sess-1\ncost so far: $0.1234\nauth mode: API key')
 })
 
 test('formatStatusText: defaults a missing costUsd to $0.0000', () => {
-  assert.equal(formatStatusText({ id: 'sess-1' }), 'session: sess-1\ncost so far: $0.0000')
+  assert.equal(formatStatusText({ id: 'sess-1' }), 'session: sess-1\ncost so far: $0.0000\nauth mode: API key')
+})
+
+test('formatStatusText: reports "subscription (OAuth)" when authMode is "subscription"', () => {
+  assert.equal(formatStatusText({ id: 'sess-1', costUsd: 0 }, 'subscription'), 'session: sess-1\ncost so far: $0.0000\nauth mode: subscription (OAuth)')
 })
 
 test('buildChannelPrompt: wraps text in a <channel> tag with the given metadata', () => {

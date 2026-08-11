@@ -53,7 +53,6 @@ import {
   RECEIPT_REACTION,
   ERROR_REACTION,
   AUTH_SWITCH_REACTION,
-  normalizeAuthMode,
   buildChildEnv,
   expandHome,
   DEFAULT_WHISPER_BIN,
@@ -154,7 +153,16 @@ function log(...args) {
 }
 
 function emptyState() {
-  return { offset: 0, sessions: {}, pendingRisky: {}, voiceReply: {}, pendingCheckins: {}, turns: {}, workingPhraseQueue: null }
+  return {
+    offset: 0,
+    sessions: {},
+    pendingRisky: {},
+    voiceReply: {},
+    pendingCheckins: {},
+    turns: {},
+    workingPhraseQueue: null,
+    authMode: {},
+  }
 }
 
 function loadState() {
@@ -166,6 +174,7 @@ function loadState() {
     state.pendingCheckins ??= {}
     state.turns ??= {}
     state.workingPhraseQueue ??= null
+    state.authMode ??= {}
     return state
   } catch {
     return emptyState()
@@ -395,15 +404,21 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
 
 const claudeConfigDir = expandHome(process.env.CLAUDE_CONFIG_DIR || '~/.claude', homedir())
 
-// the account/OAuth login itself lives in ~/.claude.json, separate from CLAUDE_CONFIG_DIR
-// (which only relocates the ~/.claude project/settings dir)
+// the OAuth login lives in ~/.claude.json, unaffected by a CLAUDE_CONFIG_DIR override
 function hasOAuthLogin() {
   try {
     const data = JSON.parse(readFileSync(path.join(homedir(), '.claude.json'), 'utf8'))
     return Boolean(data?.oauthAccount)
-  } catch {
+  } catch (e) {
+    log('hasOAuthLogin: could not read/parse ~/.claude.json', e.message)
     return false
   }
+}
+
+const AUTH_MODE_PREREQUISITES = {
+  subscription: () =>
+    hasOAuthLogin() ? null : '⚠️ no Claude subscription (OAuth) login found on this machine — run `claude login` first, then try again.',
+  apikey: () => (process.env.ANTHROPIC_API_KEY ? null : '⚠️ ANTHROPIC_API_KEY is not set in this process — nothing to switch to.'),
 }
 
 // claude derives the project dir name from the *resolved* cwd (/tmp -> /private/tmp on macOS)
@@ -552,7 +567,7 @@ async function runCheckin(chatId) {
   }
 
   try {
-    const { promise: checkinPromise } = runClaude(buildCheckinFollowupPrompt(pending.instruction), sessionId, undefined, state.authMode)
+    const { promise: checkinPromise } = runClaude(buildCheckinFollowupPrompt(pending.instruction), sessionId, undefined, state.authMode[chatId])
     const result = await checkinPromise
     let newSession = normalizeSession(state.sessions[chatId])
     if (result.session_id) {
@@ -797,19 +812,12 @@ async function handleMessage(msg) {
 
   if (command === 'authSubscription' || command === 'authApiKey') {
     const mode = command === 'authSubscription' ? 'subscription' : 'apikey'
-    if (mode === 'subscription' && !hasOAuthLogin()) {
-      await sendReply(
-        chatId,
-        '⚠️ no Claude subscription (OAuth) login found on this machine — run `claude login` first, then try again.',
-        msg.message_id
-      ).catch(() => {})
+    const unmet = AUTH_MODE_PREREQUISITES[mode]()
+    if (unmet) {
+      await sendReply(chatId, unmet, msg.message_id).catch(() => {})
       return
     }
-    if (mode === 'apikey' && !process.env.ANTHROPIC_API_KEY) {
-      await sendReply(chatId, '⚠️ ANTHROPIC_API_KEY is not set in this process — nothing to switch to.', msg.message_id).catch(() => {})
-      return
-    }
-    state.authMode = mode
+    state.authMode[chatId] = mode
     saveState(state)
     await setReaction(chatId, msg.message_id, AUTH_SWITCH_REACTION).catch(() => {})
     return
@@ -819,8 +827,7 @@ async function handleMessage(msg) {
   const sessionId = session?.id
 
   if (command === 'status') {
-    const authModeLine = `auth mode: ${normalizeAuthMode(state.authMode) === 'subscription' ? 'subscription (OAuth)' : 'API key'}`
-    await sendReply(chatId, `${formatStatusText(session)}\n${authModeLine}`, msg.message_id).catch(() => {})
+    await sendReply(chatId, formatStatusText(session, state.authMode[chatId]), msg.message_id).catch(() => {})
     return
   }
 
@@ -972,7 +979,7 @@ async function handleMessage(msg) {
 
   let cancelled = false
   try {
-    const { promise: claudePromise, cancel: cancelClaude } = runClaude(prompt, sessionId, event => routeEvent(event), state.authMode)
+    const { promise: claudePromise, cancel: cancelClaude } = runClaude(prompt, sessionId, event => routeEvent(event), state.authMode[chatId])
     activeRuns.set(chatId, {
       cancel() {
         if (cancelled) return

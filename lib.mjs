@@ -57,9 +57,7 @@ export function classifyCommand(text, botUsername) {
   return null
 }
 
-// Unset/unrecognized state means "leave the environment alone" — i.e. the pre-existing
-// behavior of passing ANTHROPIC_API_KEY through unchanged, so adding this toggle can't
-// change what a bot does until someone explicitly switches it.
+// unset/unrecognized state defaults to the pre-existing "pass the env through" behavior
 export function normalizeAuthMode(raw) {
   return raw === 'subscription' ? 'subscription' : 'apikey'
 }
@@ -92,9 +90,12 @@ export function buildCostWarning(costUsd, thresholdUsd) {
   return `⚠️ this session has cost $${costUsd.toFixed(4)}, over your $${thresholdUsd} warning threshold — consider /new to start fresh.`
 }
 
-export function formatStatusText(session) {
-  if (!session) return 'ℹ️ no active session yet — send a message to start one.'
-  return `session: ${session.id}\ncost so far: $${(session.costUsd ?? 0).toFixed(4)}`
+export function formatStatusText(session, authMode) {
+  const base = session
+    ? `session: ${session.id}\ncost so far: $${(session.costUsd ?? 0).toFixed(4)}`
+    : 'ℹ️ no active session yet — send a message to start one.'
+  const modeLabel = normalizeAuthMode(authMode) === 'subscription' ? 'subscription (OAuth)' : 'API key'
+  return `${base}\nauth mode: ${modeLabel}`
 }
 
 export function buildChannelPrompt(chatId, messageId, user, ts, text, attrs = {}) {
