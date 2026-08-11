@@ -52,7 +52,21 @@ export function classifyCommand(text, botUsername) {
   if (parsed.command === '/new' || parsed.command === '/reset') return 'reset'
   if (parsed.command === '/compact') return 'compact'
   if (parsed.command === '/status') return 'status'
+  if (parsed.command === '/subscription') return 'authSubscription'
+  if (parsed.command === '/apikey') return 'authApiKey'
   return null
+}
+
+// unset/unrecognized state defaults to the pre-existing "pass the env through" behavior
+export function normalizeAuthMode(raw) {
+  return raw === 'subscription' ? 'subscription' : 'apikey'
+}
+
+export function buildChildEnv(baseEnv, authMode) {
+  if (normalizeAuthMode(authMode) !== 'subscription') return baseEnv
+  const next = { ...baseEnv }
+  delete next.ANTHROPIC_API_KEY
+  return next
 }
 
 export function normalizeSession(raw) {
@@ -76,9 +90,12 @@ export function buildCostWarning(costUsd, thresholdUsd) {
   return `⚠️ this session has cost $${costUsd.toFixed(4)}, over your $${thresholdUsd} warning threshold — consider /new to start fresh.`
 }
 
-export function formatStatusText(session) {
-  if (!session) return 'ℹ️ no active session yet — send a message to start one.'
-  return `session: ${session.id}\ncost so far: $${(session.costUsd ?? 0).toFixed(4)}`
+export function formatStatusText(session, authMode) {
+  const base = session
+    ? `session: ${session.id}\ncost so far: $${(session.costUsd ?? 0).toFixed(4)}`
+    : 'ℹ️ no active session yet — send a message to start one.'
+  const modeLabel = normalizeAuthMode(authMode) === 'subscription' ? 'subscription (OAuth)' : 'API key'
+  return `${base}\nauth mode: ${modeLabel}`
 }
 
 export function buildChannelPrompt(chatId, messageId, user, ts, text, attrs = {}) {
@@ -337,6 +354,7 @@ export const ALLOWED_REACTION_EMOJI = new Set([
 
 export const RECEIPT_REACTION = '👀'
 export const ERROR_REACTION = '😢'
+export const AUTH_SWITCH_REACTION = '👍'
 
 export function buildSetMessageReactionParams(chatId, messageId, emoji) {
   return {
@@ -612,6 +630,8 @@ export function buildBotCommands() {
     { command: 'new', description: 'start a new conversation (clears the context)' },
     { command: 'status', description: 'show the session id and cost so far' },
     { command: 'compact', description: 'compact the conversation to free up context' },
+    { command: 'subscription', description: 'run claude on the subscription (OAuth) login' },
+    { command: 'apikey', description: 'run claude on the ANTHROPIC_API_KEY' },
   ]
 }
 

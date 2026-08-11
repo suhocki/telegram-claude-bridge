@@ -52,6 +52,8 @@ import {
   buildSetMessageReactionParams,
   RECEIPT_REACTION,
   ERROR_REACTION,
+  AUTH_SWITCH_REACTION,
+  buildChildEnv,
   expandHome,
   DEFAULT_WHISPER_BIN,
   DEFAULT_WHISPER_MODEL_PATH,
@@ -151,7 +153,16 @@ function log(...args) {
 }
 
 function emptyState() {
-  return { offset: 0, sessions: {}, pendingRisky: {}, voiceReply: {}, pendingCheckins: {}, turns: {}, workingPhraseQueue: null }
+  return {
+    offset: 0,
+    sessions: {},
+    pendingRisky: {},
+    voiceReply: {},
+    pendingCheckins: {},
+    turns: {},
+    workingPhraseQueue: null,
+    authMode: {},
+  }
 }
 
 function loadState() {
@@ -163,6 +174,7 @@ function loadState() {
     state.pendingCheckins ??= {}
     state.turns ??= {}
     state.workingPhraseQueue ??= null
+    state.authMode ??= {}
     return state
   } catch {
     return emptyState()
@@ -310,7 +322,7 @@ const CANCEL_SIGKILL_GRACE_MS = 3000
 
 // Returns { promise, cancel } instead of a plain Promise so a caller can kill the run
 // early (e.g. a Telegram "Cancel" button) without waiting for it to finish on its own.
-function runClaude(prompt, sessionId, onEvent) {
+function runClaude(prompt, sessionId, onEvent, authMode) {
   const args = [
     '-p',
     prompt,
@@ -335,7 +347,7 @@ function runClaude(prompt, sessionId, onEvent) {
 
   // detached so `child.pid` is its own process-group leader: killing -child.pid kills
   // the whole tree (claude itself plus any Bash-spawned OS subprocesses), not just claude
-  const child = spawn('claude', args, { cwd, env: process.env, detached: true })
+  const child = spawn('claude', args, { cwd, env: buildChildEnv(process.env, authMode), detached: true })
   const pushChunk = createLineSplitter()
   let result = null
   let err = ''
@@ -391,6 +403,24 @@ function runClaude(prompt, sessionId, onEvent) {
 }
 
 const claudeConfigDir = expandHome(process.env.CLAUDE_CONFIG_DIR || '~/.claude', homedir())
+
+// the OAuth login lives in ~/.claude.json, unaffected by a CLAUDE_CONFIG_DIR override
+function hasOAuthLogin() {
+  try {
+    const data = JSON.parse(readFileSync(path.join(homedir(), '.claude.json'), 'utf8'))
+    return Boolean(data?.oauthAccount)
+  } catch (e) {
+    log('hasOAuthLogin: could not read/parse ~/.claude.json', e.message)
+    return false
+  }
+}
+
+const AUTH_MODE_PREREQUISITES = {
+  subscription: () =>
+    hasOAuthLogin() ? null : '⚠️ no Claude subscription (OAuth) login found on this machine — run `claude login` first, then try again.',
+  apikey: () => (process.env.ANTHROPIC_API_KEY ? null : '⚠️ ANTHROPIC_API_KEY is not set in this process — nothing to switch to.'),
+}
+
 // claude derives the project dir name from the *resolved* cwd (/tmp -> /private/tmp on macOS)
 const resolvedCwd = (() => {
   try {
@@ -537,7 +567,7 @@ async function runCheckin(chatId) {
   }
 
   try {
-    const { promise: checkinPromise } = runClaude(buildCheckinFollowupPrompt(pending.instruction), sessionId)
+    const { promise: checkinPromise } = runClaude(buildCheckinFollowupPrompt(pending.instruction), sessionId, undefined, state.authMode[chatId])
     const result = await checkinPromise
     let newSession = normalizeSession(state.sessions[chatId])
     if (result.session_id) {
@@ -780,11 +810,24 @@ async function handleMessage(msg) {
     return
   }
 
+  if (command === 'authSubscription' || command === 'authApiKey') {
+    const mode = command === 'authSubscription' ? 'subscription' : 'apikey'
+    const unmet = AUTH_MODE_PREREQUISITES[mode]()
+    if (unmet) {
+      await sendReply(chatId, unmet, msg.message_id).catch(() => {})
+      return
+    }
+    state.authMode[chatId] = mode
+    saveState(state)
+    await setReaction(chatId, msg.message_id, AUTH_SWITCH_REACTION).catch(() => {})
+    return
+  }
+
   const session = normalizeSession(state.sessions[chatId])
   const sessionId = session?.id
 
   if (command === 'status') {
-    await sendReply(chatId, formatStatusText(session), msg.message_id).catch(() => {})
+    await sendReply(chatId, formatStatusText(session, state.authMode[chatId]), msg.message_id).catch(() => {})
     return
   }
 
@@ -936,7 +979,7 @@ async function handleMessage(msg) {
 
   let cancelled = false
   try {
-    const { promise: claudePromise, cancel: cancelClaude } = runClaude(prompt, sessionId, event => routeEvent(event))
+    const { promise: claudePromise, cancel: cancelClaude } = runClaude(prompt, sessionId, event => routeEvent(event), state.authMode[chatId])
     activeRuns.set(chatId, {
       cancel() {
         if (cancelled) return
