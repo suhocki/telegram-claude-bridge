@@ -90,6 +90,9 @@ import {
   buildRewindUnavailableNotice,
   MAX_TRACKED_TURNS,
   TELEGRAM_ALLOWED_UPDATES,
+  normalizeAuthMode,
+  buildChildEnv,
+  AUTH_SWITCH_REACTION,
 } from '../lib.mjs'
 import path from 'node:path'
 
@@ -169,6 +172,11 @@ test('classifyCommand: "/status" classifies as status', () => {
   assert.equal(classifyCommand('/status'), 'status')
 })
 
+test('classifyCommand: "/subscription" and "/apikey" classify as auth-mode switches', () => {
+  assert.equal(classifyCommand('/subscription'), 'authSubscription')
+  assert.equal(classifyCommand('/apikey'), 'authApiKey')
+})
+
 test('classifyCommand: ordinary text is not a command', () => {
   assert.equal(classifyCommand('hello'), null)
   assert.equal(classifyCommand('/newfoo'), null)
@@ -207,6 +215,37 @@ test('classifyCommand: a suffix for a different bot is not stripped', () => {
 
 test('classifyCommand: punctuation glued to the mention is not swallowed into the username', () => {
   assert.equal(classifyCommand('/new@cntnt237_bot.', 'cntnt237_bot'), null)
+})
+
+test('normalizeAuthMode: "subscription" stays "subscription"', () => {
+  assert.equal(normalizeAuthMode('subscription'), 'subscription')
+})
+
+test('normalizeAuthMode: anything else (including unset) defaults to "apikey"', () => {
+  assert.equal(normalizeAuthMode('apikey'), 'apikey')
+  assert.equal(normalizeAuthMode(undefined), 'apikey')
+  assert.equal(normalizeAuthMode(null), 'apikey')
+  assert.equal(normalizeAuthMode('bogus'), 'apikey')
+})
+
+test('buildChildEnv: "apikey" mode (and unset) passes the environment through unchanged', () => {
+  const env = { ANTHROPIC_API_KEY: 'sk-ant-123', PATH: '/usr/bin' }
+  assert.equal(buildChildEnv(env, 'apikey'), env)
+  assert.equal(buildChildEnv(env, undefined), env)
+})
+
+test('buildChildEnv: "subscription" mode strips ANTHROPIC_API_KEY but keeps everything else', () => {
+  const env = { ANTHROPIC_API_KEY: 'sk-ant-123', PATH: '/usr/bin' }
+  assert.deepEqual(buildChildEnv(env, 'subscription'), { PATH: '/usr/bin' })
+})
+
+test('buildChildEnv: "subscription" mode is a no-op when there was no key to strip', () => {
+  const env = { PATH: '/usr/bin' }
+  assert.deepEqual(buildChildEnv(env, 'subscription'), { PATH: '/usr/bin' })
+})
+
+test('AUTH_SWITCH_REACTION is a Telegram-allowed reaction emoji', () => {
+  assert.ok(ALLOWED_REACTION_EMOJI.has(AUTH_SWITCH_REACTION))
 })
 
 test('normalizeSession: null/undefined stays null', () => {
@@ -1435,9 +1474,9 @@ const userTurnLine = (messageId, text = 'hi') =>
     message: { role: 'user', content: `<channel source="telegram" chat_id="1" message_id="${messageId}" user="u" ts="t">\n${text}\n</channel>` },
   })
 
-test('buildBotCommands: registers /new, /status and /compact with descriptions', () => {
+test('buildBotCommands: registers /new, /status, /compact, /subscription and /apikey with descriptions', () => {
   const commands = buildBotCommands()
-  assert.deepEqual(commands.map(c => c.command), ['new', 'status', 'compact'])
+  assert.deepEqual(commands.map(c => c.command), ['new', 'status', 'compact', 'subscription', 'apikey'])
   for (const { command, description } of commands) {
     assert.match(command, /^[a-z0-9_]{1,32}$/)
     assert.ok(description.length > 0 && description.length <= 256)
