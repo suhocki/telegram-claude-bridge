@@ -55,6 +55,8 @@ import {
   buildPlaceholderEditParams,
   buildWorkingPlaceholderParams,
   buildCancelKeyboard,
+  buildJoinedPromptText,
+  isJoinableMessage,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
   isVoiceReplyEnabled,
@@ -1101,6 +1103,63 @@ test('buildCancelKeyboard: builds a single-button inline keyboard scoped to the 
   assert.deepEqual(buildCancelKeyboard('123'), {
     inline_keyboard: [[{ text: '🚫 Cancel', callback_data: 'cancel:123' }]],
   })
+})
+
+test('buildCancelKeyboard: joinCount=0 (the default) omits the Join button entirely', () => {
+  assert.deepEqual(buildCancelKeyboard('123', 0), {
+    inline_keyboard: [[{ text: '🚫 Cancel', callback_data: 'cancel:123' }]],
+  })
+})
+
+test('buildCancelKeyboard: a positive joinCount adds a Join button next to Cancel, with the count in the label', () => {
+  assert.deepEqual(buildCancelKeyboard('123', 2), {
+    inline_keyboard: [
+      [
+        { text: '🚫 Cancel', callback_data: 'cancel:123' },
+        { text: '⬇️ Join (2)', callback_data: 'join:123' },
+      ],
+    ],
+  })
+})
+
+test('buildJoinedPromptText: newline-joins the original text with every queued message, in order', () => {
+  assert.equal(buildJoinedPromptText(['first part', 'second part', 'third part']), 'first part\nsecond part\nthird part')
+})
+
+test('buildJoinedPromptText: filters out null/undefined/empty-string entries but keeps everything else', () => {
+  assert.equal(buildJoinedPromptText(['a', '', null, undefined, 'b']), 'a\nb')
+})
+
+test('buildJoinedPromptText: a single entry returns that entry unchanged', () => {
+  assert.equal(buildJoinedPromptText(['only one']), 'only one')
+})
+
+test('isJoinableMessage: a plain text message is joinable', () => {
+  assert.equal(isJoinableMessage({ text: 'hello there' }, 'mybot'), true)
+})
+
+test('isJoinableMessage: a message with only whitespace text is not joinable', () => {
+  assert.equal(isJoinableMessage({ text: '   ' }, 'mybot'), false)
+})
+
+test('isJoinableMessage: a message with no text at all is not joinable', () => {
+  assert.equal(isJoinableMessage({ caption: 'a photo caption' }, 'mybot'), false)
+})
+
+test('isJoinableMessage: a message carrying an attachment is not joinable, even with text', () => {
+  assert.equal(isJoinableMessage({ text: 'check this out', photo: [{ file_id: 'f1', file_size: 10 }] }, 'mybot'), false)
+})
+
+test('isJoinableMessage: a recognized command (e.g. /new) is not joinable', () => {
+  assert.equal(isJoinableMessage({ text: '/new' }, 'mybot'), false)
+})
+
+test('isJoinableMessage: a /voice on|off toggle is not joinable', () => {
+  assert.equal(isJoinableMessage({ text: '/voice on' }, 'mybot'), false)
+})
+
+test('isJoinableMessage: a service message (e.g. a chat title change) is not joinable, even carrying text', () => {
+  assert.equal(isJoinableMessage({ text: 'renamed the chat', new_chat_title: 'renamed' }, 'mybot'), false)
 })
 
 test('buildPlaceholderEditParams: with a keyboard, attaches reply_markup so editMessageText does not drop the Cancel button', () => {
