@@ -64,6 +64,9 @@ import {
   buildVoiceTranscriptText,
   buildTranscriptQuoteHtml,
   buildCancelKeyboard,
+  buildContinueKeyboard,
+  parseCallbackData,
+  buildContinuePrompt,
   buildPlaceholderEditParams,
   buildWorkingPlaceholderParams,
   parseVoiceToggleCommand,
@@ -99,6 +102,7 @@ import {
   createLineSplitter,
   parseJsonlLine,
   isResultEvent,
+  extractSessionId,
   createProgressTracker,
   createStatusUpdater,
   createChatRateGate,
@@ -162,6 +166,7 @@ function emptyState() {
     turns: {},
     workingPhraseQueue: null,
     authMode: {},
+    pendingContinue: {},
   }
 }
 
@@ -175,6 +180,7 @@ function loadState() {
     state.turns ??= {}
     state.workingPhraseQueue ??= null
     state.authMode ??= {}
+    state.pendingContinue ??= {}
     return state
   } catch {
     return emptyState()
@@ -350,6 +356,7 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
   const child = spawn('claude', args, { cwd, env: buildChildEnv(process.env, authMode), detached: true })
   const pushChunk = createLineSplitter()
   let result = null
+  let capturedSessionId = null
   let err = ''
   let stdoutTail = ''
   child.stdout.on('data', d => {
@@ -358,6 +365,9 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
     for (const line of pushChunk(text)) {
       const event = parseJsonlLine(line)
       if (!event) continue
+      // captured from whichever event arrives first, so it survives a hard kill that
+      // happens before the terminal `result` event ever gets a chance to stream back
+      if (capturedSessionId == null) capturedSessionId = extractSessionId(event)
       if (isResultEvent(event)) result = event
       if (onEvent) {
         // onEvent may be async (it can send/delete subagent placeholder messages);
@@ -399,7 +409,7 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
     }, CANCEL_SIGKILL_GRACE_MS)
   }
 
-  return { promise, cancel }
+  return { promise, cancel, getSessionId: () => capturedSessionId }
 }
 
 const claudeConfigDir = expandHome(process.env.CLAUDE_CONFIG_DIR || '~/.claude', homedir())
@@ -468,6 +478,18 @@ function rewindTranscript(sessionId, anchorMessageId) {
   return { ok: true, removed: lines.length - kept.length, sessionUsable: hasConversationEntry(kept) }
 }
 
+// A fresh incoming message, a /new reset, or a rewind-on-edit all supersede whatever
+// interrupted turn a Continue button might still be offering to resume — clear it so a stale
+// button left in the chat history doesn't dangle (harmless if pressed, just confusing).
+async function clearPendingContinue(chatId) {
+  const pending = state.pendingContinue[chatId]
+  if (!pending) return
+  delete state.pendingContinue[chatId]
+  if (pending.placeholderId != null) {
+    await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: pending.placeholderId, reply_markup: { inline_keyboard: [] } }).catch(() => {})
+  }
+}
+
 function trackBotMessages(chatId, ids) {
   const turnList = state.turns[String(chatId)]
   if (!turnList?.length || !ids?.length) return
@@ -513,6 +535,7 @@ async function handleEditedMessage(msg) {
   if (!rewind.sessionUsable) delete state.sessions[chatId]
   delete state.pendingRisky[chatId]
   cancelCheckin(chatId)
+  await clearPendingContinue(chatId)
   saveState(state)
 
   await handleMessage(msg)
@@ -771,6 +794,200 @@ function isAuthorizedMessage(msg) {
   return true
 }
 
+// Covers a caller's whole span of work (attachment download, transcription, the claude run
+// itself, ...) with a single Telegram "typing…" indicator, rather than only around the claude
+// run — matches how long an incoming message actually takes to answer.
+async function withTypingIndicator(chatId, fn) {
+  let typingAlive = true
+  const typing = setInterval(() => {
+    if (typingAlive) tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {})
+  }, 4000)
+  await tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {})
+  try {
+    return await fn()
+  } finally {
+    typingAlive = false
+    clearInterval(typing)
+  }
+}
+
+// Streams one claude turn (fresh message or a resumed Continue) into a working placeholder,
+// then finalizes it as a reply, a cancellation notice (arming a Continue button), or a bridge
+// error. Shared by handleMessage and handleContinue so both get the same progress/cancel/
+// continue plumbing instead of two divergent copies of it.
+async function runClaudeTurn(
+  chatId,
+  { prompt, sessionId, authMode, priorSession, placeholderId, workingStatus, botMessageIds, replyToMessageId = null, reactToMessageId = null, isCompact = false, turnMeta = {} }
+) {
+  const cancelKeyboard = buildCancelKeyboard(chatId)
+  let currentPlaceholderId = placeholderId
+  if (currentPlaceholderId != null) {
+    // resets a stale "▶️ Continue" placeholder back to the live working state + Cancel button;
+    // a no-op edit for a placeholder that's already in that state (from handleMessage) beyond
+    // Telegram's harmless "message is not modified" error
+    await tg('editMessageText', buildPlaceholderEditParams(chatId, currentPlaceholderId, workingStatus, false, cancelKeyboard)).catch(() => {})
+  }
+
+  // shared by root + every subagent placeholder below, so a 429 on any one of them
+  // backs off every concurrent edit loop writing to this same chat
+  const chatRateGate = createChatRateGate()
+  const rootController = createPlaceholderController(chatId, currentPlaceholderId, chatRateGate, cancelKeyboard, workingStatus)
+
+  // one placeholder message per parallel subagent (Agent tool call), keyed by that
+  // tool_use's id; created when it starts, deleted once its tool_result comes back
+  const subagentControllers = new Map()
+
+  async function routeEvent(event) {
+    const parentId = event?.parent_tool_use_id ?? null
+    const parentEntry = parentId ? subagentControllers.get(parentId) : null
+    ;(parentEntry ? parentEntry.controller : rootController).ingest(event)
+
+    for (const block of extractNewSubagentBlocks(event, subagentControllers)) {
+      const controller = createPlaceholderController(chatId, null, chatRateGate)
+      const messageIdPromise = tg('sendMessage', {
+        chat_id: chatId,
+        text: DEFAULT_WORKING_STATUS,
+        ...(currentPlaceholderId != null ? { reply_parameters: { message_id: currentPlaceholderId, allow_sending_without_reply: true } } : {}),
+      })
+        .then(sub => {
+          controller.setMessageId(sub.message_id)
+          return sub.message_id
+        })
+        .catch(e => {
+          log('failed to send subagent placeholder', e.message)
+          return null
+        })
+      // register synchronously, *before* the sendMessage above settles: extractNewSubagentBlocks
+      // is dedup'd against this map, and every event is routed through its own fire-and-forget
+      // microtask (see runClaude's onEvent), so a later event for this same subagent id must see
+      // it as already-tracked immediately rather than racing to spawn a duplicate placeholder
+      subagentControllers.set(block.id, { controller, messageIdPromise })
+    }
+
+    for (const id of extractFinishedSubagentIds(event, subagentControllers)) {
+      const entry = subagentControllers.get(id)
+      if (!entry) continue
+      subagentControllers.delete(id)
+      entry.controller.statusUpdater.stop()
+      const messageId = await entry.messageIdPromise
+      if (messageId != null) {
+        await tg('deleteMessage', { chat_id: chatId, message_id: messageId }).catch(e => log('failed to delete subagent placeholder', e.message))
+      }
+    }
+  }
+
+  let cancelled = false
+  let continueArmed = false
+  let getSessionId = () => null
+  try {
+    const claude = runClaude(prompt, sessionId, event => routeEvent(event), authMode)
+    getSessionId = claude.getSessionId
+    activeRuns.set(chatId, {
+      cancel() {
+        if (cancelled) return
+        cancelled = true
+        claude.cancel()
+      },
+    })
+    const result = await claude.promise
+    // no finalStatus edit: the placeholder gets deleted outright below, once the real reply is sent
+    rootController.statusUpdater.stop()
+    let newSession = priorSession
+    if (result.session_id) {
+      newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
+      state.sessions[chatId] = newSession
+      saveState(state)
+    }
+    const { text: cleanedResult, attachPaths, reactionEmoji, checkin } = extractResponseMarkers(result.result)
+    let replyText = result.is_error
+      ? `⚠️ ${cleanedResult || 'error'}`
+      : isCompact
+        ? `✅ conversation compacted.${cleanedResult ? `\n\n${cleanedResult}` : ''}`
+        : (cleanedResult || '(empty response)')
+    if (newSession && crossedCostThreshold(priorSession?.costUsd ?? 0, newSession.costUsd, costWarnUsd)) {
+      replyText = `${buildCostWarning(newSession.costUsd, costWarnUsd)}\n\n${replyText}`
+    }
+    // new message, not an edit of the placeholder, so Telegram pushes a notification
+    botMessageIds.push(...(await sendReply(chatId, replyText, replyToMessageId)))
+    if (currentPlaceholderId != null) {
+      // only untrack on a confirmed delete, so a failed one still gets the finally block's cleanup + a rewind retry
+      try {
+        await tg('deleteMessage', { chat_id: chatId, message_id: currentPlaceholderId })
+        const idx = botMessageIds.indexOf(currentPlaceholderId)
+        if (idx !== -1) botMessageIds.splice(idx, 1)
+        currentPlaceholderId = null
+      } catch (e) {
+        log('failed to delete working placeholder', e.message)
+        // fall back to a terminal status edit so a stuck delete doesn't leave a stale phrase forever
+        await rootController.editPlaceholder({ text: result.is_error ? '❌ failed' : '✅ done', html: false })
+      }
+    }
+    if (!result.is_error) {
+      for (const attachPath of attachPaths) {
+        botMessageIds.push(...(await sendAttachment(chatId, attachPath, replyToMessageId)))
+      }
+      if (isVoiceReplyEnabled(state.voiceReply, chatId)) {
+        botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, replyToMessageId)))
+      }
+      if (checkin) scheduleCheckin(chatId, newSession?.id ?? sessionId, checkin)
+    }
+    if (reactToMessageId != null) {
+      // on success, clear the 👀 receipt reaction instead of swapping in a 👍 — the reply itself is the signal now
+      await setReaction(chatId, reactToMessageId, reactionEmoji || (result.is_error ? ERROR_REACTION : null))
+    }
+  } catch (e) {
+    rootController.statusUpdater.stop()
+    if (cancelled) {
+      // captured from the stream even though this run never reached a `result` event — see
+      // runClaude's capturedSessionId — so a hard kill still leaves something to `--resume`
+      const resumableSessionId = getSessionId()
+      botMessageIds.push(...(await sendReply(chatId, '🚫 cancelled', replyToMessageId, currentPlaceholderId).catch(() => [])))
+      if (resumableSessionId) {
+        state.sessions[chatId] = accumulateSessionCost(normalizeSession(state.sessions[chatId]), resumableSessionId, 0)
+        if (currentPlaceholderId != null) {
+          state.pendingContinue[chatId] = { sessionId: resumableSessionId, placeholderId: currentPlaceholderId, ...turnMeta }
+          continueArmed = true
+          await tg('editMessageReplyMarkup', {
+            chat_id: chatId,
+            message_id: currentPlaceholderId,
+            reply_markup: buildContinueKeyboard(chatId),
+          }).catch(() => {})
+        }
+        saveState(state)
+      }
+    } else {
+      log('handleMessage error', e)
+      botMessageIds.push(...(await sendReply(chatId, `⚠️ bridge error: ${e.message}`, replyToMessageId, currentPlaceholderId).catch(() => [])))
+      if (reactToMessageId != null) await setReaction(chatId, reactToMessageId, ERROR_REACTION)
+    }
+  } finally {
+    rootController.statusUpdater.stop()
+    activeRuns.delete(chatId)
+    // only clear the keyboard outright when a Continue button wasn't just armed above —
+    // otherwise this would immediately wipe the button it just attached
+    if (currentPlaceholderId != null && !continueArmed) {
+      await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: currentPlaceholderId, reply_markup: { inline_keyboard: [] } }).catch(() => {})
+    }
+    // safety net: normally every subagent's tool_result already deletes its own
+    // placeholder as it happens; this only catches leftovers from a crash or a missed
+    // event. Registration into subagentControllers happens synchronously (see routeEvent),
+    // so any subagent spawned during the run is guaranteed to be in this map by now, even
+    // if its sendMessage call is still in flight — hence awaiting messageIdPromise here too.
+    await Promise.all(
+      Array.from(subagentControllers.values()).map(async entry => {
+        entry.controller.statusUpdater.stop()
+        const messageId = await entry.messageIdPromise
+        if (messageId != null) {
+          await tg('deleteMessage', { chat_id: chatId, message_id: messageId }).catch(() => {})
+        }
+      })
+    )
+    subagentControllers.clear()
+  }
+
+  return { cancelled, botMessageIds, sessionId: normalizeSession(state.sessions[chatId])?.id ?? null }
+}
+
 async function handleMessage(msg) {
   const chatId = String(msg.chat.id)
   const userId = String(msg.from?.id ?? '')
@@ -805,6 +1022,7 @@ async function handleMessage(msg) {
     delete state.pendingRisky[chatId]
     delete state.turns[chatId]
     cancelCheckin(chatId)
+    await clearPendingContinue(chatId)
     saveState(state)
     await sendReply(chatId, '🔄 session reset — the next message starts a brand new conversation.', msg.message_id).catch(() => {})
     return
@@ -863,241 +1081,168 @@ async function handleMessage(msg) {
   if (!promptText && attachment) promptText = buildAttachmentCaption(attachment)
 
   await setReaction(chatId, msg.message_id, RECEIPT_REACTION)
-
-  let typingAlive = true
-  const typing = setInterval(() => {
-    if (typingAlive) tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {})
-  }, 4000)
-  await tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {})
+  // a fresh message supersedes whatever interrupted turn a Continue button was still offering
+  await clearPendingContinue(chatId)
 
   const cancelKeyboard = buildCancelKeyboard(chatId)
   const workingStatus = nextWorkingPhrase()
   // every message the bot posts for this turn, so a later rewind past this turn can delete them
   const botMessageIds = []
   let placeholderId = null
-  try {
-    const placeholder = await tg('sendMessage', buildWorkingPlaceholderParams(chatId, workingStatus, msg.message_id, cancelKeyboard))
-    placeholderId = placeholder.message_id
-    botMessageIds.push(placeholderId)
-  } catch (e) {
-    log('failed to send working placeholder', e.message)
-  }
 
-  let attachmentResult = null
-  if (attachment) {
-    attachmentResult = await downloadAttachment(attachment)
-    if (attachmentResult.error) log('attachment download failed', attachment.kind, attachmentResult.error)
-  }
+  const turnResult = await withTypingIndicator(chatId, async () => {
+    try {
+      const placeholder = await tg('sendMessage', buildWorkingPlaceholderParams(chatId, workingStatus, msg.message_id, cancelKeyboard))
+      placeholderId = placeholder.message_id
+      botMessageIds.push(placeholderId)
+    } catch (e) {
+      log('failed to send working placeholder', e.message)
+    }
 
-  let transcriptionError = null
-  if (attachment?.kind === 'voice' && attachmentResult?.path) {
-    const transcription = await transcribeVoice(attachmentResult.path)
-    if (transcription.error) {
-      transcriptionError = transcription.error
-      log('voice transcription failed', transcriptionError)
-    } else {
-      promptText = buildVoiceTranscriptText(transcription.text)
-      const quoteHtml = buildTranscriptQuoteHtml(transcription.text)
-      if (quoteHtml) {
-        const frozen =
-          placeholderId != null ? await freezePlaceholderAsTranscript(chatId, placeholderId, quoteHtml, workingStatus, cancelKeyboard) : null
-        if (frozen?.frozen) {
-          placeholderId = frozen.placeholderId
-          if (placeholderId != null) botMessageIds.push(placeholderId)
-        } else {
-          // no placeholder to freeze, or freezing it failed outright — the transcript still has to show up somewhere
-          const quoteMessageId = await sendTranscriptQuote(chatId, quoteHtml, msg.message_id)
-          if (quoteMessageId != null) botMessageIds.push(quoteMessageId)
+    let attachmentResult = null
+    if (attachment) {
+      attachmentResult = await downloadAttachment(attachment)
+      if (attachmentResult.error) log('attachment download failed', attachment.kind, attachmentResult.error)
+    }
+
+    let transcriptionError = null
+    if (attachment?.kind === 'voice' && attachmentResult?.path) {
+      const transcription = await transcribeVoice(attachmentResult.path)
+      if (transcription.error) {
+        transcriptionError = transcription.error
+        log('voice transcription failed', transcriptionError)
+      } else {
+        promptText = buildVoiceTranscriptText(transcription.text)
+        const quoteHtml = buildTranscriptQuoteHtml(transcription.text)
+        if (quoteHtml) {
+          const frozen =
+            placeholderId != null ? await freezePlaceholderAsTranscript(chatId, placeholderId, quoteHtml, workingStatus, cancelKeyboard) : null
+          if (frozen?.frozen) {
+            placeholderId = frozen.placeholderId
+            if (placeholderId != null) botMessageIds.push(placeholderId)
+          } else {
+            // no placeholder to freeze, or freezing it failed outright — the transcript still has to show up somewhere
+            const quoteMessageId = await sendTranscriptQuote(chatId, quoteHtml, msg.message_id)
+            if (quoteMessageId != null) botMessageIds.push(quoteMessageId)
+          }
         }
       }
     }
-  }
 
-  // shared by root + every subagent placeholder below, so a 429 on any one of them
-  // backs off every concurrent edit loop writing to this same chat
-  const chatRateGate = createChatRateGate()
-  const rootController = createPlaceholderController(chatId, placeholderId, chatRateGate, cancelKeyboard, workingStatus)
-
-  // one placeholder message per parallel subagent (Agent tool call), keyed by that
-  // tool_use's id; created when it starts, deleted once its tool_result comes back
-  const subagentControllers = new Map()
-
-  async function routeEvent(event) {
-    const parentId = event?.parent_tool_use_id ?? null
-    const parentEntry = parentId ? subagentControllers.get(parentId) : null
-    ;(parentEntry ? parentEntry.controller : rootController).ingest(event)
-
-    for (const block of extractNewSubagentBlocks(event, subagentControllers)) {
-      const controller = createPlaceholderController(chatId, null, chatRateGate)
-      const messageIdPromise = tg('sendMessage', {
-        chat_id: chatId,
-        text: DEFAULT_WORKING_STATUS,
-        ...(placeholderId != null ? { reply_parameters: { message_id: placeholderId, allow_sending_without_reply: true } } : {}),
-      })
-        .then(sub => {
-          controller.setMessageId(sub.message_id)
-          return sub.message_id
-        })
-        .catch(e => {
-          log('failed to send subagent placeholder', e.message)
-          return null
-        })
-      // register synchronously, *before* the sendMessage above settles: extractNewSubagentBlocks
-      // is dedup'd against this map, and every event is routed through its own fire-and-forget
-      // microtask (see runClaude's onEvent), so a later event for this same subagent id must see
-      // it as already-tracked immediately rather than racing to spawn a duplicate placeholder
-      subagentControllers.set(block.id, { controller, messageIdPromise })
-    }
-
-    for (const id of extractFinishedSubagentIds(event, subagentControllers)) {
-      const entry = subagentControllers.get(id)
-      if (!entry) continue
-      subagentControllers.delete(id)
-      entry.controller.statusUpdater.stop()
-      const messageId = await entry.messageIdPromise
-      if (messageId != null) {
-        await tg('deleteMessage', { chat_id: chatId, message_id: messageId }).catch(e => log('failed to delete subagent placeholder', e.message))
-      }
-    }
-  }
-
-  const attachmentAttrs = attachment
-    ? {
-        attachment_kind: attachment.kind,
-        attachment_name: attachment.name,
-        attachment_mime: attachment.mime,
-        attachment_path: attachmentResult?.path,
-        attachment_error: attachmentResult?.error,
-        attachment_transcription_error: transcriptionError,
-      }
-    : {}
-
-  const prompt =
-    command === 'compact'
-      ? content
-      : buildChannelPrompt(chatId, meta.messageId, meta.user, meta.ts, promptText, attachmentAttrs)
-
-  let cancelled = false
-  try {
-    const { promise: claudePromise, cancel: cancelClaude } = runClaude(prompt, sessionId, event => routeEvent(event), state.authMode[chatId])
-    activeRuns.set(chatId, {
-      cancel() {
-        if (cancelled) return
-        cancelled = true
-        cancelClaude()
-      },
-    })
-    const result = await claudePromise
-    // no finalStatus edit: the placeholder gets deleted outright below, once the real reply is sent
-    rootController.statusUpdater.stop()
-    let newSession = session
-    if (result.session_id) {
-      newSession = accumulateSessionCost(session, result.session_id, result.total_cost_usd)
-      state.sessions[chatId] = newSession
-      saveState(state)
-    }
-    const { text: cleanedResult, attachPaths, reactionEmoji, checkin } = extractResponseMarkers(result.result)
-    let replyText = result.is_error
-      ? `⚠️ ${cleanedResult || 'error'}`
-      : command === 'compact'
-        ? `✅ conversation compacted.${cleanedResult ? `\n\n${cleanedResult}` : ''}`
-        : (cleanedResult || '(empty response)')
-    if (newSession && crossedCostThreshold(session?.costUsd ?? 0, newSession.costUsd, costWarnUsd)) {
-      replyText = `${buildCostWarning(newSession.costUsd, costWarnUsd)}\n\n${replyText}`
-    }
-    // new message, not an edit of the placeholder, so Telegram pushes a notification
-    botMessageIds.push(...(await sendReply(chatId, replyText, msg.message_id)))
-    if (placeholderId != null) {
-      // only untrack on a confirmed delete, so a failed one still gets the finally block's cleanup + a rewind retry
-      try {
-        await tg('deleteMessage', { chat_id: chatId, message_id: placeholderId })
-        const idx = botMessageIds.indexOf(placeholderId)
-        if (idx !== -1) botMessageIds.splice(idx, 1)
-        placeholderId = null
-      } catch (e) {
-        log('failed to delete working placeholder', e.message)
-        // fall back to a terminal status edit so a stuck delete doesn't leave a stale phrase forever
-        await rootController.editPlaceholder({ text: result.is_error ? '❌ failed' : '✅ done', html: false })
-      }
-    }
-    if (!result.is_error) {
-      for (const attachPath of attachPaths) {
-        botMessageIds.push(...(await sendAttachment(chatId, attachPath, msg.message_id)))
-      }
-      if (isVoiceReplyEnabled(state.voiceReply, chatId)) {
-        botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, msg.message_id)))
-      }
-      if (checkin) scheduleCheckin(chatId, newSession?.id ?? sessionId, checkin)
-    }
-    // on success, clear the 👀 receipt reaction instead of swapping in a 👍 — the reply itself is the signal now
-    await setReaction(chatId, msg.message_id, reactionEmoji || (result.is_error ? ERROR_REACTION : null))
-  } catch (e) {
-    rootController.statusUpdater.stop()
-    if (cancelled) {
-      botMessageIds.push(...(await sendReply(chatId, '🚫 cancelled', msg.message_id, placeholderId).catch(() => [])))
-    } else {
-      log('handleMessage error', e)
-      botMessageIds.push(...(await sendReply(chatId, `⚠️ bridge error: ${e.message}`, msg.message_id, placeholderId).catch(() => [])))
-      await setReaction(chatId, msg.message_id, ERROR_REACTION)
-    }
-  } finally {
-    typingAlive = false
-    clearInterval(typing)
-    rootController.statusUpdater.stop()
-    activeRuns.delete(chatId)
-    if (placeholderId != null) {
-      await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: placeholderId, reply_markup: { inline_keyboard: [] } }).catch(() => {})
-    }
-    // safety net: normally every subagent's tool_result already deletes its own
-    // placeholder as it happens; this only catches leftovers from a crash or a missed
-    // event. Registration into subagentControllers happens synchronously (see routeEvent),
-    // so any subagent spawned during the run is guaranteed to be in this map by now, even
-    // if its sendMessage call is still in flight — hence awaiting messageIdPromise here too.
-    await Promise.all(
-      Array.from(subagentControllers.values()).map(async entry => {
-        entry.controller.statusUpdater.stop()
-        const messageId = await entry.messageIdPromise
-        if (messageId != null) {
-          await tg('deleteMessage', { chat_id: chatId, message_id: messageId }).catch(() => {})
+    const attachmentAttrs = attachment
+      ? {
+          attachment_kind: attachment.kind,
+          attachment_name: attachment.name,
+          attachment_mime: attachment.mime,
+          attachment_path: attachmentResult?.path,
+          attachment_error: attachmentResult?.error,
+          attachment_transcription_error: transcriptionError,
         }
-      })
-    )
-    subagentControllers.clear()
-    state.turns = appendTurn(state.turns, chatId, {
-      userMessageId: msg.message_id,
-      anchorMessageId: meta.messageId,
-      sessionId: normalizeSession(state.sessions[chatId])?.id ?? null,
+      : {}
+
+    const prompt =
+      command === 'compact'
+        ? content
+        : buildChannelPrompt(chatId, meta.messageId, meta.user, meta.ts, promptText, attachmentAttrs)
+
+    return runClaudeTurn(chatId, {
+      prompt,
+      sessionId,
+      authMode: state.authMode[chatId],
+      priorSession: session,
+      placeholderId,
+      workingStatus,
       botMessageIds,
+      replyToMessageId: msg.message_id,
+      reactToMessageId: msg.message_id,
+      isCompact: command === 'compact',
+      turnMeta: { originMessageId: msg.message_id, anchorMessageId: meta.messageId },
     })
-    saveState(state)
-  }
+  })
+
+  state.turns = appendTurn(state.turns, chatId, {
+    userMessageId: msg.message_id,
+    anchorMessageId: meta.messageId,
+    sessionId: turnResult.sessionId,
+    botMessageIds: turnResult.botMessageIds,
+  })
+  saveState(state)
+}
+
+// Resumes a turn that was cancelled mid-flight, using the session id + placeholder message
+// Continue's callback handler stashed away in state.pendingContinue. Reuses the same
+// progress/cancel/continue plumbing as a fresh incoming message (see runClaudeTurn) — pressing
+// Continue starts a real foreground run again, cancellable just like the original one was.
+async function handleContinue(chatId, pending) {
+  const priorSession = normalizeSession(state.sessions[chatId])
+  const workingStatus = nextWorkingPhrase()
+  const botMessageIds = [pending.placeholderId]
+
+  const turnResult = await withTypingIndicator(chatId, () =>
+    runClaudeTurn(chatId, {
+      prompt: buildContinuePrompt(),
+      sessionId: pending.sessionId,
+      authMode: state.authMode[chatId],
+      priorSession,
+      placeholderId: pending.placeholderId,
+      workingStatus,
+      botMessageIds,
+      turnMeta: { originMessageId: pending.originMessageId, anchorMessageId: pending.anchorMessageId },
+    })
+  )
+
+  state.turns = appendTurn(state.turns, chatId, {
+    userMessageId: pending.originMessageId,
+    anchorMessageId: pending.anchorMessageId,
+    sessionId: turnResult.sessionId,
+    botMessageIds: turnResult.botMessageIds,
+  })
+  saveState(state)
 }
 
 let botIdentity = { id: null, username: null }
 
-// Handled directly, not via chatQueue: a cancel needs to interrupt the run that's
-// already sitting at the head of that same chat's queue, not wait behind it.
+// Cancel is handled directly, not via chatQueue: it needs to interrupt the run that's already
+// sitting at the head of that same chat's queue, not wait behind it. Continue goes through
+// chatQueue instead (see below) since it starts a new run rather than interrupting one.
 async function handleCallbackQuery(cq) {
-  const data = cq.data ?? ''
-  if (!data.startsWith('cancel:')) {
+  const parsed = parseCallbackData(cq.data)
+  if (!parsed) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id }).catch(() => {})
     return
   }
 
+  // derived from the message the button is attached to, not from the callback_data payload,
+  // so a chat can only ever cancel/continue its own run
   const chatId = String(cq.message?.chat?.id ?? '')
   if (!isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig)) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'not authorized', show_alert: true }).catch(() => {})
     return
   }
 
-  const run = activeRuns.get(chatId)
-  if (!run) {
-    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'nothing to cancel' }).catch(() => {})
+  if (parsed.action === 'cancel') {
+    const run = activeRuns.get(chatId)
+    if (!run) {
+      await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'nothing to cancel' }).catch(() => {})
+      return
+    }
+    run.cancel()
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'cancelling…' }).catch(() => {})
     return
   }
 
-  run.cancel()
-  await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'cancelling…' }).catch(() => {})
+  // action === 'continue'
+  const pending = state.pendingContinue[chatId]
+  if (!pending) {
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'nothing to continue' }).catch(() => {})
+    return
+  }
+  delete state.pendingContinue[chatId]
+  saveState(state)
+  await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'continuing…' }).catch(() => {})
+  // queued like a normal message, not handled inline like cancel — a continue is a brand new
+  // run competing for the same chat's turn, not an interrupt of one already at the queue's head
+  chatQueue.enqueue(chatId, () => handleContinue(chatId, pending)).catch(e => log('queued handleContinue rejected', e))
 }
 
 async function poll() {
