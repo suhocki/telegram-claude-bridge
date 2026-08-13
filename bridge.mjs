@@ -208,7 +208,7 @@ function nextWorkingPhrase() {
 
 const state = loadState()
 const chatQueue = createKeyedQueue()
-// chatId -> single in-flight run { cancel(), msg, placeholderId, pending, finished, setKeyboard() }; chatQueue guarantees only one at a time.
+// chatId -> single in-flight run { cancel(), promptText, placeholderId, pending, finished, setKeyboard() }; chatQueue guarantees only one at a time.
 const activeRuns = new Map()
 // chatId -> Set<messageId> already folded into a join tap, so runQueuedMessage below no-ops their own already-queued run.
 const consumedByJoin = new Map()
@@ -873,6 +873,7 @@ async function handleMessage(msg) {
     promptText = decision.text
   }
   if (!promptText && attachment) promptText = buildAttachmentCaption(attachment)
+  run.promptText = promptText
 
   await setReaction(chatId, msg.message_id, RECEIPT_REACTION)
 
@@ -893,9 +894,10 @@ async function handleMessage(msg) {
     cancel() {
       if (cancelled) return
       cancelled = true
+      run.finished = true
       killChild?.()
     },
-    msg,
+    promptText: '',
     placeholderId: null,
     pending: [],
     finished: false,
@@ -1132,7 +1134,7 @@ function handleJoinTap(chatId, run) {
 
   run.cancel()
 
-  const joinedText = buildJoinedPromptText([run.msg.text ?? run.msg.caption ?? '', ...batch.map(m => m.text ?? m.caption ?? '')])
+  const joinedText = buildJoinedPromptText([run.promptText, ...batch.map(m => m.text ?? m.caption ?? '')])
   const last = batch[batch.length - 1]
   // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText
   const syntheticMsg = { ...last, text: joinedText, entities: undefined, caption_entities: undefined, joinedFromActiveRun: true }
