@@ -477,16 +477,11 @@ export function buildCancelKeyboard(chatId, joinCount = 0) {
   return { inline_keyboard: [buttons] }
 }
 
-// The prompt for a join-triggered run: the original in-flight message's text followed by
-// every message that queued up behind it (in arrival order), newline-joined.
 export function buildJoinedPromptText(texts) {
   return texts.filter(t => t != null && t !== '').join('\n')
 }
 
-// A message is offered on the Join button only if it's a plain-text turn that would
-// otherwise run standalone through handleMessage's normal path — commands (/new, /voice on,
-// …) and attachments are excluded from v1 (folding those into a text prompt would either be
-// meaningless or silently drop the attachment).
+// commands and attachments are excluded from v1 — folding those into a text prompt would be meaningless or silently drop the attachment
 export function isJoinableMessage(msg, botUsername) {
   if (isServiceMessage(msg)) return false
   if (extractAttachment(msg)) return false
