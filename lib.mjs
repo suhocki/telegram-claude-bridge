@@ -418,6 +418,10 @@ export function buildCheckinFollowupPrompt(instruction) {
   return `[AUTOMATED CHECK-IN — not a message from the user, scheduled by your own earlier CHECKIN: marker] ${instruction}`
 }
 
+export function buildContinuePrompt() {
+  return '[CONTINUE — not a new message from the user. Your previous turn in this chat was interrupted by a user-requested cancel before it finished. Pick up where you left off and complete the original task; do not ask the user to repeat themselves.]'
+}
+
 export function extractResponseMarkers(text) {
   const { text: withoutAttach, paths: attachPaths } = extractAttachmentMarkers(text)
   const { text: withoutReact, emoji: reactionEmoji } = extractReactionMarker(withoutAttach)
@@ -490,6 +494,17 @@ export function isJoinableMessage(msg, botUsername) {
   if (classifyCommand(text, botUsername) !== null) return false
   if (parseVoiceToggleCommand(text, botUsername) !== null) return false
   return true
+}
+
+export function buildContinueKeyboard(chatId) {
+  return { inline_keyboard: [[{ text: '▶️ Continue', callback_data: `continue:${chatId}` }]] }
+}
+
+const CALLBACK_DATA_RE = /^(cancel|continue|join):(.+)$/
+
+export function parseCallbackData(data) {
+  const m = String(data ?? '').match(CALLBACK_DATA_RE)
+  return m ? { action: m[1], chatId: m[2] } : null
 }
 
 // editMessageText drops any existing inline keyboard unless reply_markup is passed again on

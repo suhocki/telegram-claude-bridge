@@ -8,6 +8,7 @@ import {
   createLineSplitter,
   parseJsonlLine,
   isResultEvent,
+  extractSessionId,
   extractToolUseBlocks,
   extractTextDelta,
   extractThinkingDelta,
@@ -57,6 +58,20 @@ test('isResultEvent recognizes the terminal result event only', () => {
   assert.equal(isResultEvent({ type: 'assistant' }), false)
   assert.equal(isResultEvent(null), false)
   assert.equal(isResultEvent(undefined), false)
+})
+
+test('extractSessionId reads session_id off any event that carries one, not just result', () => {
+  assert.equal(extractSessionId({ type: 'system', subtype: 'init', session_id: 'abc-123' }), 'abc-123')
+  assert.equal(extractSessionId({ type: 'rate_limit_event', session_id: 'abc-123' }), 'abc-123')
+  assert.equal(extractSessionId({ type: 'result', session_id: 'abc-123' }), 'abc-123')
+})
+
+test('extractSessionId returns null for a missing, empty, or non-string session_id', () => {
+  assert.equal(extractSessionId({ type: 'assistant' }), null)
+  assert.equal(extractSessionId({ type: 'assistant', session_id: '' }), null)
+  assert.equal(extractSessionId({ type: 'assistant', session_id: 42 }), null)
+  assert.equal(extractSessionId(null), null)
+  assert.equal(extractSessionId(undefined), null)
 })
 
 test('extractToolUseBlocks reads tool_use blocks off an assistant snapshot event', () => {

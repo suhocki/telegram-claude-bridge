@@ -24,6 +24,11 @@ export function isResultEvent(event) {
   return event?.type === 'result'
 }
 
+// every stream-json event carries session_id, not just the final `result` one a hard kill may prevent from ever arriving
+export function extractSessionId(event) {
+  return typeof event?.session_id === 'string' && event.session_id ? event.session_id : null
+}
+
 export function extractToolUseBlocks(event) {
   if (event?.type !== 'assistant') return []
   const content = event.message?.content

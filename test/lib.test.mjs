@@ -55,6 +55,9 @@ import {
   buildPlaceholderEditParams,
   buildWorkingPlaceholderParams,
   buildCancelKeyboard,
+  buildContinueKeyboard,
+  parseCallbackData,
+  buildContinuePrompt,
   buildJoinedPromptText,
   isJoinableMessage,
   parseVoiceToggleCommand,
@@ -975,6 +978,13 @@ test('buildCheckinFollowupPrompt: wraps the instruction and marks it as an autom
   assert.match(prompt, /check on the background agent/)
 })
 
+test('buildContinuePrompt: marks the prompt as a resumed, non-user turn telling claude to pick up where it left off', () => {
+  const prompt = buildContinuePrompt()
+  assert.match(prompt, /CONTINUE/)
+  assert.match(prompt, /not a new message from the user/)
+  assert.match(prompt, /interrupted/)
+})
+
 test('extractResponseMarkers: strips all three marker kinds regardless of order and returns their payloads', () => {
   const result = extractResponseMarkers('done\nATTACH: /tmp/a.png\nREACT: 👍\nCHECKIN: 10 nudge the agent')
   assert.deepEqual(result, {
@@ -1103,6 +1113,35 @@ test('buildCancelKeyboard: builds a single-button inline keyboard scoped to the 
   assert.deepEqual(buildCancelKeyboard('123'), {
     inline_keyboard: [[{ text: '🚫 Cancel', callback_data: 'cancel:123' }]],
   })
+})
+
+test('buildContinueKeyboard: builds a single-button inline keyboard scoped to the chat', () => {
+  assert.deepEqual(buildContinueKeyboard('123'), {
+    inline_keyboard: [[{ text: '▶️ Continue', callback_data: 'continue:123' }]],
+  })
+})
+
+test('parseCallbackData: parses a cancel: payload into its action and chat id', () => {
+  assert.deepEqual(parseCallbackData('cancel:123'), { action: 'cancel', chatId: '123' })
+})
+
+test('parseCallbackData: parses a continue: payload into its action and chat id', () => {
+  assert.deepEqual(parseCallbackData('continue:123'), { action: 'continue', chatId: '123' })
+})
+
+test('parseCallbackData: parses a join: payload into its action and chat id', () => {
+  assert.deepEqual(parseCallbackData('join:123'), { action: 'join', chatId: '123' })
+})
+
+test('parseCallbackData: a chat id containing a colon (e.g. a supergroup topic id) is kept whole', () => {
+  assert.deepEqual(parseCallbackData('continue:-100123:456'), { action: 'continue', chatId: '-100123:456' })
+})
+
+test('parseCallbackData: an unrecognized prefix, empty string, or missing data returns null', () => {
+  assert.equal(parseCallbackData('unknown:123'), null)
+  assert.equal(parseCallbackData(''), null)
+  assert.equal(parseCallbackData(undefined), null)
+  assert.equal(parseCallbackData(null), null)
 })
 
 test('buildCancelKeyboard: joinCount=0 (the default) omits the Join button entirely', () => {
