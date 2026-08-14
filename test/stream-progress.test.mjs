@@ -652,6 +652,44 @@ test('createProgressTracker: a tool_result for a line already evicted by the cap
   assert.equal(tracker.current(), '⏳ Bash: b…\n⏳ Bash: c…')
 })
 
+test('createProgressTracker.historySnapshot freezes any trailing live text into a checkpoint before returning', () => {
+  const tracker = createProgressTracker()
+  tracker.ingest({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'still going' } } })
+  assert.deepEqual(tracker.historySnapshot(), ['💬 still going'])
+})
+
+test('createProgressTracker.historySnapshot returns the checkpoint lines seen so far, oldest first', () => {
+  const tracker = createProgressTracker()
+  const tool = (id, name, input) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } })
+  const text = t => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: t } } })
+  tracker.ingest(text('first'))
+  tracker.ingest(tool('toolu_1', 'Bash', { command: 'a' }))
+  tracker.ingest(text('second'))
+  assert.deepEqual(tracker.historySnapshot(), ['💬 first', '💬 second'])
+})
+
+test('createProgressTracker: initialCheckpointLines seeds history immediately, before any event is ingested', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, { initialCheckpointLines: ['💬 from before'] })
+  assert.equal(tracker.current(), '💬 from before')
+})
+
+test('createProgressTracker: new checkpoints append after seeded initialCheckpointLines, not replacing them', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, { initialCheckpointLines: ['💬 from before'] })
+  const status = tracker.ingest({
+    type: 'stream_event',
+    event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'continuing' } },
+  })
+  assert.equal(status, '💬 from before\n✍️ continuing')
+})
+
+test('createProgressTracker: initialCheckpointLines are subject to the same maxCheckpointLines cap as any other checkpoint', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
+    maxCheckpointLines: 2,
+    initialCheckpointLines: ['💬 one', '💬 two', '💬 three'],
+  })
+  assert.equal(tracker.current(), '💬 two\n💬 three')
+})
+
 test('regression: the subagent tool is really named "Agent" in a real captured claude -p stream, not "Task"', () => {
   const fixturePath = new URL('./fixtures/subagent-stream-sample.jsonl', import.meta.url)
   const raw = readFileSync(fixturePath, 'utf8')
