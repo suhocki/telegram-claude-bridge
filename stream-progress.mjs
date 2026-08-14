@@ -146,7 +146,12 @@ function renderEphemeral(entry) {
 // Only frozen *text* segments (💬, for a human) become permanent checkpointLines; tool calls and frozen thinking are ephemeral and collapse away on the next checkpoint.
 export function createProgressTracker(
   initialStatus = DEFAULT_WORKING_STATUS,
-  { renderTranscript, maxEphemeralLines = MAX_EPHEMERAL_LINES, maxCheckpointLines = MAX_CHECKPOINT_LINES } = {}
+  {
+    renderTranscript,
+    maxEphemeralLines = MAX_EPHEMERAL_LINES,
+    maxCheckpointLines = MAX_CHECKPOINT_LINES,
+    initialCheckpointLines = [],
+  } = {}
 ) {
   const seenToolIds = new Set()
   const checkpointLines = []
@@ -156,6 +161,9 @@ export function createProgressTracker(
   let status = initialStatus
   let statusIsHtml = false
   let snapshotCache = { text: status, html: statusIsHtml }
+
+  for (const line of initialCheckpointLines) pushCheckpoint(line)
+  if (checkpointLines.length) commit()
 
   function pushBounded(array, maxLen, item) {
     if (array.length >= maxLen) array.shift()
@@ -263,7 +271,13 @@ export function createProgressTracker(
     return snapshotCache
   }
 
-  return { ingest, current, snapshot }
+  // freezes any trailing live text first, so a tracker snapshotted right before being discarded doesn't lose whatever was mid-stream
+  function historySnapshot() {
+    freezeLive()
+    return [...checkpointLines]
+  }
+
+  return { ingest, current, snapshot, historySnapshot }
 }
 
 // Shared across every controller writing to the same chat (root + all its parallel

@@ -488,7 +488,9 @@ async function clearPendingContinue(chatId) {
   if (!pending) return
   delete state.pendingContinue[chatId]
   if (pending.placeholderId != null) {
-    await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: pending.placeholderId, reply_markup: { inline_keyboard: [] } }).catch(() => {})
+    // an abandoned Continue offer needs a terminal marker, not just a stripped keyboard, or the last progress line looks like a stuck bot
+    const text = [...(pending.checkpointHistory ?? []), '🚫 cancelled'].join('\n')
+    await tg('editMessageText', buildPlaceholderEditParams(chatId, pending.placeholderId, text, false, { inline_keyboard: [] })).catch(() => {})
   }
 }
 
@@ -723,12 +725,20 @@ async function sendVoiceReply(chatId, text, replyToMessageId) {
 // Drives one Telegram message's live "⏳ working…" placeholder: a progress tracker plus
 // the periodic editMessageText loop that renders it. Used both for the root placeholder
 // of a run and for each parallel subagent (Agent tool) placeholder spawned during it.
-function createPlaceholderController(chatId, initialMessageId, sharedGate = null, keyboard = null, initialStatus = DEFAULT_WORKING_STATUS) {
+function createPlaceholderController(
+  chatId,
+  initialMessageId,
+  sharedGate = null,
+  keyboard = null,
+  initialStatus = DEFAULT_WORKING_STATUS,
+  initialCheckpointLines = []
+) {
   let messageId = initialMessageId
   // mutable: lets setKeyboard() update an already-streaming placeholder's Join count outside the periodic tick
   let currentKeyboard = keyboard
   const tracker = createProgressTracker(initialStatus, {
     renderTranscript: (historyLines, liveText) => renderTranscriptHtml(historyLines, liveText),
+    initialCheckpointLines,
   })
 
   async function editPlaceholder({ text, html }) {
@@ -821,19 +831,31 @@ async function withTypingIndicator(chatId, fn) {
 async function runClaudeTurn(
   chatId,
   run,
-  { prompt, sessionId, authMode, priorSession, workingStatus, botMessageIds, originMessageId = null, isCompact = false, needsPlaceholderReset = false, turnMeta = {} }
+  {
+    prompt,
+    sessionId,
+    authMode,
+    priorSession,
+    workingStatus,
+    botMessageIds,
+    originMessageId = null,
+    isCompact = false,
+    isResume = false,
+    checkpointHistory = [],
+    turnMeta = {},
+  }
 ) {
   const cancelKeyboard = buildCancelKeyboard(chatId, run.pending.length)
   let currentPlaceholderId = run.placeholderId
-  if (currentPlaceholderId != null && needsPlaceholderReset) {
-    // only a resumed Continue needs this: its placeholder still shows "cancelled" + the Continue button
-    await tg('editMessageText', buildPlaceholderEditParams(chatId, currentPlaceholderId, workingStatus, false, cancelKeyboard)).catch(() => {})
+  if (currentPlaceholderId != null && isResume) {
+    // the placeholder still shows the progress log from before cancelling — swap only the button, keep the text
+    await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: currentPlaceholderId, reply_markup: cancelKeyboard }).catch(() => {})
   }
 
   // shared by root + every subagent placeholder below, so a 429 on any one of them
   // backs off every concurrent edit loop writing to this same chat
   const chatRateGate = createChatRateGate()
-  const rootController = createPlaceholderController(chatId, currentPlaceholderId, chatRateGate, cancelKeyboard, workingStatus)
+  const rootController = createPlaceholderController(chatId, currentPlaceholderId, chatRateGate, cancelKeyboard, workingStatus, checkpointHistory)
   run.setKeyboard = kb => rootController.setKeyboard(kb)
 
   // one placeholder message per parallel subagent (Agent tool call), keyed by that
@@ -952,24 +974,32 @@ async function runClaudeTurn(
     if (cancelled) {
       // a hard kill often beats runClaude's own capturedSessionId to any stream line, so fall back to the resume id this turn was already given
       const resumableSessionId = e.cancelledResult?.session_id ?? getSessionId() ?? sessionId
-      botMessageIds.push(...(await sendReply(chatId, '🚫 cancelled', originMessageId, currentPlaceholderId).catch(() => [])))
       if (resumableSessionId) {
         state.sessions[chatId] = accumulateSessionCost(
           normalizeSession(state.sessions[chatId]),
           resumableSessionId,
           e.cancelledResult?.total_cost_usd ?? 0
         )
-        if (currentPlaceholderId != null) {
-          state.pendingContinue[chatId] = { sessionId: resumableSessionId, placeholderId: currentPlaceholderId, isCompact, ...turnMeta }
-          continueArmed = true
-          await tg('editMessageReplyMarkup', {
-            chat_id: chatId,
-            message_id: currentPlaceholderId,
-            reply_markup: buildContinueKeyboard(chatId),
-          }).catch(() => {})
-        }
-        saveState(state)
       }
+      if (currentPlaceholderId != null && resumableSessionId) {
+        // leave the placeholder's progress log as-is — only the button changes, so Continue can pick up on the same visible history
+        state.pendingContinue[chatId] = {
+          sessionId: resumableSessionId,
+          placeholderId: currentPlaceholderId,
+          isCompact,
+          checkpointHistory: rootController.tracker.historySnapshot(),
+          ...turnMeta,
+        }
+        continueArmed = true
+        await tg('editMessageReplyMarkup', {
+          chat_id: chatId,
+          message_id: currentPlaceholderId,
+          reply_markup: buildContinueKeyboard(chatId),
+        }).catch(() => {})
+      } else {
+        botMessageIds.push(...(await sendReply(chatId, '🚫 cancelled', originMessageId, currentPlaceholderId).catch(() => [])))
+      }
+      saveState(state)
     } else {
       log('handleMessage error', e)
       botMessageIds.push(...(await sendReply(chatId, `⚠️ bridge error: ${e.message}`, originMessageId, currentPlaceholderId).catch(() => [])))
@@ -1224,7 +1254,8 @@ async function handleContinue(chatId, pending) {
       botMessageIds,
       originMessageId: pending.originMessageId,
       isCompact: pending.isCompact,
-      needsPlaceholderReset: true,
+      isResume: true,
+      checkpointHistory: pending.checkpointHistory ?? [],
       turnMeta: { originMessageId: pending.originMessageId, anchorMessageId: pending.anchorMessageId },
     })
   )
