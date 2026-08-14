@@ -488,7 +488,9 @@ async function clearPendingContinue(chatId) {
   if (!pending) return
   delete state.pendingContinue[chatId]
   if (pending.placeholderId != null) {
-    await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: pending.placeholderId, reply_markup: { inline_keyboard: [] } }).catch(() => {})
+    // an abandoned Continue offer needs a terminal marker, not just a stripped keyboard, or the last progress line looks like a stuck bot
+    const text = [...(pending.checkpointHistory ?? []), '🚫 cancelled'].join('\n')
+    await tg('editMessageText', buildPlaceholderEditParams(chatId, pending.placeholderId, text, false, { inline_keyboard: [] })).catch(() => {})
   }
 }
 
