@@ -894,7 +894,11 @@ async function runClaudeTurn(
     }
     const result = await claude.promise
     // claude can catch SIGTERM and still emit a result event before exiting, so a resolved promise doesn't rule out a cancel
-    if (cancelled) throw new Error('cancelled after the run had already produced a result')
+    if (cancelled) {
+      const err = new Error('cancelled after the run had already produced a result')
+      err.cancelledResult = result
+      throw err
+    }
     run.finished = true
     // no finalStatus edit: the placeholder gets deleted outright below, once the real reply is sent
     rootController.statusUpdater.stop()
@@ -947,10 +951,14 @@ async function runClaudeTurn(
     rootController.statusUpdater.stop()
     if (cancelled) {
       // a hard kill often beats runClaude's own capturedSessionId to any stream line, so fall back to the resume id this turn was already given
-      const resumableSessionId = getSessionId() ?? sessionId
+      const resumableSessionId = e.cancelledResult?.session_id ?? getSessionId() ?? sessionId
       botMessageIds.push(...(await sendReply(chatId, '🚫 cancelled', originMessageId, currentPlaceholderId).catch(() => [])))
       if (resumableSessionId) {
-        state.sessions[chatId] = accumulateSessionCost(normalizeSession(state.sessions[chatId]), resumableSessionId, 0)
+        state.sessions[chatId] = accumulateSessionCost(
+          normalizeSession(state.sessions[chatId]),
+          resumableSessionId,
+          e.cancelledResult?.total_cost_usd ?? 0
+        )
         if (currentPlaceholderId != null) {
           state.pendingContinue[chatId] = { sessionId: resumableSessionId, placeholderId: currentPlaceholderId, isCompact, ...turnMeta }
           continueArmed = true
