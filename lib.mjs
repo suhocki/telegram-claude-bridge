@@ -475,15 +475,32 @@ export function buildTranscriptQuoteHtml(transcript) {
   return `<blockquote>${safe}</blockquote>`
 }
 
-export function buildCancelKeyboard(chatId) {
-  return { inline_keyboard: [[{ text: '🚫 Cancel', callback_data: `cancel:${chatId}` }]] }
+export function buildCancelKeyboard(chatId, joinCount = 0) {
+  const buttons = [{ text: '🚫 Cancel', callback_data: `cancel:${chatId}` }]
+  if (joinCount > 0) buttons.push({ text: `⬇️ Join (${joinCount})`, callback_data: `join:${chatId}` })
+  return { inline_keyboard: [buttons] }
+}
+
+export function buildJoinedPromptText(texts) {
+  return texts.filter(t => t != null && t !== '').join('\n')
+}
+
+// commands and attachments are excluded from v1 — folding those into a text prompt would be meaningless or silently drop the attachment
+export function isJoinableMessage(msg, botUsername) {
+  if (isServiceMessage(msg)) return false
+  if (extractAttachment(msg)) return false
+  const text = msg?.text
+  if (typeof text !== 'string' || !text.trim()) return false
+  if (classifyCommand(text, botUsername) !== null) return false
+  if (parseVoiceToggleCommand(text, botUsername) !== null) return false
+  return true
 }
 
 export function buildContinueKeyboard(chatId) {
   return { inline_keyboard: [[{ text: '▶️ Continue', callback_data: `continue:${chatId}` }]] }
 }
 
-const CALLBACK_DATA_RE = /^(cancel|continue):(.+)$/
+const CALLBACK_DATA_RE = /^(cancel|continue|join):(.+)$/
 
 export function parseCallbackData(data) {
   const m = String(data ?? '').match(CALLBACK_DATA_RE)

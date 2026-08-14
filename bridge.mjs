@@ -67,6 +67,8 @@ import {
   buildContinueKeyboard,
   parseCallbackData,
   buildContinuePrompt,
+  buildJoinedPromptText,
+  isJoinableMessage,
   buildPlaceholderEditParams,
   buildWorkingPlaceholderParams,
   parseVoiceToggleCommand,
@@ -212,9 +214,12 @@ function nextWorkingPhrase() {
 
 const state = loadState()
 const chatQueue = createKeyedQueue()
-// chatId -> { cancel() }; only ever one entry per chat since handleMessage runs one at
-// a time per chat via chatQueue, populated for the duration of that run's runClaude call
+// chatId -> single in-flight run { cancel(), promptText, placeholderId, pending, finished, setKeyboard() }; chatQueue guarantees only one at a time.
 const activeRuns = new Map()
+// chatId -> Set<messageId> already folded into a join tap, so runQueuedMessage below no-ops their own already-queued run.
+const consumedByJoin = new Map()
+// serializes the join-count editMessageReplyMarkup calls per chat so back-to-back joins can't land out of order at Telegram
+const joinKeyboardQueue = createKeyedQueue()
 // setTimeout handles can't be persisted, so state.pendingCheckins is re-armed into this Map on every boot.
 const checkinTimers = new Map()
 for (const chatId of Object.keys(state.pendingCheckins)) armCheckinTimer(chatId)
@@ -720,13 +725,15 @@ async function sendVoiceReply(chatId, text, replyToMessageId) {
 // of a run and for each parallel subagent (Agent tool) placeholder spawned during it.
 function createPlaceholderController(chatId, initialMessageId, sharedGate = null, keyboard = null, initialStatus = DEFAULT_WORKING_STATUS) {
   let messageId = initialMessageId
+  // mutable: lets setKeyboard() update an already-streaming placeholder's Join count outside the periodic tick
+  let currentKeyboard = keyboard
   const tracker = createProgressTracker(initialStatus, {
     renderTranscript: (historyLines, liveText) => renderTranscriptHtml(historyLines, liveText),
   })
 
   async function editPlaceholder({ text, html }) {
     if (messageId == null) return
-    const params = buildPlaceholderEditParams(chatId, messageId, text, html, keyboard)
+    const params = buildPlaceholderEditParams(chatId, messageId, text, html, currentKeyboard)
     try {
       await tg('editMessageText', params)
     } catch (e) {
@@ -745,7 +752,7 @@ function createPlaceholderController(chatId, initialMessageId, sharedGate = null
         chat_id: chatId,
         message_id: messageId,
         text: htmlToPlainFallback(params.text),
-        ...(keyboard ? { reply_markup: keyboard } : {}),
+        ...(currentKeyboard ? { reply_markup: currentKeyboard } : {}),
       }).catch(e2 => log('editMessageText fallback failed', e2.message))
     }
   }
@@ -770,6 +777,9 @@ function createPlaceholderController(chatId, initialMessageId, sharedGate = null
     setMessageId(id) {
       messageId = id
     },
+    setKeyboard(kb) {
+      currentKeyboard = kb
+    },
   }
 }
 
@@ -778,7 +788,9 @@ function isAuthorizedMessage(msg) {
   const userId = String(msg.from?.id ?? '')
   if (isGroupChatType(msg.chat.type)) {
     const policy = resolveGroupPolicy(groupsConfig, chatId)
-    if (!shouldHandleGroupMessage(msg, policy, botIdentity.username, botIdentity.id)) {
+    // a join-synthesized message isn't itself a fresh @mention, but it continues a run this chat already passed the mention gate to start
+    const effectivePolicy = msg.joinedFromActiveRun && policy ? { ...policy, requireMention: false } : policy
+    if (!shouldHandleGroupMessage(msg, effectivePolicy, botIdentity.username, botIdentity.id)) {
       log('dropped group message', chatId, 'policy not satisfied for user', userId)
       return false
     }
@@ -805,13 +817,14 @@ async function withTypingIndicator(chatId, fn) {
   }
 }
 
-// shared by handleMessage and handleContinue, so both get the same progress/cancel/continue plumbing
+// shared by handleMessage and handleContinue, so both get the same progress/cancel/continue plumbing; run is a pre-created, pre-registered activeRuns entry (see addPendingJoinMessage/handleJoinTap)
 async function runClaudeTurn(
   chatId,
-  { prompt, sessionId, authMode, priorSession, placeholderId, workingStatus, botMessageIds, originMessageId = null, isCompact = false, needsPlaceholderReset = false, turnMeta = {} }
+  run,
+  { prompt, sessionId, authMode, priorSession, workingStatus, botMessageIds, originMessageId = null, isCompact = false, needsPlaceholderReset = false, turnMeta = {} }
 ) {
-  const cancelKeyboard = buildCancelKeyboard(chatId)
-  let currentPlaceholderId = placeholderId
+  const cancelKeyboard = buildCancelKeyboard(chatId, run.pending.length)
+  let currentPlaceholderId = run.placeholderId
   if (currentPlaceholderId != null && needsPlaceholderReset) {
     // only a resumed Continue needs this: its placeholder still shows "cancelled" + the Continue button
     await tg('editMessageText', buildPlaceholderEditParams(chatId, currentPlaceholderId, workingStatus, false, cancelKeyboard)).catch(() => {})
@@ -821,6 +834,7 @@ async function runClaudeTurn(
   // backs off every concurrent edit loop writing to this same chat
   const chatRateGate = createChatRateGate()
   const rootController = createPlaceholderController(chatId, currentPlaceholderId, chatRateGate, cancelKeyboard, workingStatus)
+  run.setKeyboard = kb => rootController.setKeyboard(kb)
 
   // one placeholder message per parallel subagent (Agent tool call), keyed by that
   // tool_use's id; created when it starts, deleted once its tool_result comes back
@@ -869,16 +883,17 @@ async function runClaudeTurn(
   let continueArmed = false
   let getSessionId = () => null
   try {
+    if (run.finished) throw new Error('cancelled before the run could start')
     const claude = runClaude(prompt, sessionId, event => routeEvent(event), authMode)
     getSessionId = claude.getSessionId
-    activeRuns.set(chatId, {
-      cancel() {
-        if (cancelled) return
-        cancelled = true
-        claude.cancel()
-      },
-    })
+    run.cancel = () => {
+      if (cancelled) return
+      cancelled = true
+      run.finished = true
+      claude.cancel()
+    }
     const result = await claude.promise
+    run.finished = true
     // no finalStatus edit: the placeholder gets deleted outright below, once the real reply is sent
     rootController.statusUpdater.stop()
     let newSession = priorSession
@@ -905,6 +920,7 @@ async function runClaudeTurn(
         const idx = botMessageIds.indexOf(currentPlaceholderId)
         if (idx !== -1) botMessageIds.splice(idx, 1)
         currentPlaceholderId = null
+        run.placeholderId = null
       } catch (e) {
         log('failed to delete working placeholder', e.message)
         // fall back to a terminal status edit so a stuck delete doesn't leave a stale phrase forever
@@ -925,6 +941,7 @@ async function runClaudeTurn(
       await setReaction(chatId, originMessageId, reactionEmoji || (result.is_error ? ERROR_REACTION : null))
     }
   } catch (e) {
+    run.finished = true
     rootController.statusUpdater.stop()
     if (cancelled) {
       // a hard kill often beats runClaude's own capturedSessionId to any stream line, so fall back to the resume id this turn was already given
@@ -1070,17 +1087,31 @@ async function handleMessage(msg) {
 
   await setReaction(chatId, msg.message_id, RECEIPT_REACTION)
 
-  const cancelKeyboard = buildCancelKeyboard(chatId)
   const workingStatus = nextWorkingPhrase()
   // every message the bot posts for this turn, so a later rewind past this turn can delete them
   const botMessageIds = []
-  let placeholderId = null
+  const run = {
+    cancel() {
+      if (run.finished) return
+      run.finished = true
+    },
+    promptText,
+    placeholderId: null,
+    pending: [],
+    finished: false,
+    setKeyboard: () => {},
+  }
+  // registered before the placeholder exists so a slow attachment download/transcription doesn't hide the Join button
+  activeRuns.set(chatId, run)
 
   const turnResult = await withTypingIndicator(chatId, async () => {
     try {
-      const placeholder = await tg('sendMessage', buildWorkingPlaceholderParams(chatId, workingStatus, msg.message_id, cancelKeyboard))
-      placeholderId = placeholder.message_id
-      botMessageIds.push(placeholderId)
+      const placeholder = await tg(
+        'sendMessage',
+        buildWorkingPlaceholderParams(chatId, workingStatus, msg.message_id, buildCancelKeyboard(chatId, run.pending.length))
+      )
+      run.placeholderId = placeholder.message_id
+      botMessageIds.push(run.placeholderId)
     } catch (e) {
       log('failed to send working placeholder', e.message)
     }
@@ -1099,13 +1130,16 @@ async function handleMessage(msg) {
         log('voice transcription failed', transcriptionError)
       } else {
         promptText = buildVoiceTranscriptText(transcription.text)
+        run.promptText = promptText
         const quoteHtml = buildTranscriptQuoteHtml(transcription.text)
         if (quoteHtml) {
           const frozen =
-            placeholderId != null ? await freezePlaceholderAsTranscript(chatId, placeholderId, quoteHtml, workingStatus, cancelKeyboard) : null
+            run.placeholderId != null
+              ? await freezePlaceholderAsTranscript(chatId, run.placeholderId, quoteHtml, workingStatus, buildCancelKeyboard(chatId, run.pending.length))
+              : null
           if (frozen?.frozen) {
-            placeholderId = frozen.placeholderId
-            if (placeholderId != null) botMessageIds.push(placeholderId)
+            run.placeholderId = frozen.placeholderId
+            if (run.placeholderId != null) botMessageIds.push(run.placeholderId)
           } else {
             // no placeholder to freeze, or freezing it failed outright — the transcript still has to show up somewhere
             const quoteMessageId = await sendTranscriptQuote(chatId, quoteHtml, msg.message_id)
@@ -1131,12 +1165,11 @@ async function handleMessage(msg) {
         ? content
         : buildChannelPrompt(chatId, meta.messageId, meta.user, meta.ts, promptText, attachmentAttrs)
 
-    return runClaudeTurn(chatId, {
+    return runClaudeTurn(chatId, run, {
       prompt,
       sessionId,
       authMode: state.authMode[chatId],
       priorSession: session,
-      placeholderId,
       workingStatus,
       botMessageIds,
       originMessageId: msg.message_id,
@@ -1158,14 +1191,25 @@ async function handleContinue(chatId, pending) {
   const priorSession = normalizeSession(state.sessions[chatId])
   const workingStatus = nextWorkingPhrase()
   const botMessageIds = [pending.placeholderId]
+  const run = {
+    cancel() {
+      if (run.finished) return
+      run.finished = true
+    },
+    promptText: buildContinuePrompt(),
+    placeholderId: pending.placeholderId,
+    pending: [],
+    finished: false,
+    setKeyboard: () => {},
+  }
+  activeRuns.set(chatId, run)
 
   const turnResult = await withTypingIndicator(chatId, () =>
-    runClaudeTurn(chatId, {
+    runClaudeTurn(chatId, run, {
       prompt: buildContinuePrompt(),
       sessionId: pending.sessionId,
       authMode: state.authMode[chatId],
       priorSession,
-      placeholderId: pending.placeholderId,
       workingStatus,
       botMessageIds,
       originMessageId: pending.originMessageId,
@@ -1186,7 +1230,51 @@ async function handleContinue(chatId, pending) {
 
 let botIdentity = { id: null, username: null }
 
-// cancel interrupts the run at chatQueue's head directly; continue starts a new run, so it's queued like any other message
+async function addPendingJoinMessage(chatId, run, msg) {
+  if (run.finished) return
+  run.pending.push(msg)
+  if (run.placeholderId == null) return
+  const keyboard = buildCancelKeyboard(chatId, run.pending.length)
+  run.setKeyboard(keyboard)
+  const placeholderId = run.placeholderId
+  await joinKeyboardQueue
+    .enqueue(chatId, () =>
+      tg('editMessageReplyMarkup', { chat_id: chatId, message_id: placeholderId, reply_markup: keyboard }).catch(e =>
+        log('failed to update join keyboard', e.message)
+      )
+    )
+    .catch(() => {})
+}
+
+function handleJoinTap(chatId, run) {
+  const batch = run.pending.splice(0, run.pending.length)
+  if (!batch.length) return
+  let consumed = consumedByJoin.get(chatId)
+  if (!consumed) {
+    consumed = new Set()
+    consumedByJoin.set(chatId, consumed)
+  }
+  for (const m of batch) consumed.add(m.message_id)
+
+  run.cancel()
+
+  const joinedText = buildJoinedPromptText([run.promptText, ...batch.map(m => m.text ?? m.caption ?? '')])
+  const last = batch[batch.length - 1]
+  // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText
+  const syntheticMsg = { ...last, text: joinedText, entities: undefined, caption_entities: undefined, joinedFromActiveRun: true }
+  chatQueue.enqueue(chatId, () => handleMessage(syntheticMsg)).catch(e => log('queued joined handleMessage rejected', e))
+}
+
+function runQueuedMessage(chatId, msg) {
+  const consumed = consumedByJoin.get(chatId)
+  if (consumed?.delete(msg.message_id)) {
+    if (consumed.size === 0) consumedByJoin.delete(chatId)
+    return Promise.resolve()
+  }
+  return handleMessage(msg)
+}
+
+// cancel/join interrupt the run at chatQueue's head directly; continue starts a new run, so it's queued like any other message
 async function handleCallbackQuery(cq) {
   const parsed = parseCallbackData(cq.data)
   if (!parsed) {
@@ -1194,17 +1282,29 @@ async function handleCallbackQuery(cq) {
     return
   }
 
-  // derived from the button's own message, not the callback_data payload, so a chat can only cancel/continue its own run
+  // derived from the button's own message, not the callback_data payload, so a chat can only cancel/continue/join its own run
   const chatId = String(cq.message?.chat?.id ?? '')
   if (!isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig)) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'not authorized', show_alert: true }).catch(() => {})
     return
   }
 
-  if (parsed.action === 'cancel') {
+  if (parsed.action === 'cancel' || parsed.action === 'join') {
     const run = activeRuns.get(chatId)
-    if (!run) {
-      await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'nothing to cancel' }).catch(() => {})
+    if (!run || run.finished) {
+      await tg('answerCallbackQuery', {
+        callback_query_id: cq.id,
+        text: parsed.action === 'join' ? 'nothing to join' : 'nothing to cancel',
+      }).catch(() => {})
+      return
+    }
+    if (parsed.action === 'join') {
+      if (!run.pending.length) {
+        await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'nothing to join' }).catch(() => {})
+        return
+      }
+      handleJoinTap(chatId, run)
+      await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'joining…' }).catch(() => {})
       return
     }
     run.cancel()
@@ -1250,7 +1350,11 @@ async function poll() {
         saveState(state)
         if (u.message) {
           const chatId = String(u.message.chat.id)
-          chatQueue.enqueue(chatId, () => handleMessage(u.message)).catch(e => log('queued handleMessage rejected', e))
+          const activeRun = activeRuns.get(chatId)
+          if (activeRun && isAuthorizedMessage(u.message) && isJoinableMessage(u.message, botIdentity.username)) {
+            addPendingJoinMessage(chatId, activeRun, u.message).catch(e => log('failed to track pending join message', e.message))
+          }
+          chatQueue.enqueue(chatId, () => runQueuedMessage(chatId, u.message)).catch(e => log('queued handleMessage rejected', e))
         } else if (u.edited_message) {
           const chatId = String(u.edited_message.chat.id)
           if (isAuthorizedMessage(u.edited_message)) {
