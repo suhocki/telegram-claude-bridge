@@ -893,6 +893,8 @@ async function runClaudeTurn(
       claude.cancel()
     }
     const result = await claude.promise
+    // claude can catch SIGTERM and still emit a result event before exiting, so a resolved promise doesn't rule out a cancel
+    if (cancelled) throw new Error('cancelled after the run had already produced a result')
     run.finished = true
     // no finalStatus edit: the placeholder gets deleted outright below, once the real reply is sent
     rootController.statusUpdater.stop()
