@@ -24,10 +24,7 @@ export function isResultEvent(event) {
   return event?.type === 'result'
 }
 
-// Every stream-json event carries session_id, not just the final `result` event — including
-// the very first line the CLI emits. Capturing it here means a run that gets killed mid-flight
-// (e.g. a Telegram Cancel) still leaves the bridge knowing which session_id to `--resume`,
-// instead of only learning it from a `result` event that a hard kill prevents from ever arriving.
+// every stream-json event carries session_id, not just the final `result` one a hard kill may prevent from ever arriving
 export function extractSessionId(event) {
   return typeof event?.session_id === 'string' && event.session_id ? event.session_id : null
 }

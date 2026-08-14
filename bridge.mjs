@@ -365,8 +365,7 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
     for (const line of pushChunk(text)) {
       const event = parseJsonlLine(line)
       if (!event) continue
-      // captured from whichever event arrives first, so it survives a hard kill that
-      // happens before the terminal `result` event ever gets a chance to stream back
+      // captured from the first event, not just `result`, so a hard kill still leaves a resumable id
       if (capturedSessionId == null) capturedSessionId = extractSessionId(event)
       if (isResultEvent(event)) result = event
       if (onEvent) {
@@ -478,9 +477,7 @@ function rewindTranscript(sessionId, anchorMessageId) {
   return { ok: true, removed: lines.length - kept.length, sessionUsable: hasConversationEntry(kept) }
 }
 
-// A fresh incoming message, a /new reset, or a rewind-on-edit all supersede whatever
-// interrupted turn a Continue button might still be offering to resume — clear it so a stale
-// button left in the chat history doesn't dangle (harmless if pressed, just confusing).
+// clears a stale Continue button/state left over from a turn a newer message/reset/rewind has since superseded
 async function clearPendingContinue(chatId) {
   const pending = state.pendingContinue[chatId]
   if (!pending) return
@@ -794,9 +791,6 @@ function isAuthorizedMessage(msg) {
   return true
 }
 
-// Covers a caller's whole span of work (attachment download, transcription, the claude run
-// itself, ...) with a single Telegram "typing…" indicator, rather than only around the claude
-// run — matches how long an incoming message actually takes to answer.
 async function withTypingIndicator(chatId, fn) {
   let typingAlive = true
   const typing = setInterval(() => {
@@ -811,20 +805,15 @@ async function withTypingIndicator(chatId, fn) {
   }
 }
 
-// Streams one claude turn (fresh message or a resumed Continue) into a working placeholder,
-// then finalizes it as a reply, a cancellation notice (arming a Continue button), or a bridge
-// error. Shared by handleMessage and handleContinue so both get the same progress/cancel/
-// continue plumbing instead of two divergent copies of it.
+// shared by handleMessage and handleContinue, so both get the same progress/cancel/continue plumbing
 async function runClaudeTurn(
   chatId,
-  { prompt, sessionId, authMode, priorSession, placeholderId, workingStatus, botMessageIds, replyToMessageId = null, reactToMessageId = null, isCompact = false, turnMeta = {} }
+  { prompt, sessionId, authMode, priorSession, placeholderId, workingStatus, botMessageIds, originMessageId = null, isCompact = false, needsPlaceholderReset = false, turnMeta = {} }
 ) {
   const cancelKeyboard = buildCancelKeyboard(chatId)
   let currentPlaceholderId = placeholderId
-  if (currentPlaceholderId != null) {
-    // resets a stale "▶️ Continue" placeholder back to the live working state + Cancel button;
-    // a no-op edit for a placeholder that's already in that state (from handleMessage) beyond
-    // Telegram's harmless "message is not modified" error
+  if (currentPlaceholderId != null && needsPlaceholderReset) {
+    // only a resumed Continue needs this: its placeholder still shows "cancelled" + the Continue button
     await tg('editMessageText', buildPlaceholderEditParams(chatId, currentPlaceholderId, workingStatus, false, cancelKeyboard)).catch(() => {})
   }
 
@@ -908,7 +897,7 @@ async function runClaudeTurn(
       replyText = `${buildCostWarning(newSession.costUsd, costWarnUsd)}\n\n${replyText}`
     }
     // new message, not an edit of the placeholder, so Telegram pushes a notification
-    botMessageIds.push(...(await sendReply(chatId, replyText, replyToMessageId)))
+    botMessageIds.push(...(await sendReply(chatId, replyText, originMessageId)))
     if (currentPlaceholderId != null) {
       // only untrack on a confirmed delete, so a failed one still gets the finally block's cleanup + a rewind retry
       try {
@@ -924,28 +913,27 @@ async function runClaudeTurn(
     }
     if (!result.is_error) {
       for (const attachPath of attachPaths) {
-        botMessageIds.push(...(await sendAttachment(chatId, attachPath, replyToMessageId)))
+        botMessageIds.push(...(await sendAttachment(chatId, attachPath, originMessageId)))
       }
       if (isVoiceReplyEnabled(state.voiceReply, chatId)) {
-        botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, replyToMessageId)))
+        botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, originMessageId)))
       }
       if (checkin) scheduleCheckin(chatId, newSession?.id ?? sessionId, checkin)
     }
-    if (reactToMessageId != null) {
+    if (originMessageId != null) {
       // on success, clear the 👀 receipt reaction instead of swapping in a 👍 — the reply itself is the signal now
-      await setReaction(chatId, reactToMessageId, reactionEmoji || (result.is_error ? ERROR_REACTION : null))
+      await setReaction(chatId, originMessageId, reactionEmoji || (result.is_error ? ERROR_REACTION : null))
     }
   } catch (e) {
     rootController.statusUpdater.stop()
     if (cancelled) {
-      // captured from the stream even though this run never reached a `result` event — see
-      // runClaude's capturedSessionId — so a hard kill still leaves something to `--resume`
-      const resumableSessionId = getSessionId()
-      botMessageIds.push(...(await sendReply(chatId, '🚫 cancelled', replyToMessageId, currentPlaceholderId).catch(() => [])))
+      // a hard kill often beats runClaude's own capturedSessionId to any stream line, so fall back to the resume id this turn was already given
+      const resumableSessionId = getSessionId() ?? sessionId
+      botMessageIds.push(...(await sendReply(chatId, '🚫 cancelled', originMessageId, currentPlaceholderId).catch(() => [])))
       if (resumableSessionId) {
         state.sessions[chatId] = accumulateSessionCost(normalizeSession(state.sessions[chatId]), resumableSessionId, 0)
         if (currentPlaceholderId != null) {
-          state.pendingContinue[chatId] = { sessionId: resumableSessionId, placeholderId: currentPlaceholderId, ...turnMeta }
+          state.pendingContinue[chatId] = { sessionId: resumableSessionId, placeholderId: currentPlaceholderId, isCompact, ...turnMeta }
           continueArmed = true
           await tg('editMessageReplyMarkup', {
             chat_id: chatId,
@@ -957,14 +945,13 @@ async function runClaudeTurn(
       }
     } else {
       log('handleMessage error', e)
-      botMessageIds.push(...(await sendReply(chatId, `⚠️ bridge error: ${e.message}`, replyToMessageId, currentPlaceholderId).catch(() => [])))
-      if (reactToMessageId != null) await setReaction(chatId, reactToMessageId, ERROR_REACTION)
+      botMessageIds.push(...(await sendReply(chatId, `⚠️ bridge error: ${e.message}`, originMessageId, currentPlaceholderId).catch(() => [])))
+      if (originMessageId != null) await setReaction(chatId, originMessageId, ERROR_REACTION)
     }
   } finally {
     rootController.statusUpdater.stop()
     activeRuns.delete(chatId)
-    // only clear the keyboard outright when a Continue button wasn't just armed above —
-    // otherwise this would immediately wipe the button it just attached
+    // avoid wiping the Continue button the catch block may have just attached above
     if (currentPlaceholderId != null && !continueArmed) {
       await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: currentPlaceholderId, reply_markup: { inline_keyboard: [] } }).catch(() => {})
     }
@@ -992,6 +979,8 @@ async function handleMessage(msg) {
   const chatId = String(msg.chat.id)
   const userId = String(msg.from?.id ?? '')
   if (!isAuthorizedMessage(msg)) return
+  // every authorized message supersedes whatever interrupted turn a Continue button was still offering, regardless of which branch below handles it
+  await clearPendingContinue(chatId)
   const attachment = extractAttachment(msg)
   const content = msg.text ?? msg.caption ?? null
   if (content == null && !attachment) {
@@ -1022,7 +1011,6 @@ async function handleMessage(msg) {
     delete state.pendingRisky[chatId]
     delete state.turns[chatId]
     cancelCheckin(chatId)
-    await clearPendingContinue(chatId)
     saveState(state)
     await sendReply(chatId, '🔄 session reset — the next message starts a brand new conversation.', msg.message_id).catch(() => {})
     return
@@ -1081,8 +1069,6 @@ async function handleMessage(msg) {
   if (!promptText && attachment) promptText = buildAttachmentCaption(attachment)
 
   await setReaction(chatId, msg.message_id, RECEIPT_REACTION)
-  // a fresh message supersedes whatever interrupted turn a Continue button was still offering
-  await clearPendingContinue(chatId)
 
   const cancelKeyboard = buildCancelKeyboard(chatId)
   const workingStatus = nextWorkingPhrase()
@@ -1153,8 +1139,7 @@ async function handleMessage(msg) {
       placeholderId,
       workingStatus,
       botMessageIds,
-      replyToMessageId: msg.message_id,
-      reactToMessageId: msg.message_id,
+      originMessageId: msg.message_id,
       isCompact: command === 'compact',
       turnMeta: { originMessageId: msg.message_id, anchorMessageId: meta.messageId },
     })
@@ -1169,10 +1154,6 @@ async function handleMessage(msg) {
   saveState(state)
 }
 
-// Resumes a turn that was cancelled mid-flight, using the session id + placeholder message
-// Continue's callback handler stashed away in state.pendingContinue. Reuses the same
-// progress/cancel/continue plumbing as a fresh incoming message (see runClaudeTurn) — pressing
-// Continue starts a real foreground run again, cancellable just like the original one was.
 async function handleContinue(chatId, pending) {
   const priorSession = normalizeSession(state.sessions[chatId])
   const workingStatus = nextWorkingPhrase()
@@ -1187,6 +1168,9 @@ async function handleContinue(chatId, pending) {
       placeholderId: pending.placeholderId,
       workingStatus,
       botMessageIds,
+      originMessageId: pending.originMessageId,
+      isCompact: pending.isCompact,
+      needsPlaceholderReset: true,
       turnMeta: { originMessageId: pending.originMessageId, anchorMessageId: pending.anchorMessageId },
     })
   )
@@ -1202,9 +1186,7 @@ async function handleContinue(chatId, pending) {
 
 let botIdentity = { id: null, username: null }
 
-// Cancel is handled directly, not via chatQueue: it needs to interrupt the run that's already
-// sitting at the head of that same chat's queue, not wait behind it. Continue goes through
-// chatQueue instead (see below) since it starts a new run rather than interrupting one.
+// cancel interrupts the run at chatQueue's head directly; continue starts a new run, so it's queued like any other message
 async function handleCallbackQuery(cq) {
   const parsed = parseCallbackData(cq.data)
   if (!parsed) {
@@ -1212,8 +1194,7 @@ async function handleCallbackQuery(cq) {
     return
   }
 
-  // derived from the message the button is attached to, not from the callback_data payload,
-  // so a chat can only ever cancel/continue its own run
+  // derived from the button's own message, not the callback_data payload, so a chat can only cancel/continue its own run
   const chatId = String(cq.message?.chat?.id ?? '')
   if (!isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig)) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'not authorized', show_alert: true }).catch(() => {})
@@ -1240,8 +1221,6 @@ async function handleCallbackQuery(cq) {
   delete state.pendingContinue[chatId]
   saveState(state)
   await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'continuing…' }).catch(() => {})
-  // queued like a normal message, not handled inline like cancel — a continue is a brand new
-  // run competing for the same chat's turn, not an interrupt of one already at the queue's head
   chatQueue.enqueue(chatId, () => handleContinue(chatId, pending)).catch(e => log('queued handleContinue rejected', e))
 }
 
