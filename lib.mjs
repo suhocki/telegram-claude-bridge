@@ -1,6 +1,7 @@
 // Pure, testable helpers extracted out of bridge.mjs's imperative poll loop.
 
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { markdownToTelegramHtml, htmlToPlainFallback, escapeHtml } from './markdown-html.mjs'
 import { truncateStatus } from './stream-progress.mjs'
 
@@ -646,6 +647,64 @@ export function isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig) {
     return Boolean(policy) && isSenderAllowedInGroup(policy, userId)
   }
   return allowedUserIds.includes(userId)
+}
+
+// A bot-config's optional buttonsModule field points at a project-owned .mjs implementing
+// buildKeyboard(context)/handleCallback(callbackData, context) — resolved relative to the
+// bot's own cwd (matching how other bot-relative paths in this repo are resolved), or used
+// as-is when already absolute.
+export function resolveButtonsModulePath(buttonsModule, cwd) {
+  if (!buttonsModule) return null
+  return path.isAbsolute(buttonsModule) ? buttonsModule : path.resolve(cwd, buttonsModule)
+}
+
+export function createButtonsModuleLoader(modulePath, importFn = specifier => import(pathToFileURL(specifier).href)) {
+  if (!modulePath) return null
+  let cached = null
+  return function loadButtonsModule() {
+    if (!cached) cached = importFn(modulePath)
+    return cached
+  }
+}
+
+export function buildButtonTapSyntheticMessage(cq, text) {
+  return {
+    message_id: cq?.message?.message_id,
+    chat: cq?.message?.chat,
+    from: cq?.from,
+    date: cq?.message?.date ?? Math.floor(Date.now() / 1000),
+    text,
+  }
+}
+
+// Dispatches a callback_data the built-in cancel/join/continue parser didn't recognize to the
+// bot's buttonsModule (if configured). All Telegram/queueing side effects are passed in so this
+// stays testable without faking the network: tg answers the callback query, enqueueMessage is
+// the seam a caller wires to chatQueue.enqueue(() => handleMessage(...)).
+export async function handleUnrecognizedCallback(cq, { chatId, buttonsLoader, tg, isAuthorized, enqueueMessage, log } = {}) {
+  if (!buttonsLoader) {
+    await tg('answerCallbackQuery', { callback_query_id: cq.id }).catch(() => {})
+    return { routed: 'noop' }
+  }
+  if (!isAuthorized) {
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'not authorized', show_alert: true }).catch(() => {})
+    return { routed: 'unauthorized' }
+  }
+  let result
+  try {
+    const mod = await buttonsLoader()
+    result = (await mod.handleCallback?.(cq.data, { chatId, cq })) ?? { handled: false }
+  } catch (e) {
+    log?.('buttons module handleCallback failed', e.message)
+    result = { handled: false }
+  }
+  if (result.handled) {
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: result.answerText }).catch(() => {})
+    return { routed: 'handled', answerText: result.answerText }
+  }
+  await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'queued…' }).catch(() => {})
+  enqueueMessage(buildButtonTapSyntheticMessage(cq, `Button tapped: ${cq.data}`))
+  return { routed: 'fallback-message' }
 }
 
 export function buildBotIdentity(getMeResult) {

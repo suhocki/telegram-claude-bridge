@@ -84,6 +84,9 @@ import {
   isGroupChatType,
   resolveGroupPolicy,
   isCallbackQueryAuthorized,
+  resolveButtonsModulePath,
+  createButtonsModuleLoader,
+  handleUnrecognizedCallback,
   shouldHandleGroupMessage,
   buildBotIdentity,
   buildBotMenuCalls,
@@ -120,7 +123,7 @@ if (!configPath) {
 }
 
 const config = JSON.parse(readFileSync(configPath, 'utf8'))
-const { botToken, cwd, allowedUserIds, appendSystemPrompt, claudeArgs, costWarnUsd, groups } = config
+const { botToken, cwd, allowedUserIds, appendSystemPrompt, claudeArgs, costWarnUsd, groups, buttonsModule } = config
 const groupsConfig = groups ?? {}
 const stateFile = path.resolve(path.dirname(configPath), config.stateFile ?? 'state.json')
 const stateDir = path.dirname(stateFile)
@@ -225,6 +228,7 @@ const checkinTimers = new Map()
 for (const chatId of Object.keys(state.pendingCheckins)) armCheckinTimer(chatId)
 
 const tg = createTelegramClient(API)
+const loadButtonsModule = createButtonsModuleLoader(resolveButtonsModulePath(buttonsModule, cwd))
 
 // Returns the ids of the messages it created (empty for an edit of an existing one) so a
 // caller can remember them and delete them later on a rewind.
@@ -1319,7 +1323,15 @@ function runQueuedMessage(chatId, msg) {
 async function handleCallbackQuery(cq) {
   const parsed = parseCallbackData(cq.data)
   if (!parsed) {
-    await tg('answerCallbackQuery', { callback_query_id: cq.id }).catch(() => {})
+    const chatId = String(cq.message?.chat?.id ?? '')
+    await handleUnrecognizedCallback(cq, {
+      chatId,
+      buttonsLoader: loadButtonsModule,
+      tg,
+      isAuthorized: isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig),
+      enqueueMessage: msg => chatQueue.enqueue(chatId, () => handleMessage(msg)).catch(e => log('queued button-tap handleMessage rejected', e)),
+      log,
+    })
     return
   }
 

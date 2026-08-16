@@ -74,6 +74,10 @@ import {
   isMentioned,
   shouldHandleGroupMessage,
   isCallbackQueryAuthorized,
+  resolveButtonsModulePath,
+  createButtonsModuleLoader,
+  buildButtonTapSyntheticMessage,
+  handleUnrecognizedCallback,
   buildBotIdentity,
   buildTtsRequestOptions,
   buildOutboxFilename,
@@ -1504,6 +1508,169 @@ test('isCallbackQueryAuthorized: fails closed on a missing or malformed message/
   assert.equal(isCallbackQueryAuthorized({ message: { chat: { id: 1, type: 'private' } } }, ['1'], {}), false, 'no from.id can never match an allowed user id')
   assert.equal(isCallbackQueryAuthorized(null, ['1'], {}), false)
   assert.equal(isCallbackQueryAuthorized(undefined, ['1'], {}), false)
+})
+
+test('resolveButtonsModulePath: relative path resolves against the bot cwd', () => {
+  assert.equal(resolveButtonsModulePath('telegram-buttons.mjs', '/repo/corp-ai-delegate'), '/repo/corp-ai-delegate/telegram-buttons.mjs')
+})
+
+test('resolveButtonsModulePath: absolute path is kept as-is', () => {
+  assert.equal(resolveButtonsModulePath('/abs/telegram-buttons.mjs', '/repo/corp-ai-delegate'), '/abs/telegram-buttons.mjs')
+})
+
+test('resolveButtonsModulePath: no buttonsModule configured returns null', () => {
+  assert.equal(resolveButtonsModulePath(undefined, '/repo'), null)
+  assert.equal(resolveButtonsModulePath(null, '/repo'), null)
+  assert.equal(resolveButtonsModulePath('', '/repo'), null)
+})
+
+test('createButtonsModuleLoader: no modulePath configured returns null without ever importing anything', () => {
+  const importFn = () => {
+    throw new Error('should never be called')
+  }
+  assert.equal(createButtonsModuleLoader(null, importFn), null)
+  assert.equal(createButtonsModuleLoader(undefined, importFn), null)
+})
+
+test('createButtonsModuleLoader: imports the module only once and caches the result across calls', async () => {
+  let calls = 0
+  const fakeModule = { handleCallback: async () => ({ handled: true }) }
+  const importFn = async specifier => {
+    calls++
+    return specifier === '/fake/path.mjs' ? fakeModule : null
+  }
+  const load = createButtonsModuleLoader('/fake/path.mjs', importFn)
+  const first = await load()
+  const second = await load()
+  assert.equal(calls, 1)
+  assert.equal(first, fakeModule)
+  assert.equal(second, fakeModule)
+})
+
+test('createButtonsModuleLoader: default importFn dynamically imports a real .mjs file by path', async () => {
+  const fixturePath = new URL('./fixtures/buttons-module-fixture.mjs', import.meta.url).pathname
+  const load = createButtonsModuleLoader(fixturePath)
+  const mod = await load()
+  assert.equal(typeof mod.handleCallback, 'function')
+  assert.deepEqual(mod.buildKeyboard({ chatId: '42' }), {
+    inline_keyboard: [[{ text: 'Fixture', callback_data: 'fixture:42' }]],
+  })
+})
+
+test('buildButtonTapSyntheticMessage: builds a message-shaped object anchored to the tapped message', () => {
+  const cq = { data: 'sys:start', from: { id: 1 }, message: { message_id: 55, chat: { id: 123 }, date: 999 } }
+  assert.deepEqual(buildButtonTapSyntheticMessage(cq, 'Button tapped: sys:start'), {
+    message_id: 55,
+    chat: { id: 123 },
+    from: { id: 1 },
+    date: 999,
+    text: 'Button tapped: sys:start',
+  })
+})
+
+test('handleUnrecognizedCallback: no buttonsModule configured behaves exactly like today - a plain answerCallbackQuery, no import, no message enqueued', async () => {
+  const tgCalls = []
+  const tg = async (method, params) => {
+    tgCalls.push({ method, params })
+    return {}
+  }
+  let enqueued = 0
+  const cq = { id: 'cbq1', data: 'unknown:1' }
+  const result = await handleUnrecognizedCallback(cq, {
+    chatId: '1',
+    buttonsLoader: null,
+    tg,
+    isAuthorized: true,
+    enqueueMessage: () => enqueued++,
+  })
+  assert.deepEqual(tgCalls, [{ method: 'answerCallbackQuery', params: { callback_query_id: 'cbq1' } }])
+  assert.equal(enqueued, 0)
+  assert.equal(result.routed, 'noop')
+})
+
+test('handleUnrecognizedCallback: unauthorized caller is rejected before the buttons module ever runs', async () => {
+  const tgCalls = []
+  const tg = async (method, params) => {
+    tgCalls.push({ method, params })
+    return {}
+  }
+  const buttonsLoader = () => {
+    throw new Error('should not be reached')
+  }
+  const cq = { id: 'cbq2', data: 'sys:start' }
+  const result = await handleUnrecognizedCallback(cq, { chatId: '1', buttonsLoader, tg, isAuthorized: false, enqueueMessage: () => {} })
+  assert.deepEqual(tgCalls, [{ method: 'answerCallbackQuery', params: { callback_query_id: 'cbq2', text: 'not authorized', show_alert: true } }])
+  assert.equal(result.routed, 'unauthorized')
+})
+
+test('handleUnrecognizedCallback: handled:true answers the callback query and never enqueues a message', async () => {
+  const tgCalls = []
+  const tg = async (method, params) => {
+    tgCalls.push({ method, params })
+    return {}
+  }
+  let enqueued = 0
+  const buttonsLoader = async () => ({ handleCallback: async () => ({ handled: true, answerText: 'Started' }) })
+  const cq = { id: 'cbq3', data: 'sys:start', from: { id: 1 }, message: { message_id: 5, chat: { id: '1' } } }
+  const result = await handleUnrecognizedCallback(cq, {
+    chatId: '1',
+    buttonsLoader,
+    tg,
+    isAuthorized: true,
+    enqueueMessage: () => enqueued++,
+  })
+  assert.deepEqual(tgCalls, [{ method: 'answerCallbackQuery', params: { callback_query_id: 'cbq3', text: 'Started' } }])
+  assert.equal(enqueued, 0, 'a handled callback must never fall through to handleMessage/claude -p')
+  assert.equal(result.routed, 'handled')
+})
+
+test('handleUnrecognizedCallback: handled:false falls back to queueing the tap as a synthetic text message', async () => {
+  const tgCalls = []
+  const tg = async (method, params) => {
+    tgCalls.push({ method, params })
+    return {}
+  }
+  const enqueuedMessages = []
+  const buttonsLoader = async () => ({ handleCallback: async () => ({ handled: false }) })
+  const cq = { id: 'cbq4', data: 'other:thing', from: { id: 1 }, message: { message_id: 5, chat: { id: '1' } } }
+  const result = await handleUnrecognizedCallback(cq, {
+    chatId: '1',
+    buttonsLoader,
+    tg,
+    isAuthorized: true,
+    enqueueMessage: msg => enqueuedMessages.push(msg),
+  })
+  assert.equal(tgCalls[0].method, 'answerCallbackQuery')
+  assert.equal(tgCalls[0].params.callback_query_id, 'cbq4')
+  assert.equal(enqueuedMessages.length, 1)
+  assert.equal(enqueuedMessages[0].chat.id, '1')
+  assert.match(enqueuedMessages[0].text, /other:thing/)
+  assert.equal(result.routed, 'fallback-message')
+})
+
+test('handleUnrecognizedCallback: a buttons module that throws is treated the same as handled:false', async () => {
+  const tgCalls = []
+  const tg = async (method, params) => {
+    tgCalls.push({ method, params })
+    return {}
+  }
+  const enqueuedMessages = []
+  const buttonsLoader = async () => ({
+    handleCallback: async () => {
+      throw new Error('boom')
+    },
+  })
+  const cq = { id: 'cbq5', data: 'sys:start', from: { id: 1 }, message: { message_id: 5, chat: { id: '1' } } }
+  const result = await handleUnrecognizedCallback(cq, {
+    chatId: '1',
+    buttonsLoader,
+    tg,
+    isAuthorized: true,
+    enqueueMessage: msg => enqueuedMessages.push(msg),
+    log: () => {},
+  })
+  assert.equal(enqueuedMessages.length, 1)
+  assert.equal(result.routed, 'fallback-message')
 })
 
 test('buildBotIdentity: extracts id and username from a getMe result', () => {
