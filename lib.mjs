@@ -691,8 +691,9 @@ export async function handleUnrecognizedCallback(cq, { chatId, buttonsLoader, tg
     return { routed: 'unauthorized' }
   }
   let result
+  let mod
   try {
-    const mod = await buttonsLoader()
+    mod = await buttonsLoader()
     result = (await mod.handleCallback?.(cq.data, { chatId, cq })) ?? { handled: false }
   } catch (e) {
     log?.('buttons module handleCallback failed', e.message)
@@ -700,6 +701,20 @@ export async function handleUnrecognizedCallback(cq, { chatId, buttonsLoader, tg
   }
   if (result.handled) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: result.answerText }).catch(() => {})
+    // buildKeyboard is optional - older/simpler buttons modules only implement handleCallback
+    let keyboard
+    try {
+      keyboard = await mod?.buildKeyboard?.({ chatId, cq })
+    } catch (e) {
+      log?.('buttons module buildKeyboard failed', e.message)
+    }
+    if (keyboard) {
+      await tg('editMessageReplyMarkup', {
+        chat_id: cq.message.chat.id,
+        message_id: cq.message.message_id,
+        reply_markup: keyboard,
+      }).catch(() => {})
+    }
     return { routed: 'handled', answerText: result.answerText }
   }
   await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'queued…' }).catch(() => {})
