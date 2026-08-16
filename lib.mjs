@@ -702,7 +702,12 @@ export async function handleUnrecognizedCallback(cq, { chatId, buttonsLoader, tg
   if (result.handled) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: result.answerText }).catch(() => {})
     // buildKeyboard is optional - older/simpler buttons modules only implement handleCallback
-    const keyboard = await mod?.buildKeyboard?.({ chatId, cq })
+    let keyboard
+    try {
+      keyboard = await mod?.buildKeyboard?.({ chatId, cq })
+    } catch (e) {
+      log?.('buttons module buildKeyboard failed', e.message)
+    }
     if (keyboard) {
       await tg('editMessageReplyMarkup', {
         chat_id: cq.message.chat.id,

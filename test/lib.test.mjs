@@ -1749,6 +1749,33 @@ test('handleUnrecognizedCallback: handled:true with a module that has no buildKe
   assert.equal(result.routed, 'handled')
 })
 
+test('handleUnrecognizedCallback: handled:true with a buildKeyboard that throws is swallowed, still returns handled and skips the refresh', async () => {
+  const tgCalls = []
+  const logs = []
+  const tg = async (method, params) => {
+    tgCalls.push({ method, params })
+    return {}
+  }
+  const buttonsLoader = async () => ({
+    handleCallback: async () => ({ handled: true, answerText: 'Started' }),
+    buildKeyboard: () => {
+      throw new Error('db is locked')
+    },
+  })
+  const cq = { id: 'cbq9', data: 'sys:start', from: { id: 1 }, message: { message_id: 42, chat: { id: '1' } } }
+  const result = await handleUnrecognizedCallback(cq, {
+    chatId: '1',
+    buttonsLoader,
+    tg,
+    isAuthorized: true,
+    enqueueMessage: () => {},
+    log: (...args) => logs.push(args),
+  })
+  assert.deepEqual(tgCalls, [{ method: 'answerCallbackQuery', params: { callback_query_id: 'cbq9', text: 'Started' } }])
+  assert.equal(result.routed, 'handled')
+  assert.match(logs[0]?.[0] ?? '', /buildKeyboard failed/)
+})
+
 test('buildBotIdentity: extracts id and username from a getMe result', () => {
   assert.deepEqual(buildBotIdentity({ id: 111, username: 'mybot', is_bot: true }), { id: '111', username: 'mybot' })
 })
