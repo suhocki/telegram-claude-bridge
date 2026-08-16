@@ -74,6 +74,7 @@ persistent session per Telegram chat.
    | `voiceReply` | `apiKeyPath`, `voiceId`, `modelId`, `maxTtsChars` for ElevenLabs TTS replies |
    | `claudeArgs` | Extra args appended to every `claude -p` invocation |
    | `appendSystemPrompt` | Extra system prompt appended for every message (the example file's default explains the channel-tag format, attachments, and the `ATTACH`/`REACT`/`CHECKIN` reply markers to Claude) |
+   | `buttonsModule` | Path (absolute, or relative to `cwd`) to a `.mjs` file exporting `buildKeyboard(context)` and `async handleCallback(callbackData, context)`, for a project's own inline-keyboard buttons. Loaded once and cached. Any tap whose `callback_data` isn't the bridge's own `cancel`/`join`/`continue` is delegated to `handleCallback`; if it returns `{ handled: false }`, the tap is queued as a synthetic text message instead of being silently dropped. If `buttonsModule` isn't configured at all, unrecognized taps are ignored exactly as before (no import attempted) |
 
    `.gitignore` already excludes `*.config.json` (except `*.config.example.json`) and `state/`, so real tokens never get committed.
 
