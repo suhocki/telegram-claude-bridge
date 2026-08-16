@@ -1586,6 +1586,7 @@ test('handleUnrecognizedCallback: no buttonsModule configured behaves exactly li
   assert.deepEqual(tgCalls, [{ method: 'answerCallbackQuery', params: { callback_query_id: 'cbq1' } }])
   assert.equal(enqueued, 0)
   assert.equal(result.routed, 'noop')
+  assert.equal(tgCalls.some(c => c.method === 'editMessageReplyMarkup'), false, 'no buttons module means no keyboard to refresh')
 })
 
 test('handleUnrecognizedCallback: unauthorized caller is rejected before the buttons module ever runs', async () => {
@@ -1601,6 +1602,7 @@ test('handleUnrecognizedCallback: unauthorized caller is rejected before the but
   const result = await handleUnrecognizedCallback(cq, { chatId: '1', buttonsLoader, tg, isAuthorized: false, enqueueMessage: () => {} })
   assert.deepEqual(tgCalls, [{ method: 'answerCallbackQuery', params: { callback_query_id: 'cbq2', text: 'not authorized', show_alert: true } }])
   assert.equal(result.routed, 'unauthorized')
+  assert.equal(tgCalls.some(c => c.method === 'editMessageReplyMarkup'), false, 'rejected before any module ran, so nothing to refresh')
 })
 
 test('handleUnrecognizedCallback: handled:true answers the callback query and never enqueues a message', async () => {
@@ -1631,7 +1633,12 @@ test('handleUnrecognizedCallback: handled:false falls back to queueing the tap a
     return {}
   }
   const enqueuedMessages = []
-  const buttonsLoader = async () => ({ handleCallback: async () => ({ handled: false }) })
+  const buttonsLoader = async () => ({
+    handleCallback: async () => ({ handled: false }),
+    buildKeyboard: () => {
+      throw new Error('should not be reached on the handled:false path')
+    },
+  })
   const cq = { id: 'cbq4', data: 'other:thing', from: { id: 1 }, message: { message_id: 5, chat: { id: '1' } } }
   const result = await handleUnrecognizedCallback(cq, {
     chatId: '1',
@@ -1646,6 +1653,7 @@ test('handleUnrecognizedCallback: handled:false falls back to queueing the tap a
   assert.equal(enqueuedMessages[0].chat.id, '1')
   assert.match(enqueuedMessages[0].text, /other:thing/)
   assert.equal(result.routed, 'fallback-message')
+  assert.equal(tgCalls.some(c => c.method === 'editMessageReplyMarkup'), false, 'handled:false must never trigger a keyboard refresh')
 })
 
 test('handleUnrecognizedCallback: a buttons module that throws is treated the same as handled:false', async () => {
@@ -1671,6 +1679,74 @@ test('handleUnrecognizedCallback: a buttons module that throws is treated the sa
   })
   assert.equal(enqueuedMessages.length, 1)
   assert.equal(result.routed, 'fallback-message')
+  assert.equal(tgCalls.some(c => c.method === 'editMessageReplyMarkup'), false, 'a thrown handleCallback is treated as handled:false, so no refresh either')
+})
+
+test('handleUnrecognizedCallback: handled:true with a buildKeyboard refreshes the tapped message keyboard via editMessageReplyMarkup', async () => {
+  const tgCalls = []
+  const tg = async (method, params) => {
+    tgCalls.push({ method, params })
+    return {}
+  }
+  const keyboard = { inline_keyboard: [[{ text: 'Start', callback_data: 'sys:start' }]] }
+  const buttonsLoader = async () => ({
+    handleCallback: async () => ({ handled: true, answerText: 'Stopped' }),
+    buildKeyboard: () => keyboard,
+  })
+  const cq = { id: 'cbq6', data: 'sys:stop', from: { id: 1 }, message: { message_id: 42, chat: { id: '1' } } }
+  const result = await handleUnrecognizedCallback(cq, {
+    chatId: '1',
+    buttonsLoader,
+    tg,
+    isAuthorized: true,
+    enqueueMessage: () => {},
+  })
+  assert.deepEqual(tgCalls, [
+    { method: 'answerCallbackQuery', params: { callback_query_id: 'cbq6', text: 'Stopped' } },
+    { method: 'editMessageReplyMarkup', params: { chat_id: '1', message_id: 42, reply_markup: keyboard } },
+  ])
+  assert.equal(result.routed, 'handled')
+})
+
+test('handleUnrecognizedCallback: handled:true with buildKeyboard returning null skips the keyboard refresh without erroring', async () => {
+  const tgCalls = []
+  const tg = async (method, params) => {
+    tgCalls.push({ method, params })
+    return {}
+  }
+  const buttonsLoader = async () => ({
+    handleCallback: async () => ({ handled: true, answerText: 'Started' }),
+    buildKeyboard: () => null,
+  })
+  const cq = { id: 'cbq7', data: 'sys:start', from: { id: 1 }, message: { message_id: 42, chat: { id: '1' } } }
+  const result = await handleUnrecognizedCallback(cq, {
+    chatId: '1',
+    buttonsLoader,
+    tg,
+    isAuthorized: true,
+    enqueueMessage: () => {},
+  })
+  assert.deepEqual(tgCalls, [{ method: 'answerCallbackQuery', params: { callback_query_id: 'cbq7', text: 'Started' } }])
+  assert.equal(result.routed, 'handled')
+})
+
+test('handleUnrecognizedCallback: handled:true with a module that has no buildKeyboard at all skips the refresh without throwing', async () => {
+  const tgCalls = []
+  const tg = async (method, params) => {
+    tgCalls.push({ method, params })
+    return {}
+  }
+  const buttonsLoader = async () => ({ handleCallback: async () => ({ handled: true, answerText: 'Started' }) })
+  const cq = { id: 'cbq8', data: 'sys:start', from: { id: 1 }, message: { message_id: 42, chat: { id: '1' } } }
+  const result = await handleUnrecognizedCallback(cq, {
+    chatId: '1',
+    buttonsLoader,
+    tg,
+    isAuthorized: true,
+    enqueueMessage: () => {},
+  })
+  assert.deepEqual(tgCalls, [{ method: 'answerCallbackQuery', params: { callback_query_id: 'cbq8', text: 'Started' } }])
+  assert.equal(result.routed, 'handled')
 })
 
 test('buildBotIdentity: extracts id and username from a getMe result', () => {
