@@ -137,9 +137,7 @@ export function extractReplyToMessageId(msg) {
   return msg?.reply_to_message?.message_id ?? null
 }
 
-// a joined batch's own reply target is whatever the run-starting message replied to (the deliberate reply,
-// if the user answered a question and then quickly sent more before tapping Join), falling back to the last
-// fragment's own reply target only when the run itself didn't start as a reply
+// the run-starting message's own reply wins over the last joined fragment's, so a deliberate reply isn't lost behind a later non-reply fragment
 export function resolveJoinedReplyToMessage(runReplyToMessage, lastFragmentReplyToMessage) {
   return runReplyToMessage ?? lastFragmentReplyToMessage ?? null
 }

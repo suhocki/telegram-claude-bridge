@@ -1143,8 +1143,8 @@ async function handleMessage(msg) {
       run.finished = true
     },
     promptText,
-    // the run-starting message's own reply target, so a later Join doesn't lose it behind a non-reply follow-up fragment (Wave 36 bugfix)
-    replyToMessage: msg.reply_to_message,
+    // built from meta, not msg directly, so a CONFIRMed run's Join still threads to the original message, not the CONFIRM reply
+    replyToMessage: meta.replyToMessageId != null ? { message_id: meta.replyToMessageId } : undefined,
     placeholderId: null,
     pending: [],
     finished: false,
@@ -1211,8 +1211,7 @@ async function handleMessage(msg) {
 
     const channelAttrs = {
       ...attachmentAttrs,
-      // meta.replyToMessageId (not msg directly): when a risky command was just CONFIRMed, meta describes
-      // the original stashed message, and its reply target must travel with it, not the CONFIRM message's own
+      // meta, not msg directly, so a CONFIRMed risky command keeps the original message's reply target
       reply_to_message_id: meta.replyToMessageId,
     }
 
@@ -1253,6 +1252,8 @@ async function handleContinue(chatId, pending) {
       run.finished = true
     },
     promptText: buildContinuePrompt(),
+    // a Continue tap has no originating message of its own to reply-thread from
+    replyToMessage: undefined,
     placeholderId: pending.placeholderId,
     pending: [],
     finished: false,
