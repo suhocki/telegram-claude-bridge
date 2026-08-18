@@ -33,6 +33,7 @@ import {
   buildRiskyCommandWarning,
   resolveMessageMeta,
   extractAttachment,
+  extractReplyToMessageId,
   buildAttachmentCaption,
   isServiceMessage,
   exceedsAttachmentLimit,
@@ -1204,10 +1205,15 @@ async function handleMessage(msg) {
         }
       : {}
 
+    const channelAttrs = {
+      ...attachmentAttrs,
+      reply_to_message_id: extractReplyToMessageId(msg),
+    }
+
     const prompt =
       command === 'compact'
         ? content
-        : buildChannelPrompt(chatId, meta.messageId, meta.user, meta.ts, promptText, attachmentAttrs)
+        : buildChannelPrompt(chatId, meta.messageId, meta.user, meta.ts, promptText, channelAttrs)
 
     return runClaudeTurn(chatId, run, {
       prompt,

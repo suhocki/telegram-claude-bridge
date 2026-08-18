@@ -133,6 +133,10 @@ export function extractAttachment(msg) {
   return null
 }
 
+export function extractReplyToMessageId(msg) {
+  return msg?.reply_to_message?.message_id ?? null
+}
+
 export function buildAttachmentCaption(attachment) {
   if (!attachment) return ''
   switch (attachment.kind) {
