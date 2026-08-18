@@ -19,6 +19,7 @@ import {
   resolveMessageMeta,
   extractAttachment,
   extractReplyToMessageId,
+  resolveJoinedReplyToMessage,
   buildAttachmentCaption,
   exceedsAttachmentLimit,
   isServiceMessage,
@@ -410,6 +411,21 @@ test('extractReplyToMessageId: a message with no reply_to_message returns null',
   assert.equal(extractReplyToMessageId(msg), null)
 })
 
+test('resolveJoinedReplyToMessage: the run-starting message\'s own reply target wins over the last fragment\'s (Wave 36 bugfix) — replying to answer a question, then quickly sending more before tapping Join, must not lose that reply', () => {
+  const runReply = { message_id: 42 }
+  const lastFragmentReply = { message_id: 7 }
+  assert.deepEqual(resolveJoinedReplyToMessage(runReply, lastFragmentReply), runReply)
+})
+
+test('resolveJoinedReplyToMessage: falls back to the last fragment\'s own reply target when the run itself did not start as a reply', () => {
+  const lastFragmentReply = { message_id: 7 }
+  assert.deepEqual(resolveJoinedReplyToMessage(undefined, lastFragmentReply), lastFragmentReply)
+})
+
+test('resolveJoinedReplyToMessage: neither the run nor the last fragment is a reply, returns null', () => {
+  assert.equal(resolveJoinedReplyToMessage(undefined, undefined), null)
+})
+
 test('extractAttachment: photo message picks the largest size (last in the array)', () => {
   const msg = { photo: [{ file_id: 'small', file_unique_id: 'u1', file_size: 100 }, { file_id: 'big', file_unique_id: 'u2', file_size: 5000 }] }
   assert.deepEqual(extractAttachment(msg), { kind: 'photo', fileId: 'big', size: 5000 })
@@ -692,30 +708,39 @@ test('evaluateRiskyGuard: a new risky message while one is pending replaces it w
 })
 
 test('resolveMessageMeta: confirmed action replays the stashed pending entry\'s attribution', () => {
-  const pendingEntry = { text: 'rm -rf /tmp/foo', messageId: 100, user: 'alice', ts: 'T1' }
-  const fallbackMeta = { messageId: 101, user: 'alice', ts: 'T1' }
+  const pendingEntry = { text: 'rm -rf /tmp/foo', messageId: 100, user: 'alice', ts: 'T1', replyToMessageId: null }
+  const fallbackMeta = { messageId: 101, user: 'alice', ts: 'T1', replyToMessageId: null }
   const decision = evaluateRiskyGuard('CONFIRM', pendingEntry)
   assert.deepEqual(resolveMessageMeta(decision, pendingEntry, fallbackMeta), {
     messageId: 100,
     user: 'alice',
     ts: 'T1',
+    replyToMessageId: null,
   })
 })
 
+test('resolveMessageMeta: confirmed action also replays the stashed pending entry\'s replyToMessageId, not the CONFIRM message\'s own (Wave 36 bugfix) — this is what a risky command reply was actually attached to, and the CONFIRM message often replies to the bot\'s own warning instead', () => {
+  const pendingEntry = { text: 'rm -rf /tmp/foo', messageId: 100, user: 'alice', ts: 'T1', replyToMessageId: 42 }
+  const fallbackMeta = { messageId: 101, user: 'alice', ts: 'T1', replyToMessageId: 999 }
+  const decision = evaluateRiskyGuard('CONFIRM', pendingEntry)
+  assert.equal(resolveMessageMeta(decision, pendingEntry, fallbackMeta).replyToMessageId, 42)
+})
+
 test('resolveMessageMeta: cancelling a pending risky command uses the new message\'s own attribution, not the stashed one', () => {
-  const pendingEntry = { text: 'rm -rf /tmp/foo', messageId: 100, user: 'alice', ts: 'T1' }
-  const fallbackMeta = { messageId: 101, user: 'bob', ts: 'T2' }
+  const pendingEntry = { text: 'rm -rf /tmp/foo', messageId: 100, user: 'alice', ts: 'T1', replyToMessageId: 42 }
+  const fallbackMeta = { messageId: 101, user: 'bob', ts: 'T2', replyToMessageId: 999 }
   const decision = evaluateRiskyGuard("what's 2+2?", pendingEntry)
   assert.equal(decision.action, 'proceed')
   assert.deepEqual(resolveMessageMeta(decision, pendingEntry, fallbackMeta), {
     messageId: 101,
     user: 'bob',
     ts: 'T2',
+    replyToMessageId: 999,
   })
 })
 
 test('resolveMessageMeta: no pending entry always uses the fallback attribution', () => {
-  const fallbackMeta = { messageId: 5, user: 'carol', ts: 'T3' }
+  const fallbackMeta = { messageId: 5, user: 'carol', ts: 'T3', replyToMessageId: null }
   const decision = evaluateRiskyGuard('hello there', undefined)
   assert.deepEqual(resolveMessageMeta(decision, undefined, fallbackMeta), fallbackMeta)
 })

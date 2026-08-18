@@ -137,6 +137,11 @@ export function extractReplyToMessageId(msg) {
   return msg?.reply_to_message?.message_id ?? null
 }
 
+// the run-starting message's own reply wins over the last joined fragment's, so a deliberate reply isn't lost behind a later non-reply fragment
+export function resolveJoinedReplyToMessage(runReplyToMessage, lastFragmentReplyToMessage) {
+  return runReplyToMessage ?? lastFragmentReplyToMessage ?? null
+}
+
 export function buildAttachmentCaption(attachment) {
   if (!attachment) return ''
   switch (attachment.kind) {
@@ -269,7 +274,7 @@ export function evaluateRiskyGuard(text, pending) {
 
 export function resolveMessageMeta(decision, pendingEntry, fallbackMeta) {
   const meta = decision.action === 'confirmed' && pendingEntry ? pendingEntry : fallbackMeta
-  return { messageId: meta.messageId, user: meta.user, ts: meta.ts }
+  return { messageId: meta.messageId, user: meta.user, ts: meta.ts, replyToMessageId: meta.replyToMessageId ?? null }
 }
 
 const ATTACH_LINE_RE = /^ATTACH:\s*(.+?)\s*$/

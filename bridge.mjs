@@ -34,6 +34,7 @@ import {
   resolveMessageMeta,
   extractAttachment,
   extractReplyToMessageId,
+  resolveJoinedReplyToMessage,
   buildAttachmentCaption,
   isServiceMessage,
   exceedsAttachmentLimit,
@@ -1108,6 +1109,7 @@ async function handleMessage(msg) {
     messageId: msg.message_id,
     user: sanitizeAttr(msg.from?.username ?? userId),
     ts: new Date((msg.date ?? 0) * 1000).toISOString(),
+    replyToMessageId: extractReplyToMessageId(msg),
   }
 
   let promptText = content ?? ''
@@ -1141,6 +1143,8 @@ async function handleMessage(msg) {
       run.finished = true
     },
     promptText,
+    // built from meta, not msg directly, so a CONFIRMed run's Join still threads to the original message, not the CONFIRM reply
+    replyToMessage: meta.replyToMessageId != null ? { message_id: meta.replyToMessageId } : undefined,
     placeholderId: null,
     pending: [],
     finished: false,
@@ -1207,7 +1211,8 @@ async function handleMessage(msg) {
 
     const channelAttrs = {
       ...attachmentAttrs,
-      reply_to_message_id: extractReplyToMessageId(msg),
+      // meta, not msg directly, so a CONFIRMed risky command keeps the original message's reply target
+      reply_to_message_id: meta.replyToMessageId,
     }
 
     const prompt =
@@ -1247,6 +1252,8 @@ async function handleContinue(chatId, pending) {
       run.finished = true
     },
     promptText: buildContinuePrompt(),
+    // a Continue tap has no originating message of its own to reply-thread from
+    replyToMessage: undefined,
     placeholderId: pending.placeholderId,
     pending: [],
     finished: false,
@@ -1311,8 +1318,9 @@ function handleJoinTap(chatId, run) {
 
   const joinedText = buildJoinedPromptText([run.promptText, ...batch.map(m => m.text ?? m.caption ?? '')])
   const last = batch[batch.length - 1]
+  const replyToMessage = resolveJoinedReplyToMessage(run.replyToMessage, last.reply_to_message)
   // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText
-  const syntheticMsg = { ...last, text: joinedText, entities: undefined, caption_entities: undefined, joinedFromActiveRun: true }
+  const syntheticMsg = { ...last, text: joinedText, entities: undefined, caption_entities: undefined, reply_to_message: replyToMessage, joinedFromActiveRun: true }
   chatQueue.enqueue(chatId, () => handleMessage(syntheticMsg)).catch(e => log('queued joined handleMessage rejected', e))
 }
 
