@@ -137,6 +137,13 @@ export function extractReplyToMessageId(msg) {
   return msg?.reply_to_message?.message_id ?? null
 }
 
+// a joined batch's own reply target is whatever the run-starting message replied to (the deliberate reply,
+// if the user answered a question and then quickly sent more before tapping Join), falling back to the last
+// fragment's own reply target only when the run itself didn't start as a reply
+export function resolveJoinedReplyToMessage(runReplyToMessage, lastFragmentReplyToMessage) {
+  return runReplyToMessage ?? lastFragmentReplyToMessage ?? null
+}
+
 export function buildAttachmentCaption(attachment) {
   if (!attachment) return ''
   switch (attachment.kind) {
@@ -269,7 +276,7 @@ export function evaluateRiskyGuard(text, pending) {
 
 export function resolveMessageMeta(decision, pendingEntry, fallbackMeta) {
   const meta = decision.action === 'confirmed' && pendingEntry ? pendingEntry : fallbackMeta
-  return { messageId: meta.messageId, user: meta.user, ts: meta.ts }
+  return { messageId: meta.messageId, user: meta.user, ts: meta.ts, replyToMessageId: meta.replyToMessageId ?? null }
 }
 
 const ATTACH_LINE_RE = /^ATTACH:\s*(.+?)\s*$/

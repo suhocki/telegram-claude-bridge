@@ -34,6 +34,7 @@ import {
   resolveMessageMeta,
   extractAttachment,
   extractReplyToMessageId,
+  resolveJoinedReplyToMessage,
   buildAttachmentCaption,
   isServiceMessage,
   exceedsAttachmentLimit,
@@ -1108,6 +1109,7 @@ async function handleMessage(msg) {
     messageId: msg.message_id,
     user: sanitizeAttr(msg.from?.username ?? userId),
     ts: new Date((msg.date ?? 0) * 1000).toISOString(),
+    replyToMessageId: extractReplyToMessageId(msg),
   }
 
   let promptText = content ?? ''
@@ -1141,6 +1143,8 @@ async function handleMessage(msg) {
       run.finished = true
     },
     promptText,
+    // the run-starting message's own reply target, so a later Join doesn't lose it behind a non-reply follow-up fragment (Wave 36 bugfix)
+    replyToMessage: msg.reply_to_message,
     placeholderId: null,
     pending: [],
     finished: false,
@@ -1207,7 +1211,9 @@ async function handleMessage(msg) {
 
     const channelAttrs = {
       ...attachmentAttrs,
-      reply_to_message_id: extractReplyToMessageId(msg),
+      // meta.replyToMessageId (not msg directly): when a risky command was just CONFIRMed, meta describes
+      // the original stashed message, and its reply target must travel with it, not the CONFIRM message's own
+      reply_to_message_id: meta.replyToMessageId,
     }
 
     const prompt =
@@ -1311,8 +1317,9 @@ function handleJoinTap(chatId, run) {
 
   const joinedText = buildJoinedPromptText([run.promptText, ...batch.map(m => m.text ?? m.caption ?? '')])
   const last = batch[batch.length - 1]
+  const replyToMessage = resolveJoinedReplyToMessage(run.replyToMessage, last.reply_to_message)
   // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText
-  const syntheticMsg = { ...last, text: joinedText, entities: undefined, caption_entities: undefined, joinedFromActiveRun: true }
+  const syntheticMsg = { ...last, text: joinedText, entities: undefined, caption_entities: undefined, reply_to_message: replyToMessage, joinedFromActiveRun: true }
   chatQueue.enqueue(chatId, () => handleMessage(syntheticMsg)).catch(e => log('queued joined handleMessage rejected', e))
 }
 
