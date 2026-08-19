@@ -47,6 +47,7 @@ import {
   buildReplyCallsFromChunks,
   buildReactionMarkerInstructions,
   buildCheckinMarkerInstructions,
+  buildNoReplyMarkerInstructions,
   buildCheckinFollowupPrompt,
   extractResponseMarkers,
   checkinChainExceeded,
@@ -357,6 +358,7 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
       buildOutboundAttachmentInstructions(),
       buildReactionMarkerInstructions(),
       buildCheckinMarkerInstructions(),
+      buildNoReplyMarkerInstructions(),
       appendSystemPrompt
     )
   )
@@ -936,17 +938,22 @@ async function runClaudeTurn(
       state.sessions[chatId] = newSession
       saveState(state)
     }
-    const { text: cleanedResult, attachPaths, reactionEmoji, checkin } = extractResponseMarkers(result.result)
+    const { text: cleanedResult, attachPaths, reactionEmoji, checkin, noReply } = extractResponseMarkers(result.result)
+    const costWarningCrossed = newSession && crossedCostThreshold(priorSession?.costUsd ?? 0, newSession.costUsd, costWarnUsd)
+    // NO_REPLY only ever suppresses an otherwise-empty, otherwise-unremarkable turn — an error, /compact, or a cost warning always still gets sent
+    const suppressReply = noReply && !cleanedResult && !result.is_error && !isCompact && !costWarningCrossed
     let replyText = result.is_error
       ? `⚠️ ${cleanedResult || 'error'}`
       : isCompact
         ? `✅ conversation compacted.${cleanedResult ? `\n\n${cleanedResult}` : ''}`
         : (cleanedResult || '(empty response)')
-    if (newSession && crossedCostThreshold(priorSession?.costUsd ?? 0, newSession.costUsd, costWarnUsd)) {
+    if (costWarningCrossed) {
       replyText = `${buildCostWarning(newSession.costUsd, costWarnUsd)}\n\n${replyText}`
     }
-    // new message, not an edit of the placeholder, so Telegram pushes a notification
-    botMessageIds.push(...(await sendReply(chatId, replyText, originMessageId)))
+    if (!suppressReply) {
+      // new message, not an edit of the placeholder, so Telegram pushes a notification
+      botMessageIds.push(...(await sendReply(chatId, replyText, originMessageId)))
+    }
     if (currentPlaceholderId != null) {
       // only untrack on a confirmed delete, so a failed one still gets the finally block's cleanup + a rewind retry
       try {
