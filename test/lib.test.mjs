@@ -43,6 +43,8 @@ import {
   buildCheckinMarkerInstructions,
   buildCheckinFollowupPrompt,
   extractResponseMarkers,
+  extractNoReplyMarker,
+  buildNoReplyMarkerInstructions,
   CHECKIN_MIN_MINUTES,
   CHECKIN_MAX_MINUTES,
   CHECKIN_MAX_CHAINED_HOPS,
@@ -1039,22 +1041,57 @@ test('buildContinuePrompt: marks the prompt as a resumed, non-user turn telling 
   assert.match(prompt, /interrupted/)
 })
 
-test('extractResponseMarkers: strips all three marker kinds regardless of order and returns their payloads', () => {
-  const result = extractResponseMarkers('done\nATTACH: /tmp/a.png\nREACT: 👍\nCHECKIN: 10 nudge the agent')
+test('extractNoReplyMarker: no marker leaves text untouched and noReply false', () => {
+  assert.deepEqual(extractNoReplyMarker('just a plain reply'), { text: 'just a plain reply', noReply: false })
+})
+
+test('extractNoReplyMarker: strips a bare NO_REPLY line and reports noReply true', () => {
+  assert.deepEqual(extractNoReplyMarker('some text\nNO_REPLY'), { text: 'some text', noReply: true })
+})
+
+test('extractNoReplyMarker: text that only contains the marker becomes an empty string', () => {
+  assert.deepEqual(extractNoReplyMarker('NO_REPLY'), { text: '', noReply: true })
+})
+
+test('extractNoReplyMarker: a line only matches NO_REPLY exactly, not mid-line mentions or trailing text on the same line', () => {
+  const result = extractNoReplyMarker('please NO_REPLY to this\nNO_REPLY now')
+  assert.equal(result.noReply, false)
+  assert.equal(result.text, 'please NO_REPLY to this\nNO_REPLY now')
+})
+
+test('extractNoReplyMarker: tolerates trailing whitespace on the marker line', () => {
+  assert.deepEqual(extractNoReplyMarker('done\nNO_REPLY   '), { text: 'done', noReply: true })
+})
+
+test('extractNoReplyMarker: null/undefined text yields noReply false and empty text', () => {
+  assert.deepEqual(extractNoReplyMarker(undefined), { text: '', noReply: false })
+  assert.deepEqual(extractNoReplyMarker(null), { text: '', noReply: false })
+})
+
+test('buildNoReplyMarkerInstructions: mentions the exact marker and warns against misuse', () => {
+  const instructions = buildNoReplyMarkerInstructions()
+  assert.match(instructions, /NO_REPLY/)
+  assert.match(instructions, /never use it to silently skip answering/)
+})
+
+test('extractResponseMarkers: strips all four marker kinds regardless of order and returns their payloads', () => {
+  const result = extractResponseMarkers('done\nATTACH: /tmp/a.png\nREACT: 👍\nCHECKIN: 10 nudge the agent\nNO_REPLY')
   assert.deepEqual(result, {
     text: 'done',
     attachPaths: ['/tmp/a.png'],
     reactionEmoji: '👍',
     checkin: { minutes: 10, instruction: 'nudge the agent' },
+    noReply: true,
   })
 })
 
-test('extractResponseMarkers: no markers leaves text untouched with empty/null payloads', () => {
+test('extractResponseMarkers: no markers leaves text untouched with empty/null/false payloads', () => {
   assert.deepEqual(extractResponseMarkers('just a plain reply'), {
     text: 'just a plain reply',
     attachPaths: [],
     reactionEmoji: null,
     checkin: null,
+    noReply: false,
   })
 })
 

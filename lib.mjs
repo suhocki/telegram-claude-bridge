@@ -432,11 +432,34 @@ export function buildContinuePrompt() {
   return '[CONTINUE — not a new message from the user. Your previous turn in this chat was interrupted by a user-requested cancel before it finished. Pick up where you left off and complete the original task; do not ask the user to repeat themselves.]'
 }
 
+const NO_REPLY_LINE_RE = /^NO_REPLY\s*$/
+
+export function extractNoReplyMarker(text) {
+  const lines = String(text ?? '').split('\n')
+  const kept = []
+  let noReply = false
+  for (const line of lines) {
+    if (NO_REPLY_LINE_RE.test(line)) noReply = true
+    else kept.push(line)
+  }
+  return { text: kept.join('\n').trimEnd(), noReply }
+}
+
+export function buildNoReplyMarkerInstructions() {
+  return [
+    "If you handled this turn entirely through some other visible side effect (e.g. you edited a different message to show the outcome) and there is nothing left to tell the user, you can suppress this turn's confirmation reply.",
+    'To do so, include one line anywhere in your final answer, in exactly this form:',
+    'NO_REPLY',
+    'This marker line is stripped. If nothing else is left in your answer, no message is sent for this turn at all (not even a placeholder) — only the receipt reaction is cleared. If any other text remains, it is still sent normally regardless of this marker. Only use this when the user already has clear confirmation another way; never use it to silently skip answering an actual question.',
+  ].join('\n')
+}
+
 export function extractResponseMarkers(text) {
   const { text: withoutAttach, paths: attachPaths } = extractAttachmentMarkers(text)
   const { text: withoutReact, emoji: reactionEmoji } = extractReactionMarker(withoutAttach)
-  const { text: cleanedText, checkin } = extractCheckinMarker(withoutReact)
-  return { text: cleanedText, attachPaths, reactionEmoji, checkin }
+  const { text: withoutCheckin, checkin } = extractCheckinMarker(withoutReact)
+  const { text: cleanedText, noReply } = extractNoReplyMarker(withoutCheckin)
+  return { text: cleanedText, attachPaths, reactionEmoji, checkin, noReply }
 }
 
 export function combineSystemPrompts(...parts) {
