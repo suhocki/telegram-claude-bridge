@@ -610,9 +610,12 @@ async function runCheckin(chatId) {
       state.sessions[chatId] = newSession
       saveState(state)
     }
-    const { text: cleanedResult, attachPaths, checkin: nextCheckin } = extractResponseMarkers(result.result)
+    const { text: cleanedResult, attachPaths, checkin: nextCheckin, noReply } = extractResponseMarkers(result.result)
+    const suppressReply = noReply && !cleanedResult && !result.is_error
     const replyText = result.is_error ? `⚠️ ${cleanedResult || 'check-in error'}` : cleanedResult || '(empty check-in response)'
-    trackBotMessages(chatId, await sendReply(chatId, replyText))
+    if (!suppressReply) {
+      trackBotMessages(chatId, await sendReply(chatId, replyText))
+    }
     if (!result.is_error) {
       for (const attachPath of attachPaths) {
         trackBotMessages(chatId, await sendAttachment(chatId, attachPath))
