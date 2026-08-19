@@ -604,15 +604,20 @@ async function runCheckin(chatId) {
   try {
     const { promise: checkinPromise } = runClaude(buildCheckinFollowupPrompt(pending.instruction), sessionId, undefined, state.authMode[chatId])
     const result = await checkinPromise
-    let newSession = normalizeSession(state.sessions[chatId])
+    const priorSession = normalizeSession(state.sessions[chatId])
+    let newSession = priorSession
     if (result.session_id) {
       newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
       state.sessions[chatId] = newSession
       saveState(state)
     }
     const { text: cleanedResult, attachPaths, checkin: nextCheckin, noReply } = extractResponseMarkers(result.result)
-    const suppressReply = noReply && !cleanedResult && !result.is_error
-    const replyText = result.is_error ? `⚠️ ${cleanedResult || 'check-in error'}` : cleanedResult || '(empty check-in response)'
+    const costWarningCrossed = newSession && crossedCostThreshold(priorSession?.costUsd ?? 0, newSession.costUsd, costWarnUsd)
+    const suppressReply = noReply && !cleanedResult && !result.is_error && !costWarningCrossed
+    let replyText = result.is_error ? `⚠️ ${cleanedResult || 'check-in error'}` : cleanedResult || '(empty check-in response)'
+    if (costWarningCrossed) {
+      replyText = `${buildCostWarning(newSession.costUsd, costWarnUsd)}\n\n${replyText}`
+    }
     if (!suppressReply) {
       trackBotMessages(chatId, await sendReply(chatId, replyText))
     }
