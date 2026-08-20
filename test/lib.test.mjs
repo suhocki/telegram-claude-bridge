@@ -29,6 +29,10 @@ import {
   MAX_ATTACHMENT_BYTES,
   extractAttachmentMarkers,
   pickOutboundSendMethod,
+  partitionAttachmentPaths,
+  chunkPaths,
+  buildMediaGroupPayload,
+  MEDIA_GROUP_MAX_ITEMS,
   assertSendablePath,
   buildOutboundAttachmentInstructions,
   combineSystemPrompts,
@@ -802,6 +806,47 @@ test('pickOutboundSendMethod: everything else sends as document', () => {
 
 test('pickOutboundSendMethod: no extension falls back to document', () => {
   assert.equal(pickOutboundSendMethod('/tmp/noext'), 'sendDocument')
+})
+
+test('partitionAttachmentPaths: splits photo extensions from everything else, preserving order', () => {
+  const result = partitionAttachmentPaths(['/a.png', '/report.pdf', '/b.jpg', '/notes.txt', '/c.gif'])
+  assert.deepEqual(result.photoPaths, ['/a.png', '/b.jpg', '/c.gif'])
+  assert.deepEqual(result.otherPaths, ['/report.pdf', '/notes.txt'])
+})
+
+test('partitionAttachmentPaths: empty input yields two empty arrays', () => {
+  assert.deepEqual(partitionAttachmentPaths([]), { photoPaths: [], otherPaths: [] })
+})
+
+test('chunkPaths: splits into groups of the default max size (10)', () => {
+  const paths = Array.from({ length: 23 }, (_, i) => `/p${i}.png`)
+  const chunks = chunkPaths(paths)
+  assert.equal(chunks.length, 3)
+  assert.equal(chunks[0].length, 10)
+  assert.equal(chunks[1].length, 10)
+  assert.equal(chunks[2].length, 3)
+  assert.equal(MEDIA_GROUP_MAX_ITEMS, 10)
+})
+
+test('chunkPaths: respects a custom chunk size', () => {
+  const chunks = chunkPaths(['/a', '/b', '/c', '/d', '/e'], 2)
+  assert.deepEqual(chunks, [['/a', '/b'], ['/c', '/d'], ['/e']])
+})
+
+test('chunkPaths: empty input yields no chunks', () => {
+  assert.deepEqual(chunkPaths([]), [])
+})
+
+test('buildMediaGroupPayload: assigns a distinct field per file and references it via attach://', () => {
+  const { fields, media } = buildMediaGroupPayload(['/a.png', '/b.jpg'])
+  assert.deepEqual(fields, [
+    { field: 'file0', filePath: '/a.png' },
+    { field: 'file1', filePath: '/b.jpg' },
+  ])
+  assert.deepEqual(media, [
+    { type: 'photo', media: 'attach://file0' },
+    { type: 'photo', media: 'attach://file1' },
+  ])
 })
 
 test('assertSendablePath: rejects an empty or non-string path', () => {
