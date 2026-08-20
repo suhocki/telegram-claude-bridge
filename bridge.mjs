@@ -106,6 +106,7 @@ import {
   buildRewindUnavailableNotice,
   createTelegramClient,
   fetchWithTimeout,
+  FetchTimeoutError,
 } from './lib.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml } from './markdown-html.mjs'
 import {
@@ -143,6 +144,11 @@ const API = `https://api.telegram.org/bot${botToken}`
 const GET_UPDATES_POLL_TIMEOUT_S = 30
 const GET_UPDATES_FETCH_TIMEOUT_MS = 50000
 const FILE_TRANSFER_TIMEOUT_MS = 60000
+// Uploading several full-size photos in one sendMediaGroup call can genuinely take
+// longer than a single-file send (Telegram processes/previews every item in the
+// album) — a per-file budget on top of the base timeout avoids a false-timeout
+// mid-upload, which used to cause a duplicate send (see sendAttachmentGroup).
+const MEDIA_GROUP_PER_FILE_TIMEOUT_MS = 15000
 const TTS_REQUEST_TIMEOUT_MS = 30000
 // Telegram rate-limits editMessageText to roughly 1/sec per chat; this stays safely under
 // that while still feeling "live" for the growing-text placeholder preview.
@@ -353,12 +359,25 @@ async function sendAttachmentGroup(chatId, filePaths, replyToMessageId) {
   if (replyToMessageId != null) {
     form.append('reply_parameters', JSON.stringify({ message_id: replyToMessageId, allow_sending_without_reply: true }))
   }
+  const timeoutMs = Math.max(FILE_TRANSFER_TIMEOUT_MS, filePaths.length * MEDIA_GROUP_PER_FILE_TIMEOUT_MS)
   try {
-    const res = await fetchWithTimeout(fetch, `${API}/sendMediaGroup`, { method: 'POST', body: form }, FILE_TRANSFER_TIMEOUT_MS)
+    const res = await fetchWithTimeout(fetch, `${API}/sendMediaGroup`, { method: 'POST', body: form }, timeoutMs)
     const data = await res.json()
     if (!data.ok) throw new Error(data.description)
     return (data.result || []).map((m) => m.message_id).filter((id) => id != null)
   } catch (e) {
+    if (e instanceof FetchTimeoutError) {
+      // Our client gave up waiting, but Telegram may well have already received and
+      // sent the album — retrying by resending every file individually risks (and,
+      // before this fix, caused in practice) a duplicate album + separate messages.
+      // Report the ambiguous outcome instead of guessing.
+      log('sendAttachmentGroup timed out, not retrying individually', filePaths.join(', '), e.message)
+      return sendReply(
+        chatId,
+        `⚠️ sending ${filePaths.length} photos as an album timed out after ${timeoutMs}ms — it may have gone through anyway, check the chat before resending.`,
+        replyToMessageId
+      ).catch(() => [])
+    }
     log('sendAttachmentGroup failed, falling back to individual sends', filePaths.join(', '), e.message)
     const ids = []
     for (const filePath of filePaths) {
