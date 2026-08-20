@@ -41,6 +41,9 @@ import {
   buildInboxFilename,
   MAX_ATTACHMENT_BYTES,
   pickOutboundSendMethod,
+  partitionAttachmentPaths,
+  chunkPaths,
+  buildMediaGroupPayload,
   assertSendablePath,
   buildOutboundAttachmentInstructions,
   combineSystemPrompts,
@@ -336,6 +339,69 @@ async function sendAttachment(chatId, filePath, replyToMessageId) {
   }
 }
 
+// Telegram albums (sendMediaGroup) only accept 2-10 items and only photo/video mixed
+// together — never mixed with documents — so this is only ever called with a
+// pre-partitioned, pre-chunked list of 2-10 photo paths from sendAttachments below.
+async function sendAttachmentGroup(chatId, filePaths, replyToMessageId) {
+  const { fields, media } = buildMediaGroupPayload(filePaths)
+  const form = new FormData()
+  form.append('chat_id', chatId)
+  form.append('media', JSON.stringify(media))
+  for (const { field, filePath } of fields) {
+    form.append(field, new Blob([readFileSync(filePath)]), path.basename(filePath))
+  }
+  if (replyToMessageId != null) {
+    form.append('reply_parameters', JSON.stringify({ message_id: replyToMessageId, allow_sending_without_reply: true }))
+  }
+  try {
+    const res = await fetchWithTimeout(fetch, `${API}/sendMediaGroup`, { method: 'POST', body: form }, FILE_TRANSFER_TIMEOUT_MS)
+    const data = await res.json()
+    if (!data.ok) throw new Error(data.description)
+    return (data.result || []).map((m) => m.message_id).filter((id) => id != null)
+  } catch (e) {
+    log('sendAttachmentGroup failed, falling back to individual sends', filePaths.join(', '), e.message)
+    const ids = []
+    for (const filePath of filePaths) {
+      ids.push(...(await sendAttachment(chatId, filePath, replyToMessageId)))
+    }
+    return ids
+  }
+}
+
+// Entry point for a batch of ATTACH paths from one reply: 2+ photos go out as a single
+// Telegram album instead of one message per photo, everything else (single photo,
+// documents) goes through the existing one-file-per-message sendAttachment.
+async function sendAttachments(chatId, filePaths, replyToMessageId) {
+  const ids = []
+  const validPaths = []
+  for (const filePath of filePaths) {
+    const guard = assertSendablePath(filePath, stateDir)
+    if (!guard.ok) {
+      log('refusing to send attachment', filePath, guard.error)
+      ids.push(...(await sendReply(chatId, `⚠️ ${guard.error}`, replyToMessageId).catch(() => [])))
+      continue
+    }
+    if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+      ids.push(...(await sendReply(chatId, `⚠️ attachment not found: ${filePath}`, replyToMessageId).catch(() => [])))
+      continue
+    }
+    validPaths.push(filePath)
+  }
+
+  const { photoPaths, otherPaths } = partitionAttachmentPaths(validPaths)
+  for (const chunk of chunkPaths(photoPaths)) {
+    if (chunk.length >= 2) {
+      ids.push(...(await sendAttachmentGroup(chatId, chunk, replyToMessageId)))
+    } else if (chunk.length === 1) {
+      ids.push(...(await sendAttachment(chatId, chunk[0], replyToMessageId)))
+    }
+  }
+  for (const filePath of otherPaths) {
+    ids.push(...(await sendAttachment(chatId, filePath, replyToMessageId)))
+  }
+  return ids
+}
+
 const CANCEL_SIGKILL_GRACE_MS = 3000
 
 // Returns { promise, cancel } instead of a plain Promise so a caller can kill the run
@@ -622,9 +688,7 @@ async function runCheckin(chatId) {
       trackBotMessages(chatId, await sendReply(chatId, replyText))
     }
     if (!result.is_error) {
-      for (const attachPath of attachPaths) {
-        trackBotMessages(chatId, await sendAttachment(chatId, attachPath))
-      }
+      trackBotMessages(chatId, await sendAttachments(chatId, attachPaths))
       if (nextCheckin) {
         const hopCount = (pending.hopCount ?? 1) + 1
         if (checkinChainExceeded(hopCount)) {
@@ -977,9 +1041,7 @@ async function runClaudeTurn(
       }
     }
     if (!result.is_error) {
-      for (const attachPath of attachPaths) {
-        botMessageIds.push(...(await sendAttachment(chatId, attachPath, originMessageId)))
-      }
+      botMessageIds.push(...(await sendAttachments(chatId, attachPaths, originMessageId)))
       if (isVoiceReplyEnabled(state.voiceReply, chatId)) {
         botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, originMessageId)))
       }

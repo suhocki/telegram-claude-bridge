@@ -299,6 +299,36 @@ export function pickOutboundSendMethod(filePath) {
   return OUTBOUND_PHOTO_EXTS.has(ext) ? 'sendPhoto' : 'sendDocument'
 }
 
+export const MEDIA_GROUP_MAX_ITEMS = 10
+
+export function partitionAttachmentPaths(filePaths) {
+  const photoPaths = []
+  const otherPaths = []
+  for (const filePath of filePaths) {
+    if (pickOutboundSendMethod(filePath) === 'sendPhoto') photoPaths.push(filePath)
+    else otherPaths.push(filePath)
+  }
+  return { photoPaths, otherPaths }
+}
+
+export function chunkPaths(paths, size = MEDIA_GROUP_MAX_ITEMS) {
+  const chunks = []
+  for (let i = 0; i < paths.length; i += size) {
+    chunks.push(paths.slice(i, i + size))
+  }
+  return chunks
+}
+
+// Pure description of a sendMediaGroup request body: which local file goes in which
+// multipart field, and the `media` array (referencing fields via `attach://<field>`)
+// Telegram expects as JSON. Keeping this separate from the actual fetch/FormData IO
+// (in bridge.mjs) makes the field-naming/JSON-shape logic testable without a network.
+export function buildMediaGroupPayload(filePaths) {
+  const fields = filePaths.map((filePath, i) => ({ field: `file${i}`, filePath }))
+  const media = fields.map(({ field }) => ({ type: 'photo', media: `attach://${field}` }))
+  return { fields, media }
+}
+
 export function assertSendablePath(filePath, protectedDir) {
   if (typeof filePath !== 'string' || !filePath.trim()) {
     return { ok: false, error: 'empty attachment path' }
@@ -320,7 +350,7 @@ export function buildOutboundAttachmentInstructions() {
     'To do so, end your final answer with one line per file, in exactly this form:',
     'ATTACH: /absolute/path/to/file',
     "Only reference files that already exist on disk and use absolute paths. Never reference a path inside the bridge's own state/session directory.",
-    'These marker lines are stripped from what the user sees on Telegram; each file is then sent to them as a photo (common image extensions) or a document (everything else).',
+    'These marker lines are stripped from what the user sees on Telegram; each file is then sent to them as a photo (common image extensions) or a document (everything else). Two or more photos are sent together as a single Telegram album (one message, swipeable) instead of one message per photo — nothing extra to do for that, just list multiple ATTACH lines.',
   ].join('\n')
 }
 
