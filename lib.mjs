@@ -918,9 +918,18 @@ export function pickNotifyText(argText, stdinText) {
 
 export const DEFAULT_TELEGRAM_API_TIMEOUT_MS = 15000
 
+// A distinct class (not a plain Error) so callers can tell "our client gave up waiting"
+// apart from "the request definitely failed" — the request may well have already
+// reached Telegram and succeeded server-side, so retrying on a timeout specifically
+// risks a duplicate send, unlike retrying on a connection-refused/DNS-style failure.
+export class FetchTimeoutError extends Error {}
+
 export function fetchWithTimeout(fetchImpl, url, options, timeoutMs) {
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(new Error(`fetch ${url} timed out after ${timeoutMs}ms`)), timeoutMs)
+  const timer = setTimeout(
+    () => controller.abort(new FetchTimeoutError(`fetch ${url} timed out after ${timeoutMs}ms`)),
+    timeoutMs
+  )
   return fetchImpl(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer))
 }
 

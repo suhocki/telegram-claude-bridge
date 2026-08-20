@@ -94,6 +94,7 @@ import {
   DEFAULT_TTS_VOICE_SETTINGS,
   createTelegramClient,
   fetchWithTimeout,
+  FetchTimeoutError,
   buildBotCommands,
   buildBotMenuCalls,
   TELEGRAM_COMMAND_SCOPES_TO_CLEAR,
@@ -1937,6 +1938,31 @@ test('fetchWithTimeout: aborts and rejects instead of hanging forever when fetch
   const start = Date.now()
   await assert.rejects(() => fetchWithTimeout(fetchImpl, 'https://example.com/x', {}, 20), /aborted/)
   assert.ok(Date.now() - start < 5000)
+})
+
+test('fetchWithTimeout: rejects with FetchTimeoutError on abort, matching how real fetch propagates the abort reason', async () => {
+  // Real fetch rejects with the exact object passed to controller.abort(reason) --
+  // this mock reflects that (unlike the generic-Error mock in the test above), so
+  // it actually exercises the instanceof check callers rely on to avoid
+  // resending an ambiguous request (see bridge.mjs's sendAttachmentGroup).
+  const fetchImpl = (url, options) =>
+    new Promise((resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(options.signal.reason))
+    })
+  await assert.rejects(
+    () => fetchWithTimeout(fetchImpl, 'https://example.com/x', {}, 20),
+    (err) => err instanceof FetchTimeoutError && /timed out after 20ms/.test(err.message)
+  )
+})
+
+test('fetchWithTimeout: a genuine fetch failure that is not a timeout is not wrapped as FetchTimeoutError', async () => {
+  const fetchImpl = async () => {
+    throw new Error('ECONNREFUSED')
+  }
+  await assert.rejects(
+    () => fetchWithTimeout(fetchImpl, 'https://example.com/x', {}, 1000),
+    (err) => !(err instanceof FetchTimeoutError) && err.message === 'ECONNREFUSED'
+  )
 })
 
 test('createTelegramClient: posts method+params and returns result on success', async () => {
