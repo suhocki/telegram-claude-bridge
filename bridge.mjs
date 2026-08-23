@@ -783,6 +783,18 @@ async function transcribeVoice(filePath) {
   }
 }
 
+async function downloadAttachmentLogged(attachment) {
+  const result = await downloadAttachment(attachment)
+  if (result.error) log('attachment download failed', attachment.kind, result.error)
+  return result
+}
+
+async function transcribeVoiceLogged(filePath) {
+  const transcription = await transcribeVoice(filePath)
+  if (transcription.error) log('voice transcription failed', transcription.error)
+  return transcription
+}
+
 async function sendVoiceReply(chatId, text, replyToMessageId) {
   const speechText = truncateForSpeech(buildSpeechText(text), voiceReplyConfig.maxTtsChars)
   if (!speechText) return []
@@ -1263,17 +1275,13 @@ async function handleMessage(msg) {
     }
 
     let attachmentResult = null
-    if (attachment) {
-      attachmentResult = await downloadAttachment(attachment)
-      if (attachmentResult.error) log('attachment download failed', attachment.kind, attachmentResult.error)
-    }
+    if (attachment) attachmentResult = await downloadAttachmentLogged(attachment)
 
     let transcriptionError = null
     if (attachment?.kind === 'voice' && attachmentResult?.path) {
-      const transcription = await transcribeVoice(attachmentResult.path)
+      const transcription = await transcribeVoiceLogged(attachmentResult.path)
       if (transcription.error) {
         transcriptionError = transcription.error
-        log('voice transcription failed', transcriptionError)
       } else {
         promptText = buildVoiceTranscriptText(transcription.text)
         run.promptText = promptText
@@ -1401,17 +1409,12 @@ async function addPendingJoinMessage(chatId, run, msg) {
     .catch(() => {})
 }
 
-// mirrors handleMessage's own download+transcribe steps for a single pending voice fragment
 async function transcribeJoinFragment(msg) {
   const attachment = extractAttachment(msg)
   if (attachment?.kind !== 'voice') return resolveJoinFragmentText(msg, null)
-  const downloaded = await downloadAttachment(attachment)
-  if (downloaded.error) {
-    log('join: voice attachment download failed', downloaded.error)
-    return resolveJoinFragmentText(msg, { error: downloaded.error })
-  }
-  const transcription = await transcribeVoice(downloaded.path)
-  if (transcription.error) log('join: voice transcription failed', transcription.error)
+  const downloaded = await downloadAttachmentLogged(attachment)
+  if (downloaded.error) return resolveJoinFragmentText(msg, { error: downloaded.error })
+  const transcription = await transcribeVoiceLogged(downloaded.path)
   return resolveJoinFragmentText(msg, transcription)
 }
 
@@ -1427,15 +1430,14 @@ function handleJoinTap(chatId, run) {
 
   run.cancel()
 
-  // enqueued synchronously (before transcription) so a message sent right after this tap can't jump ahead of the join in the per-chat queue
+  // enqueued synchronously, before transcription, so a message sent right after this tap can't jump ahead of the join in the per-chat queue
   chatQueue
     .enqueue(chatId, async () => {
-      const fragments = []
-      for (const m of batch) fragments.push(await transcribeJoinFragment(m))
+      const fragments = await Promise.all(batch.map(transcribeJoinFragment))
       const joinedText = buildJoinedPromptText([run.promptText, ...fragments])
       const last = batch[batch.length - 1]
       const replyToMessage = resolveJoinedReplyToMessage(run.replyToMessage, last.reply_to_message)
-      // entities/caption_entities are stale against joinedText, and voice/caption are cleared so the synthetic message isn't re-treated as its own attachment
+      // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText
       const syntheticMsg = {
         ...last,
         text: joinedText,

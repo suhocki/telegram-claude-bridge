@@ -548,24 +548,26 @@ export function buildJoinedPromptText(texts) {
   return texts.filter(t => t != null && t !== '').join('\n')
 }
 
-// non-voice attachments are still excluded (would silently drop them); voice's transcript is resolved separately via resolveJoinFragmentText
+// non-voice attachments are still excluded — folding them in would silently drop the attachment
 export function isJoinableMessage(msg, botUsername) {
   if (isServiceMessage(msg)) return false
   const attachment = extractAttachment(msg)
-  if (attachment) return attachment.kind === 'voice'
-  const text = msg?.text
-  if (typeof text !== 'string' || !text.trim()) return false
-  if (classifyCommand(text, botUsername) !== null) return false
-  if (parseVoiceToggleCommand(text, botUsername) !== null) return false
+  if (attachment && attachment.kind !== 'voice') return false
+  const text = attachment ? msg?.caption : msg?.text
+  const hasText = typeof text === 'string' && text.trim()
+  if (!attachment && !hasText) return false
+  if (hasText) {
+    if (classifyCommand(text, botUsername) !== null) return false
+    if (parseVoiceToggleCommand(text, botUsername) !== null) return false
+  }
   return true
 }
 
-// transcriptionOutcome is the { text } / { error } result of transcribeVoice, computed by the caller so this stays pure
 export function resolveJoinFragmentText(msg, transcriptionOutcome) {
   const attachment = extractAttachment(msg)
   if (attachment?.kind !== 'voice') return msg?.text ?? msg?.caption ?? ''
-  if (!transcriptionOutcome || transcriptionOutcome.error) return buildAttachmentCaption(attachment)
-  return buildVoiceTranscriptText(transcriptionOutcome.text)
+  if (transcriptionOutcome && !transcriptionOutcome.error) return buildVoiceTranscriptText(transcriptionOutcome.text)
+  return msg?.caption || buildAttachmentCaption(attachment)
 }
 
 export function buildContinueKeyboard(chatId) {
