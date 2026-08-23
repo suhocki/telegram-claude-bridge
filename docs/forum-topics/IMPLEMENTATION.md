@@ -6,6 +6,26 @@ Line numbers below are as of the audit done for this spec (main branch, commit
 voice-join PRs landed in the hours before this spec was written and are already
 reflected here, but anything merged after `8706b27` won't be.
 
+**Primary target, revised 2026-08-23**: a bot's own private chat with Threaded
+Mode enabled via BotFather, not a supergroup — see `OVERVIEW.md` for why. This
+changes nothing about the technical plan below: every mechanism here is keyed
+off per-message Bot API fields (`is_topic_message` / `message_thread_id`), which
+Telegram documents identically for both a private-chat forum and a
+supergroup forum. Supergroup-specific work is called out explicitly (§7) as
+deprioritized, not required for the primary path.
+
+**Verification note, unresolved**: a live `getChat` call against the exact chat
+this was tested in (via the bot's own token) returned no `is_forum` field, and
+the general Bot API reference documents `is_forum` as supergroup-only — while a
+separate, more specific Telegram doc (`core.telegram.org/api/forum`) explicitly
+describes "Threaded Mode" as a real, bot-enablable private-chat feature, and a
+third-party account independently describes using it for exactly this purpose
+(per-topic isolated LLM sessions). Before starting implementation: capture one
+real incoming update from an actual test topic (in whichever bot has Threaded
+Mode enabled) and confirm `is_topic_message`/`message_thread_id` are actually
+present on it — don't assume the mechanism from docs alone, since this feature
+is new enough that documentation may be incomplete or ahead of what's live.
+
 ## 1. The `threadKey` helper
 
 New pure function in `lib.mjs`, next to the other small pure helpers. **Gate on
@@ -196,15 +216,19 @@ than a loud error.
 not chatId — once sessions are per-topic, backups are automatically
 collision-free per topic too. No change needed there.
 
-## 7. Group authorization policy — deliberately unchanged
+## 7. Group authorization policy — deliberately unchanged, and out of scope for now
 
 `resolveGroupPolicy`/`groupsConfig` (`lib.mjs:668-670`) and
 `isSenderAllowedInGroup`/`shouldHandleGroupMessage` (`lib.mjs:672-675, 706-711`)
 stay keyed by plain chat id, applying one allow-list/mention-policy to the whole
-group regardless of topic. Per `OVERVIEW.md`, this is an explicit non-goal, not
-an oversight — if a per-topic override is wanted later, `resolveGroupPolicy`
-would need a `threadId` parameter and `groupsConfig` a nested shape, but nothing
-in this spec requires it.
+group regardless of topic. This only matters at all for the supergroup variant
+of this feature — the primary private-chat-forum target is still `chat.type ===
+'private'`, so its existing allow-list check is completely untouched by any of
+this. Per the user's 2026-08-23 priority call, supergroup support is
+deprioritized (not required, welcome if it falls out for free, not worth extra
+design/implementation effort) — if a per-topic override is wanted later,
+`resolveGroupPolicy` would need a `threadId` parameter and `groupsConfig` a
+nested shape, but nothing in the prioritized scope requires it.
 
 ## 8. Auto-rename feature
 
@@ -213,10 +237,11 @@ in this spec requires it.
 Track a new persisted flag, `state.topicNamed[threadKey] = true`, set once a
 topic has been renamed (or has permanently failed to rename — see below) so it's
 never attempted twice. Fire the rename attempt the first time
-`state.turns[threadKey].length` reaches 2 for a thread key that has a
-`message_thread_id` (i.e., only for actual forum topics — private chats and
-non-forum groups never trigger this) and isn't yet marked in
-`state.topicNamed`.
+`state.turns[threadKey].length` reaches 2 for a thread key that came from an
+actual topic (`is_topic_message: true` — whether that topic lives in a
+private-chat forum or a supergroup forum, same trigger either way) and isn't
+yet marked in `state.topicNamed`. A chat with no topic at all (private or
+group) never triggers this, same as today.
 
 ### The rename call itself
 
@@ -240,8 +265,12 @@ sanitizedTitle })`.
 
 ### Graceful degradation
 
-`editForumTopic` requires the bot to hold the `can_manage_topics` admin right.
-If the call fails:
+In a supergroup, `editForumTopic` requires the bot to hold the
+`can_manage_topics` admin right. Whether an equivalent permission gate exists
+for a bot renaming topics in its own private-chat forum is unverified (there's
+no "admin" concept in a private chat) — confirm hands-on before relying on
+this working unconditionally there. Either way, if the call fails for any
+reason:
 
 - Log once (`log('topic rename failed', ...)`), and set
   `state.topicNamed[threadKey] = true` anyway (or a distinct
@@ -308,8 +337,14 @@ Matches `OVERVIEW.md`'s phasing:
 2. Telegram-facing wiring: `message_thread_id` on outbound calls (§4) + reading
    the thread id off the Cancel/Join/Continue buttons' own message, no
    `callback_data` format change needed (§5). This is what makes the feature
-   actually work end-to-end. Manual QA per §9 belongs here.
+   actually work end-to-end — top priority, since it fixes an already-observed
+   live bug (replies landing in General instead of the topic they belong to).
+   Manual QA per §9 belongs here, run against the private-chat-forum bot first.
 3. Auto-rename (§8), as a self-contained follow-up once (1) and (2) are live.
+
+Not phased in at all right now: any supergroup-specific work (§7). Revisit only
+if it turns out to fall out for free alongside the above — not worth planning
+for up front per the user's priority call.
 
 Each phase goes through this repo's usual loop: implement with tests where
 feasible → PR → fresh-agent review → fix → re-review → self-merge.
