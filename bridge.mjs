@@ -25,6 +25,7 @@ import {
   threadKey,
   resolveThreadId,
   parseThreadKey,
+  threadIdParam,
   classifyCommand,
   buildChannelPrompt,
   normalizeSession,
@@ -273,7 +274,7 @@ async function sendTranscriptQuote(chatId, quoteHtml, replyToMessageId, threadId
     text: quoteHtml,
     parse_mode: 'HTML',
     reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true },
-    ...(threadId != null ? { message_thread_id: threadId } : {}),
+    ...threadIdParam(threadId),
   }
   try {
     const sent = await tg('sendMessage', params)
@@ -322,6 +323,10 @@ async function setReaction(chatId, messageId, emoji) {
   }
 }
 
+function appendThreadId(form, threadId) {
+  if (threadId != null) form.append('message_thread_id', threadId)
+}
+
 async function sendAttachment(chatId, filePath, replyToMessageId, threadId) {
   const guard = assertSendablePath(filePath, stateDir)
   if (!guard.ok) {
@@ -339,7 +344,7 @@ async function sendAttachment(chatId, filePath, replyToMessageId, threadId) {
   if (replyToMessageId != null) {
     form.append('reply_parameters', JSON.stringify({ message_id: replyToMessageId, allow_sending_without_reply: true }))
   }
-  if (threadId != null) form.append('message_thread_id', threadId)
+  appendThreadId(form, threadId)
   try {
     const res = await fetchWithTimeout(fetch, `${API}/${method}`, { method: 'POST', body: form }, FILE_TRANSFER_TIMEOUT_MS)
     const data = await res.json()
@@ -365,7 +370,7 @@ async function sendAttachmentGroup(chatId, filePaths, replyToMessageId, threadId
   if (replyToMessageId != null) {
     form.append('reply_parameters', JSON.stringify({ message_id: replyToMessageId, allow_sending_without_reply: true }))
   }
-  if (threadId != null) form.append('message_thread_id', threadId)
+  appendThreadId(form, threadId)
   const timeoutMs = Math.max(FILE_TRANSFER_TIMEOUT_MS, filePaths.length * MEDIA_GROUP_PER_FILE_TIMEOUT_MS)
   try {
     const res = await fetchWithTimeout(fetch, `${API}/sendMediaGroup`, { method: 'POST', body: form }, timeoutMs)
@@ -837,7 +842,7 @@ async function sendVoiceReply(chatId, text, replyToMessageId, threadId) {
     if (replyToMessageId != null) {
       form.append('reply_parameters', JSON.stringify({ message_id: replyToMessageId, allow_sending_without_reply: true }))
     }
-    if (threadId != null) form.append('message_thread_id', threadId)
+    appendThreadId(form, threadId)
     const sendRes = await fetchWithTimeout(fetch, `${API}/sendVoice`, { method: 'POST', body: form }, FILE_TRANSFER_TIMEOUT_MS)
     const data = await sendRes.json()
     if (!data.ok) throw new Error(data.description)
@@ -940,7 +945,7 @@ function isAuthorizedMessage(msg) {
 }
 
 async function withTypingIndicator(chatId, threadId, fn) {
-  const chatActionParams = { chat_id: chatId, action: 'typing', ...(threadId != null ? { message_thread_id: threadId } : {}) }
+  const chatActionParams = { chat_id: chatId, action: 'typing', ...threadIdParam(threadId) }
   let typingAlive = true
   const typing = setInterval(() => {
     if (typingAlive) tg('sendChatAction', chatActionParams).catch(() => {})
@@ -1002,7 +1007,7 @@ async function runClaudeTurn(
         chat_id: chatId,
         text: DEFAULT_WORKING_STATUS,
         ...(currentPlaceholderId != null ? { reply_parameters: { message_id: currentPlaceholderId, allow_sending_without_reply: true } } : {}),
-        ...(threadId != null ? { message_thread_id: threadId } : {}),
+        ...threadIdParam(threadId),
       })
         .then(sub => {
           controller.setMessageId(sub.message_id)
@@ -1476,8 +1481,7 @@ function handleJoinTap(chatId, key, run) {
       }
       const joinedText = buildJoinedPromptText([run.promptText, ...fragments])
       const replyToMessage = resolveJoinedReplyToMessage(run.replyToMessage, last.reply_to_message)
-      // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText;
-      // is_topic_message/message_thread_id survive the spread, so the joined message keeps its topic
+      // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText
       const syntheticMsg = {
         ...last,
         text: joinedText,
