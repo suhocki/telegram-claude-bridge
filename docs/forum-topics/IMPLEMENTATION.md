@@ -273,9 +273,8 @@ called, so it never adds latency to the reply the user is waiting for.
 
 Unit-testable (pure functions, `node --test` as usual):
 
-- `threadKey()` — bare chatId passthrough vs. composite form.
-- `parseCallbackData` with the new three-segment encoding, including the
-  empty-threadId-segment case.
+- `threadKey()` — bare chatId passthrough (no `is_topic_message`) vs. composite
+  form (`is_topic_message: true` with a thread id present).
 - A title-sanitizing helper for the auto-rename feature (strip/trim logic).
 
 Not unit-testable without a much larger test-harness investment (consistent
@@ -306,9 +305,10 @@ Matches `OVERVIEW.md`'s phasing:
    observable behavior change for existing chats; new behavior only reachable
    once `message_thread_id` starts appearing on incoming updates, which can't
    happen until phase 2 lands anyway — safe to land and merge on its own.
-2. Telegram-facing wiring: `message_thread_id` on outbound calls (§4) +
-   `callback_data` redesign (§5). This is what makes the feature actually work
-   end-to-end. Manual QA per §9 belongs here.
+2. Telegram-facing wiring: `message_thread_id` on outbound calls (§4) + reading
+   the thread id off the Cancel/Join/Continue buttons' own message, no
+   `callback_data` format change needed (§5). This is what makes the feature
+   actually work end-to-end. Manual QA per §9 belongs here.
 3. Auto-rename (§8), as a self-contained follow-up once (1) and (2) are live.
 
 Each phase goes through this repo's usual loop: implement with tests where
