@@ -75,6 +75,7 @@ import {
   buildContinuePrompt,
   buildJoinedPromptText,
   isJoinableMessage,
+  resolveJoinFragmentText,
   buildPlaceholderEditParams,
   buildWorkingPlaceholderParams,
   parseVoiceToggleCommand,
@@ -1400,7 +1401,22 @@ async function addPendingJoinMessage(chatId, run, msg) {
     .catch(() => {})
 }
 
-function handleJoinTap(chatId, run) {
+// downloads + transcribes a pending voice fragment for a Join, mirroring handleMessage's own
+// voice handling; kept out of resolveJoinFragmentText so that stays pure and testable
+async function transcribeJoinFragment(msg) {
+  const attachment = extractAttachment(msg)
+  if (attachment?.kind !== 'voice') return resolveJoinFragmentText(msg, null)
+  const downloaded = await downloadAttachment(attachment)
+  if (downloaded.error) {
+    log('join: voice attachment download failed', downloaded.error)
+    return resolveJoinFragmentText(msg, { error: downloaded.error })
+  }
+  const transcription = await transcribeVoice(downloaded.path)
+  if (transcription.error) log('join: voice transcription failed', transcription.error)
+  return resolveJoinFragmentText(msg, transcription)
+}
+
+async function handleJoinTap(chatId, run) {
   const batch = run.pending.splice(0, run.pending.length)
   if (!batch.length) return
   let consumed = consumedByJoin.get(chatId)
@@ -1412,11 +1428,22 @@ function handleJoinTap(chatId, run) {
 
   run.cancel()
 
-  const joinedText = buildJoinedPromptText([run.promptText, ...batch.map(m => m.text ?? m.caption ?? '')])
+  const fragments = await Promise.all(batch.map(transcribeJoinFragment))
+  const joinedText = buildJoinedPromptText([run.promptText, ...fragments])
   const last = batch[batch.length - 1]
   const replyToMessage = resolveJoinedReplyToMessage(run.replyToMessage, last.reply_to_message)
-  // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText
-  const syntheticMsg = { ...last, text: joinedText, entities: undefined, caption_entities: undefined, reply_to_message: replyToMessage, joinedFromActiveRun: true }
+  // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText;
+  // voice/caption are cleared so the synthetic message isn't re-treated as its own attachment
+  const syntheticMsg = {
+    ...last,
+    text: joinedText,
+    entities: undefined,
+    caption: undefined,
+    caption_entities: undefined,
+    voice: undefined,
+    reply_to_message: replyToMessage,
+    joinedFromActiveRun: true,
+  }
   chatQueue.enqueue(chatId, () => handleMessage(syntheticMsg)).catch(e => log('queued joined handleMessage rejected', e))
 }
 
@@ -1466,7 +1493,7 @@ async function handleCallbackQuery(cq) {
         await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'nothing to join' }).catch(() => {})
         return
       }
-      handleJoinTap(chatId, run)
+      handleJoinTap(chatId, run).catch(e => log('handleJoinTap failed', e.message))
       await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'joining…' }).catch(() => {})
       return
     }

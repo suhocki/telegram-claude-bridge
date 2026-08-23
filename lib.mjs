@@ -548,15 +548,27 @@ export function buildJoinedPromptText(texts) {
   return texts.filter(t => t != null && t !== '').join('\n')
 }
 
-// commands and attachments are excluded from v1 — folding those into a text prompt would be meaningless or silently drop the attachment
+// non-voice attachments (photo/document/audio/video) are still excluded — folding those into a
+// text prompt would be meaningless or silently drop the attachment. Voice is joinable: its
+// transcript is resolved separately at join time via resolveJoinFragmentText.
 export function isJoinableMessage(msg, botUsername) {
   if (isServiceMessage(msg)) return false
-  if (extractAttachment(msg)) return false
+  const attachment = extractAttachment(msg)
+  if (attachment) return attachment.kind === 'voice'
   const text = msg?.text
   if (typeof text !== 'string' || !text.trim()) return false
   if (classifyCommand(text, botUsername) !== null) return false
   if (parseVoiceToggleCommand(text, botUsername) !== null) return false
   return true
+}
+
+// transcriptionOutcome is null (not yet resolved) or the { text } / { error } result of
+// transcribeVoice, computed by the caller — this stays pure so it's unit-testable without I/O.
+export function resolveJoinFragmentText(msg, transcriptionOutcome) {
+  const attachment = extractAttachment(msg)
+  if (attachment?.kind !== 'voice') return msg?.text ?? msg?.caption ?? ''
+  if (!transcriptionOutcome || transcriptionOutcome.error) return buildAttachmentCaption(attachment)
+  return buildVoiceTranscriptText(transcriptionOutcome.text)
 }
 
 export function buildContinueKeyboard(chatId) {
