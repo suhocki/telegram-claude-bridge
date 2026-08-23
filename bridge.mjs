@@ -1245,7 +1245,7 @@ async function handleMessage(msg) {
 
   const workingStatus = nextWorkingPhrase()
   // every message the bot posts for this turn, so a later rewind past this turn can delete them
-  const botMessageIds = []
+  const botMessageIds = [...(msg.extraBotMessageIds ?? [])]
   const run = {
     cancel() {
       if (run.finished) return
@@ -1411,11 +1411,14 @@ async function addPendingJoinMessage(chatId, run, msg) {
 
 async function transcribeJoinFragment(msg) {
   const attachment = extractAttachment(msg)
-  if (attachment?.kind !== 'voice') return resolveJoinFragmentText(msg, null)
+  if (attachment?.kind !== 'voice') return { promptText: resolveJoinFragmentText(msg, null), transcript: null }
   const downloaded = await downloadAttachmentLogged(attachment)
-  if (downloaded.error) return resolveJoinFragmentText(msg, { error: downloaded.error })
+  if (downloaded.error) return { promptText: resolveJoinFragmentText(msg, { error: downloaded.error }), transcript: null }
   const transcription = await transcribeVoiceLogged(downloaded.path)
-  return resolveJoinFragmentText(msg, transcription)
+  return {
+    promptText: resolveJoinFragmentText(msg, transcription),
+    transcript: transcription.error ? null : transcription.text,
+  }
 }
 
 function handleJoinTap(chatId, run) {
@@ -1433,12 +1436,13 @@ function handleJoinTap(chatId, run) {
   // enqueued synchronously, before transcription, so a message sent right after this tap can't jump ahead of the join in the per-chat queue
   chatQueue
     .enqueue(chatId, async () => {
-      const attachments = batch.map(extractAttachment)
-      const fragments = await Promise.all(batch.map(transcribeJoinFragment))
-      const voiceFragments = fragments.filter((f, i) => attachments[i]?.kind === 'voice')
-      if (voiceFragments.length) {
-        const quoteHtml = buildTranscriptQuoteHtml(voiceFragments.join('\n\n'))
-        if (quoteHtml) await sendTranscriptQuote(chatId, quoteHtml, batch[batch.length - 1].message_id)
+      const results = await Promise.all(batch.map(transcribeJoinFragment))
+      const fragments = results.map(r => r.promptText)
+      const transcripts = results.map(r => r.transcript).filter(t => t != null && t.trim())
+      let quoteMessageId = null
+      if (transcripts.length) {
+        const quoteHtml = buildTranscriptQuoteHtml(transcripts.join('\n\n'))
+        if (quoteHtml) quoteMessageId = await sendTranscriptQuote(chatId, quoteHtml, batch[batch.length - 1].message_id)
       }
       const joinedText = buildJoinedPromptText([run.promptText, ...fragments])
       const last = batch[batch.length - 1]
@@ -1453,6 +1457,7 @@ function handleJoinTap(chatId, run) {
         voice: undefined,
         reply_to_message: replyToMessage,
         joinedFromActiveRun: true,
+        extraBotMessageIds: quoteMessageId != null ? [quoteMessageId] : [],
       }
       return handleMessage(syntheticMsg)
     })
