@@ -15,10 +15,11 @@ Every change (an issue from the GitHub tracker, a bugfix, whatever) goes through
 4. Fix what the review raises, push, re-review. Repeat steps 3-4 until only minor/nit-level
    comments remain (or none at all).
 5. Merge it yourself once review is clean (`gh pr merge --merge --delete-branch`) — the user
-   explicitly authorized self-merge in this repo (2026-07-29, reconfirmed 2026-07-30 and
-   2026-08-06/2026-08-16). This repo has no deploy-on-merge step of its own (a bot restart is a
-   separate manual `launchctl kickstart`), so merging doesn't push anything live by itself. If
-   ever in doubt whether this is still current, ask rather than assuming either way.
+   explicitly authorized self-merge in this repo (2026-07-29, reconfirmed 2026-07-30,
+   2026-08-06/2026-08-16, and again 2026-08-23 after Claude wrongly deferred the merge to the
+   user on PR #74 despite this section). Just do it — don't ask first, don't hand the PR back
+   for the user to press merge. This repo has no deploy-on-merge step of its own (a bot restart
+   is a separate manual `launchctl kickstart`), so merging doesn't push anything live by itself.
 
 ## Testing
 
