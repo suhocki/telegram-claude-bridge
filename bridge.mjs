@@ -1401,8 +1401,7 @@ async function addPendingJoinMessage(chatId, run, msg) {
     .catch(() => {})
 }
 
-// downloads + transcribes a pending voice fragment for a Join, mirroring handleMessage's own
-// voice handling; kept out of resolveJoinFragmentText so that stays pure and testable
+// mirrors handleMessage's own download+transcribe steps for a single pending voice fragment
 async function transcribeJoinFragment(msg) {
   const attachment = extractAttachment(msg)
   if (attachment?.kind !== 'voice') return resolveJoinFragmentText(msg, null)
@@ -1416,7 +1415,7 @@ async function transcribeJoinFragment(msg) {
   return resolveJoinFragmentText(msg, transcription)
 }
 
-async function handleJoinTap(chatId, run) {
+function handleJoinTap(chatId, run) {
   const batch = run.pending.splice(0, run.pending.length)
   if (!batch.length) return
   let consumed = consumedByJoin.get(chatId)
@@ -1428,23 +1427,28 @@ async function handleJoinTap(chatId, run) {
 
   run.cancel()
 
-  const fragments = await Promise.all(batch.map(transcribeJoinFragment))
-  const joinedText = buildJoinedPromptText([run.promptText, ...fragments])
-  const last = batch[batch.length - 1]
-  const replyToMessage = resolveJoinedReplyToMessage(run.replyToMessage, last.reply_to_message)
-  // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText;
-  // voice/caption are cleared so the synthetic message isn't re-treated as its own attachment
-  const syntheticMsg = {
-    ...last,
-    text: joinedText,
-    entities: undefined,
-    caption: undefined,
-    caption_entities: undefined,
-    voice: undefined,
-    reply_to_message: replyToMessage,
-    joinedFromActiveRun: true,
-  }
-  chatQueue.enqueue(chatId, () => handleMessage(syntheticMsg)).catch(e => log('queued joined handleMessage rejected', e))
+  // enqueued synchronously (before transcription) so a message sent right after this tap can't jump ahead of the join in the per-chat queue
+  chatQueue
+    .enqueue(chatId, async () => {
+      const fragments = []
+      for (const m of batch) fragments.push(await transcribeJoinFragment(m))
+      const joinedText = buildJoinedPromptText([run.promptText, ...fragments])
+      const last = batch[batch.length - 1]
+      const replyToMessage = resolveJoinedReplyToMessage(run.replyToMessage, last.reply_to_message)
+      // entities/caption_entities are stale against joinedText, and voice/caption are cleared so the synthetic message isn't re-treated as its own attachment
+      const syntheticMsg = {
+        ...last,
+        text: joinedText,
+        entities: undefined,
+        caption: undefined,
+        caption_entities: undefined,
+        voice: undefined,
+        reply_to_message: replyToMessage,
+        joinedFromActiveRun: true,
+      }
+      return handleMessage(syntheticMsg)
+    })
+    .catch(e => log('queued joined handleMessage rejected', e))
 }
 
 function runQueuedMessage(chatId, msg) {
@@ -1493,7 +1497,7 @@ async function handleCallbackQuery(cq) {
         await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'nothing to join' }).catch(() => {})
         return
       }
-      handleJoinTap(chatId, run).catch(e => log('handleJoinTap failed', e.message))
+      handleJoinTap(chatId, run)
       await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'joining…' }).catch(() => {})
       return
     }
