@@ -5,6 +5,29 @@ import { pathToFileURL } from 'node:url'
 import { markdownToTelegramHtml, htmlToPlainFallback, escapeHtml } from './markdown-html.mjs'
 import { truncateStatus } from './stream-progress.mjs'
 
+// Gate on is_topic_message, not merely message_thread_id presence: Telegram also stamps the latter on plain reply-chains in non-forum groups.
+export function threadKey(chatId, msg) {
+  return msg?.is_topic_message && msg.message_thread_id != null ? `${chatId}:${msg.message_thread_id}` : String(chatId)
+}
+
+// Same gate as threadKey, but for the Telegram API parameter rather than the state-lookup key — never conflate the two.
+export function resolveThreadId(msg) {
+  return msg?.is_topic_message && msg.message_thread_id != null ? msg.message_thread_id : null
+}
+
+// Spreadable into a params object: {} when there's no thread id to attach, so call sites don't each repeat the same null check.
+export function threadIdParam(threadId) {
+  return threadId != null ? { message_thread_id: threadId } : {}
+}
+
+// Inverse of threadKey, for the few call sites (check-in re-arm/run) that only have the key on hand.
+export function parseThreadKey(key) {
+  const s = String(key)
+  const idx = s.indexOf(':')
+  if (idx === -1) return { chatId: s, threadId: null }
+  return { chatId: s.slice(0, idx), threadId: Number(s.slice(idx + 1)) }
+}
+
 export function chunk(text, limit = 4096) {
   const out = []
   let rest = text
@@ -354,13 +377,15 @@ export function buildOutboundAttachmentInstructions() {
   ].join('\n')
 }
 
-export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, parseMode, editMessageId) {
+export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, parseMode, editMessageId, threadId) {
   return chunks.map((part, i) => {
     const params = { chat_id: chatId, text: part }
     if (parseMode) params.parse_mode = parseMode
     if (i === 0 && editMessageId != null) {
+      // editMessageText targets a message that already carries its own thread membership — no message_thread_id needed
       return { method: 'editMessageText', params: { ...params, message_id: editMessageId } }
     }
+    Object.assign(params, threadIdParam(threadId))
     if (i === 0 && replyToMessageId != null) {
       params.reply_parameters = { message_id: replyToMessageId, allow_sending_without_reply: true }
     }
@@ -591,8 +616,8 @@ export function buildPlaceholderEditParams(chatId, messageId, status, isHtml = f
   return keyboard ? { ...base, reply_markup: keyboard } : base
 }
 
-export function buildWorkingPlaceholderParams(chatId, text, replyToMessageId, keyboard) {
-  const base = { chat_id: chatId, text, reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true } }
+export function buildWorkingPlaceholderParams(chatId, text, replyToMessageId, keyboard, threadId) {
+  const base = { chat_id: chatId, text, reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true }, ...threadIdParam(threadId) }
   return keyboard ? { ...base, reply_markup: keyboard } : base
 }
 
@@ -747,6 +772,8 @@ export function buildButtonTapSyntheticMessage(cq, text) {
     from: cq?.from,
     date: cq?.message?.date ?? Math.floor(Date.now() / 1000),
     text,
+    is_topic_message: cq?.message?.is_topic_message,
+    message_thread_id: cq?.message?.message_thread_id,
   }
 }
 
