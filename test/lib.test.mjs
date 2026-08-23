@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import {
   chunk,
   sanitizeAttr,
+  threadKey,
+  resolveThreadId,
+  parseThreadKey,
   buildSendMessageCallsFromChunks,
   createKeyedQueue,
   classifyCommand,
@@ -123,6 +126,53 @@ function deferred() {
   })
   return { promise, resolve, reject }
 }
+
+test('threadKey: a plain message with no is_topic_message returns the bare chatId, byte-identical to a pre-forum-topics key', () => {
+  assert.equal(threadKey('123', { text: 'hi' }), '123')
+  assert.equal(threadKey('123', { message_thread_id: 99, text: 'hi' }), '123')
+})
+
+test('threadKey: is_topic_message true with a thread id returns the composite chatId:threadId form', () => {
+  assert.equal(threadKey('123', { is_topic_message: true, message_thread_id: 99 }), '123:99')
+})
+
+test('threadKey: is_topic_message true but no message_thread_id still falls back to the bare chatId', () => {
+  assert.equal(threadKey('123', { is_topic_message: true }), '123')
+})
+
+test('threadKey: is_topic_message false with a thread id present (a plain reply-thread in a non-forum group) is not mistaken for a topic', () => {
+  assert.equal(threadKey('123', { is_topic_message: false, message_thread_id: 99 }), '123')
+})
+
+test('threadKey: handles a missing/undefined msg the same as no is_topic_message', () => {
+  assert.equal(threadKey('123', undefined), '123')
+})
+
+test('resolveThreadId: returns the numeric thread id only when is_topic_message is true', () => {
+  assert.equal(resolveThreadId({ is_topic_message: true, message_thread_id: 99 }), 99)
+  assert.equal(resolveThreadId({ message_thread_id: 99 }), null)
+  assert.equal(resolveThreadId({ is_topic_message: true }), null)
+  assert.equal(resolveThreadId(undefined), null)
+})
+
+test('parseThreadKey: a bare chatId key has no thread id', () => {
+  assert.deepEqual(parseThreadKey('123'), { chatId: '123', threadId: null })
+})
+
+test('parseThreadKey: a composite key splits into chatId and numeric threadId', () => {
+  assert.deepEqual(parseThreadKey('123:99'), { chatId: '123', threadId: 99 })
+})
+
+test('parseThreadKey: round-trips with threadKey for both a plain chat and a topic message', () => {
+  const plainMsg = { text: 'hi' }
+  assert.deepEqual(parseThreadKey(threadKey('123', plainMsg)), { chatId: '123', threadId: null })
+  const topicMsg = { is_topic_message: true, message_thread_id: 99 }
+  assert.deepEqual(parseThreadKey(threadKey('123', topicMsg)), { chatId: '123', threadId: 99 })
+})
+
+test('parseThreadKey: a negative group chatId (no colon of its own) is not mistaken for the separator', () => {
+  assert.deepEqual(parseThreadKey('-1001234567890:5'), { chatId: '-1001234567890', threadId: 5 })
+})
 
 test('chunk: text under the limit is returned as a single part', () => {
   assert.deepEqual(chunk('hello', 10), ['hello'])
@@ -930,6 +980,22 @@ test('buildReplyCallsFromChunks: null editMessageId falls back to sendMessage wi
   ])
 })
 
+test('buildReplyCallsFromChunks: a threadId is attached to every sendMessage chunk so a multi-chunk reply lands fully inside the topic', () => {
+  const calls = buildReplyCallsFromChunks('123', ['first', 'second'], 99, 'HTML', undefined, 55)
+  assert.deepEqual(calls, [
+    {
+      method: 'sendMessage',
+      params: { chat_id: '123', text: 'first', parse_mode: 'HTML', message_thread_id: 55, reply_parameters: { message_id: 99, allow_sending_without_reply: true } },
+    },
+    { method: 'sendMessage', params: { chat_id: '123', text: 'second', parse_mode: 'HTML', message_thread_id: 55 } },
+  ])
+})
+
+test('buildReplyCallsFromChunks: a threadId is not attached to an editMessageText call — the target message already carries its own thread membership', () => {
+  const calls = buildReplyCallsFromChunks('123', ['only'], 99, 'HTML', 777, 55)
+  assert.deepEqual(calls, [{ method: 'editMessageText', params: { chat_id: '123', text: 'only', parse_mode: 'HTML', message_id: 777 } }])
+})
+
 test('extractReactionMarker: no marker leaves text untouched and emoji null', () => {
   assert.deepEqual(extractReactionMarker('just a plain reply'), { text: 'just a plain reply', emoji: null })
 })
@@ -1425,6 +1491,25 @@ test('buildWorkingPlaceholderParams: omits reply_markup entirely when no keyboar
   })
 })
 
+test('buildWorkingPlaceholderParams: a threadId sends the placeholder into the right forum topic', () => {
+  const keyboard = buildCancelKeyboard('123')
+  assert.deepEqual(buildWorkingPlaceholderParams('123', '⏳ working…', 42, keyboard, 55), {
+    chat_id: '123',
+    text: '⏳ working…',
+    reply_parameters: { message_id: 42, allow_sending_without_reply: true },
+    message_thread_id: 55,
+    reply_markup: keyboard,
+  })
+})
+
+test('buildWorkingPlaceholderParams: omits message_thread_id when no threadId is given', () => {
+  assert.deepEqual(buildWorkingPlaceholderParams('123', '⏳ working…', 42, null, null), {
+    chat_id: '123',
+    text: '⏳ working…',
+    reply_parameters: { message_id: 42, allow_sending_without_reply: true },
+  })
+})
+
 test('parseVoiceToggleCommand: recognizes /voice on and /voice off case-insensitively', () => {
   assert.equal(parseVoiceToggleCommand('/voice on'), 'on')
   assert.equal(parseVoiceToggleCommand('/voice OFF'), 'off')
@@ -1757,7 +1842,20 @@ test('buildButtonTapSyntheticMessage: builds a message-shaped object anchored to
     from: { id: 1 },
     date: 999,
     text: 'Button tapped: sys:start',
+    is_topic_message: undefined,
+    message_thread_id: undefined,
   })
+})
+
+test('buildButtonTapSyntheticMessage: carries the tapped message own thread membership so the custom-buttons-module fallback path keeps thread isolation', () => {
+  const cq = {
+    data: 'sys:start',
+    from: { id: 1 },
+    message: { message_id: 55, chat: { id: 123 }, date: 999, is_topic_message: true, message_thread_id: 77 },
+  }
+  const synthetic = buildButtonTapSyntheticMessage(cq, 'Button tapped: sys:start')
+  assert.equal(synthetic.is_topic_message, true)
+  assert.equal(synthetic.message_thread_id, 77)
 })
 
 test('handleUnrecognizedCallback: no buttonsModule configured behaves exactly like today - a plain answerCallbackQuery, no import, no message enqueued', async () => {

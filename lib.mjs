@@ -5,6 +5,30 @@ import { pathToFileURL } from 'node:url'
 import { markdownToTelegramHtml, htmlToPlainFallback, escapeHtml } from './markdown-html.mjs'
 import { truncateStatus } from './stream-progress.mjs'
 
+// Gate on is_topic_message, not merely on message_thread_id being present: Telegram also
+// stamps message_thread_id on ordinary reply-chains in regular, non-forum groups (generic
+// "message threads", unrelated to Forum Topics). Keying on presence alone would silently
+// fork an existing group's session the first time someone replies to a message in it.
+export function threadKey(chatId, msg) {
+  return msg?.is_topic_message && msg.message_thread_id != null ? `${chatId}:${msg.message_thread_id}` : String(chatId)
+}
+
+// The raw numeric thread id to hand to an outbound Telegram call, or null when the message
+// isn't actually part of a forum topic (same gate as threadKey, kept separate on purpose:
+// this is a Telegram API parameter, threadKey is a state-lookup key — never conflate them).
+export function resolveThreadId(msg) {
+  return msg?.is_topic_message && msg.message_thread_id != null ? msg.message_thread_id : null
+}
+
+// Inverse of threadKey: recovers {chatId, threadId} from a bare key string, for the few call
+// sites (check-in re-arm on boot, the running check-in itself) that only have the key on hand.
+export function parseThreadKey(key) {
+  const s = String(key)
+  const idx = s.indexOf(':')
+  if (idx === -1) return { chatId: s, threadId: null }
+  return { chatId: s.slice(0, idx), threadId: Number(s.slice(idx + 1)) }
+}
+
 export function chunk(text, limit = 4096) {
   const out = []
   let rest = text
@@ -354,13 +378,15 @@ export function buildOutboundAttachmentInstructions() {
   ].join('\n')
 }
 
-export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, parseMode, editMessageId) {
+export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, parseMode, editMessageId, threadId) {
   return chunks.map((part, i) => {
     const params = { chat_id: chatId, text: part }
     if (parseMode) params.parse_mode = parseMode
     if (i === 0 && editMessageId != null) {
+      // editMessageText targets a message that already carries its own thread membership — no message_thread_id needed
       return { method: 'editMessageText', params: { ...params, message_id: editMessageId } }
     }
+    if (threadId != null) params.message_thread_id = threadId
     if (i === 0 && replyToMessageId != null) {
       params.reply_parameters = { message_id: replyToMessageId, allow_sending_without_reply: true }
     }
@@ -591,9 +617,10 @@ export function buildPlaceholderEditParams(chatId, messageId, status, isHtml = f
   return keyboard ? { ...base, reply_markup: keyboard } : base
 }
 
-export function buildWorkingPlaceholderParams(chatId, text, replyToMessageId, keyboard) {
+export function buildWorkingPlaceholderParams(chatId, text, replyToMessageId, keyboard, threadId) {
   const base = { chat_id: chatId, text, reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true } }
-  return keyboard ? { ...base, reply_markup: keyboard } : base
+  const withThread = threadId != null ? { ...base, message_thread_id: threadId } : base
+  return keyboard ? { ...withThread, reply_markup: keyboard } : withThread
 }
 
 const VOICE_TOGGLE_ARG_RE = /^\s+(on|off)$/i
@@ -747,6 +774,8 @@ export function buildButtonTapSyntheticMessage(cq, text) {
     from: cq?.from,
     date: cq?.message?.date ?? Math.floor(Date.now() / 1000),
     text,
+    is_topic_message: cq?.message?.is_topic_message,
+    message_thread_id: cq?.message?.message_thread_id,
   }
 }
 

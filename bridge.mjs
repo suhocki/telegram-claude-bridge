@@ -22,6 +22,9 @@ import { fileURLToPath } from 'node:url'
 import {
   sanitizeAttr,
   createKeyedQueue,
+  threadKey,
+  resolveThreadId,
+  parseThreadKey,
   classifyCommand,
   buildChannelPrompt,
   normalizeSession,
@@ -238,17 +241,17 @@ const consumedByJoin = new Map()
 const joinKeyboardQueue = createKeyedQueue()
 // setTimeout handles can't be persisted, so state.pendingCheckins is re-armed into this Map on every boot.
 const checkinTimers = new Map()
-for (const chatId of Object.keys(state.pendingCheckins)) armCheckinTimer(chatId)
+for (const key of Object.keys(state.pendingCheckins)) armCheckinTimer(key)
 
 const tg = createTelegramClient(API)
 const loadButtonsModule = createButtonsModuleLoader(resolveButtonsModulePath(buttonsModule, cwd))
 
 // Returns the ids of the messages it created (empty for an edit of an existing one) so a
 // caller can remember them and delete them later on a rewind.
-async function sendReply(chatId, text, replyToMessageId, editMessageId) {
+async function sendReply(chatId, text, replyToMessageId, editMessageId, threadId) {
   const chunks = markdownToTelegramHtmlChunks(text || '(empty response)')
   const sentIds = []
-  for (const { method, params } of buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, 'HTML', editMessageId)) {
+  for (const { method, params } of buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, 'HTML', editMessageId, threadId)) {
     let sent = null
     try {
       sent = await tg(method, params)
@@ -264,12 +267,13 @@ async function sendReply(chatId, text, replyToMessageId, editMessageId) {
 
 // Used when there's no placeholder to freeze into a quote (it never got sent, or freezing it
 // failed) — the transcript still has to reach the chat somehow.
-async function sendTranscriptQuote(chatId, quoteHtml, replyToMessageId) {
+async function sendTranscriptQuote(chatId, quoteHtml, replyToMessageId, threadId) {
   const params = {
     chat_id: chatId,
     text: quoteHtml,
     parse_mode: 'HTML',
     reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true },
+    ...(threadId != null ? { message_thread_id: threadId } : {}),
   }
   try {
     const sent = await tg('sendMessage', params)
@@ -287,7 +291,7 @@ async function sendTranscriptQuote(chatId, quoteHtml, replyToMessageId) {
   }
 }
 
-async function freezePlaceholderAsTranscript(chatId, placeholderId, quoteHtml, workingStatus, cancelKeyboard) {
+async function freezePlaceholderAsTranscript(chatId, placeholderId, quoteHtml, workingStatus, cancelKeyboard, threadId) {
   const freezeParams = buildPlaceholderEditParams(chatId, placeholderId, quoteHtml, true)
   try {
     await tg('editMessageText', freezeParams)
@@ -302,7 +306,7 @@ async function freezePlaceholderAsTranscript(chatId, placeholderId, quoteHtml, w
     }
   }
   try {
-    const progressPlaceholder = await tg('sendMessage', buildWorkingPlaceholderParams(chatId, workingStatus, placeholderId, cancelKeyboard))
+    const progressPlaceholder = await tg('sendMessage', buildWorkingPlaceholderParams(chatId, workingStatus, placeholderId, cancelKeyboard, threadId))
     return { frozen: true, placeholderId: progressPlaceholder.message_id }
   } catch (e) {
     log('failed to send post-transcript working placeholder', e.message)
@@ -318,14 +322,14 @@ async function setReaction(chatId, messageId, emoji) {
   }
 }
 
-async function sendAttachment(chatId, filePath, replyToMessageId) {
+async function sendAttachment(chatId, filePath, replyToMessageId, threadId) {
   const guard = assertSendablePath(filePath, stateDir)
   if (!guard.ok) {
     log('refusing to send attachment', filePath, guard.error)
-    return sendReply(chatId, `⚠️ ${guard.error}`, replyToMessageId).catch(() => [])
+    return sendReply(chatId, `⚠️ ${guard.error}`, replyToMessageId, null, threadId).catch(() => [])
   }
   if (!existsSync(filePath) || !statSync(filePath).isFile()) {
-    return sendReply(chatId, `⚠️ attachment not found: ${filePath}`, replyToMessageId).catch(() => [])
+    return sendReply(chatId, `⚠️ attachment not found: ${filePath}`, replyToMessageId, null, threadId).catch(() => [])
   }
   const method = pickOutboundSendMethod(filePath)
   const field = method === 'sendPhoto' ? 'photo' : 'document'
@@ -335,6 +339,7 @@ async function sendAttachment(chatId, filePath, replyToMessageId) {
   if (replyToMessageId != null) {
     form.append('reply_parameters', JSON.stringify({ message_id: replyToMessageId, allow_sending_without_reply: true }))
   }
+  if (threadId != null) form.append('message_thread_id', threadId)
   try {
     const res = await fetchWithTimeout(fetch, `${API}/${method}`, { method: 'POST', body: form }, FILE_TRANSFER_TIMEOUT_MS)
     const data = await res.json()
@@ -342,14 +347,14 @@ async function sendAttachment(chatId, filePath, replyToMessageId) {
     return data.result?.message_id != null ? [data.result.message_id] : []
   } catch (e) {
     log('sendAttachment failed', filePath, e.message)
-    return sendReply(chatId, `⚠️ failed to send attachment ${path.basename(filePath)}: ${e.message}`, replyToMessageId).catch(() => [])
+    return sendReply(chatId, `⚠️ failed to send attachment ${path.basename(filePath)}: ${e.message}`, replyToMessageId, null, threadId).catch(() => [])
   }
 }
 
 // Telegram albums (sendMediaGroup) only accept 2-10 items and only photo/video mixed
 // together — never mixed with documents — so this is only ever called with a
 // pre-partitioned, pre-chunked list of 2-10 photo paths from sendAttachments below.
-async function sendAttachmentGroup(chatId, filePaths, replyToMessageId) {
+async function sendAttachmentGroup(chatId, filePaths, replyToMessageId, threadId) {
   const { fields, media } = buildMediaGroupPayload(filePaths)
   const form = new FormData()
   form.append('chat_id', chatId)
@@ -360,6 +365,7 @@ async function sendAttachmentGroup(chatId, filePaths, replyToMessageId) {
   if (replyToMessageId != null) {
     form.append('reply_parameters', JSON.stringify({ message_id: replyToMessageId, allow_sending_without_reply: true }))
   }
+  if (threadId != null) form.append('message_thread_id', threadId)
   const timeoutMs = Math.max(FILE_TRANSFER_TIMEOUT_MS, filePaths.length * MEDIA_GROUP_PER_FILE_TIMEOUT_MS)
   try {
     const res = await fetchWithTimeout(fetch, `${API}/sendMediaGroup`, { method: 'POST', body: form }, timeoutMs)
@@ -376,13 +382,15 @@ async function sendAttachmentGroup(chatId, filePaths, replyToMessageId) {
       return sendReply(
         chatId,
         `⚠️ sending ${filePaths.length} photos as an album timed out after ${timeoutMs}ms — it may have gone through anyway, check the chat before resending.`,
-        replyToMessageId
+        replyToMessageId,
+        null,
+        threadId
       ).catch(() => [])
     }
     log('sendAttachmentGroup failed, falling back to individual sends', filePaths.join(', '), e.message)
     const ids = []
     for (const filePath of filePaths) {
-      ids.push(...(await sendAttachment(chatId, filePath, replyToMessageId)))
+      ids.push(...(await sendAttachment(chatId, filePath, replyToMessageId, threadId)))
     }
     return ids
   }
@@ -391,18 +399,18 @@ async function sendAttachmentGroup(chatId, filePaths, replyToMessageId) {
 // Entry point for a batch of ATTACH paths from one reply: 2+ photos go out as a single
 // Telegram album instead of one message per photo, everything else (single photo,
 // documents) goes through the existing one-file-per-message sendAttachment.
-async function sendAttachments(chatId, filePaths, replyToMessageId) {
+async function sendAttachments(chatId, filePaths, replyToMessageId, threadId) {
   const ids = []
   const validPaths = []
   for (const filePath of filePaths) {
     const guard = assertSendablePath(filePath, stateDir)
     if (!guard.ok) {
       log('refusing to send attachment', filePath, guard.error)
-      ids.push(...(await sendReply(chatId, `⚠️ ${guard.error}`, replyToMessageId).catch(() => [])))
+      ids.push(...(await sendReply(chatId, `⚠️ ${guard.error}`, replyToMessageId, null, threadId).catch(() => [])))
       continue
     }
     if (!existsSync(filePath) || !statSync(filePath).isFile()) {
-      ids.push(...(await sendReply(chatId, `⚠️ attachment not found: ${filePath}`, replyToMessageId).catch(() => [])))
+      ids.push(...(await sendReply(chatId, `⚠️ attachment not found: ${filePath}`, replyToMessageId, null, threadId).catch(() => [])))
       continue
     }
     validPaths.push(filePath)
@@ -411,13 +419,13 @@ async function sendAttachments(chatId, filePaths, replyToMessageId) {
   const { photoPaths, otherPaths } = partitionAttachmentPaths(validPaths)
   for (const chunk of chunkPaths(photoPaths)) {
     if (chunk.length >= 2) {
-      ids.push(...(await sendAttachmentGroup(chatId, chunk, replyToMessageId)))
+      ids.push(...(await sendAttachmentGroup(chatId, chunk, replyToMessageId, threadId)))
     } else if (chunk.length === 1) {
-      ids.push(...(await sendAttachment(chatId, chunk[0], replyToMessageId)))
+      ids.push(...(await sendAttachment(chatId, chunk[0], replyToMessageId, threadId)))
     }
   }
   for (const filePath of otherPaths) {
-    ids.push(...(await sendAttachment(chatId, filePath, replyToMessageId)))
+    ids.push(...(await sendAttachment(chatId, filePath, replyToMessageId, threadId)))
   }
   return ids
 }
@@ -577,10 +585,10 @@ function rewindTranscript(sessionId, anchorMessageId) {
 }
 
 // clears a stale Continue button/state left over from a turn a newer message/reset/rewind has since superseded
-async function clearPendingContinue(chatId) {
-  const pending = state.pendingContinue[chatId]
+async function clearPendingContinue(chatId, key) {
+  const pending = state.pendingContinue[key]
   if (!pending) return
-  delete state.pendingContinue[chatId]
+  delete state.pendingContinue[key]
   if (pending.placeholderId != null) {
     // an abandoned Continue offer needs a terminal marker, not just a stripped keyboard, or the last progress line looks like a stuck bot
     const text = [...(pending.checkpointHistory ?? []), '🚫 cancelled'].join('\n')
@@ -588,8 +596,8 @@ async function clearPendingContinue(chatId) {
   }
 }
 
-function trackBotMessages(chatId, ids) {
-  const turnList = state.turns[String(chatId)]
+function trackBotMessages(key, ids) {
+  const turnList = state.turns[String(key)]
   if (!turnList?.length || !ids?.length) return
   const lastTurn = turnList[turnList.length - 1]
   lastTurn.botMessageIds = [...(lastTurn.botMessageIds ?? []), ...ids]
@@ -609,92 +617,94 @@ async function deleteBotMessages(chatId, ids) {
 // messages, then run the edited text as if it had just arrived.
 async function handleEditedMessage(msg) {
   const chatId = String(msg.chat.id)
-  const turnList = state.turns[chatId] ?? []
+  const key = threadKey(chatId, msg)
+  const turnList = state.turns[key] ?? []
   const turnIndex = findTurnIndexByMessageId(turnList, msg.message_id)
   const turn = turnIndex >= 0 ? turnList[turnIndex] : null
-  const session = normalizeSession(state.sessions[chatId])
+  const session = normalizeSession(state.sessions[key])
 
   if (!turn || !session || turn.sessionId !== session.id) {
-    log('rewind unavailable', chatId, msg.message_id, 'turn=', Boolean(turn), 'session=', session?.id)
-    await sendReply(chatId, buildRewindUnavailableNotice(), msg.message_id).catch(() => {})
+    log('rewind unavailable', key, msg.message_id, 'turn=', Boolean(turn), 'session=', session?.id)
+    await sendReply(chatId, buildRewindUnavailableNotice(), msg.message_id, null, resolveThreadId(msg)).catch(() => {})
     return
   }
 
   const rewind = rewindTranscript(session.id, turn.anchorMessageId ?? turn.userMessageId)
   if (!rewind.ok) {
-    log('rewind failed', chatId, rewind.error)
-    await sendReply(chatId, buildRewindUnavailableNotice(), msg.message_id).catch(() => {})
+    log('rewind failed', key, rewind.error)
+    await sendReply(chatId, buildRewindUnavailableNotice(), msg.message_id, null, resolveThreadId(msg)).catch(() => {})
     return
   }
   log('rewound session', session.id, 'dropped', rewind.removed, 'transcript lines from turn', turnIndex)
 
   await deleteBotMessages(chatId, collectBotMessageIdsFrom(turnList, turnIndex))
-  state.turns[chatId] = turnList.slice(0, turnIndex)
-  if (!rewind.sessionUsable) delete state.sessions[chatId]
-  delete state.pendingRisky[chatId]
-  cancelCheckin(chatId)
-  await clearPendingContinue(chatId)
+  state.turns[key] = turnList.slice(0, turnIndex)
+  if (!rewind.sessionUsable) delete state.sessions[key]
+  delete state.pendingRisky[key]
+  cancelCheckin(key)
+  await clearPendingContinue(chatId, key)
   saveState(state)
 
   await handleMessage(msg)
 }
 
-function clearCheckinTimer(chatId) {
-  const handle = checkinTimers.get(chatId)
+function clearCheckinTimer(key) {
+  const handle = checkinTimers.get(key)
   if (handle) {
     clearTimeout(handle)
-    checkinTimers.delete(chatId)
+    checkinTimers.delete(key)
   }
 }
 
-function armCheckinTimer(chatId) {
-  clearCheckinTimer(chatId)
-  const pending = state.pendingCheckins[chatId]
+function armCheckinTimer(key) {
+  clearCheckinTimer(key)
+  const pending = state.pendingCheckins[key]
   if (!pending) return
   const delayMs = Math.max(0, pending.dueAt - Date.now())
   const handle = setTimeout(() => {
-    checkinTimers.delete(chatId)
-    chatQueue.enqueue(chatId, () => runCheckin(chatId)).catch(e => log('queued runCheckin rejected', e))
+    checkinTimers.delete(key)
+    chatQueue.enqueue(key, () => runCheckin(key)).catch(e => log('queued runCheckin rejected', e))
   }, delayMs)
-  checkinTimers.set(chatId, handle)
+  checkinTimers.set(key, handle)
 }
 
-function scheduleCheckin(chatId, sessionId, checkin, hopCount = 1) {
-  state.pendingCheckins[chatId] = {
+function scheduleCheckin(key, sessionId, checkin, hopCount = 1) {
+  state.pendingCheckins[key] = {
     dueAt: Date.now() + checkin.minutes * 60_000,
     instruction: checkin.instruction,
     sessionId,
     hopCount,
   }
   saveState(state)
-  armCheckinTimer(chatId)
+  armCheckinTimer(key)
 }
 
-function cancelCheckin(chatId) {
-  clearCheckinTimer(chatId)
-  delete state.pendingCheckins[chatId]
+function cancelCheckin(key) {
+  clearCheckinTimer(key)
+  delete state.pendingCheckins[key]
 }
 
-async function runCheckin(chatId) {
-  const pending = state.pendingCheckins[chatId]
+async function runCheckin(key) {
+  const pending = state.pendingCheckins[key]
   if (!pending) return
-  delete state.pendingCheckins[chatId]
+  delete state.pendingCheckins[key]
   saveState(state)
 
-  const sessionId = normalizeSession(state.sessions[chatId])?.id ?? pending.sessionId
+  const { chatId, threadId } = parseThreadKey(key)
+  const sessionId = normalizeSession(state.sessions[key])?.id ?? pending.sessionId
   if (!sessionId) {
-    log('skipping check-in, no session to resume', chatId)
+    log('skipping check-in, no session to resume', key)
     return
   }
 
   try {
-    const { promise: checkinPromise } = runClaude(buildCheckinFollowupPrompt(pending.instruction), sessionId, undefined, state.authMode[chatId])
+    const { promise: checkinPromise } = runClaude(buildCheckinFollowupPrompt(pending.instruction), sessionId, undefined, state.authMode[key])
     const result = await checkinPromise
-    const priorSession = normalizeSession(state.sessions[chatId])
+    const priorSession = normalizeSession(state.sessions[key])
     let newSession = priorSession
     if (result.session_id) {
       newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
-      state.sessions[chatId] = newSession
+      state.sessions[key] = newSession
       saveState(state)
     }
     const { text: cleanedResult, attachPaths, checkin: nextCheckin, noReply } = extractResponseMarkers(result.result)
@@ -705,25 +715,28 @@ async function runCheckin(chatId) {
       replyText = `${buildCostWarning(newSession.costUsd, costWarnUsd)}\n\n${replyText}`
     }
     if (!suppressReply) {
-      trackBotMessages(chatId, await sendReply(chatId, replyText))
+      trackBotMessages(key, await sendReply(chatId, replyText, null, null, threadId))
     }
     if (!result.is_error) {
-      trackBotMessages(chatId, await sendAttachments(chatId, attachPaths))
+      trackBotMessages(key, await sendAttachments(chatId, attachPaths, null, threadId))
       if (nextCheckin) {
         const hopCount = (pending.hopCount ?? 1) + 1
         if (checkinChainExceeded(hopCount)) {
           await sendReply(
             chatId,
-            `⚠️ automated check-in chain hit its ${CHECKIN_MAX_CHAINED_HOPS}-hop safety cap — stopping here, please check on it yourself.`
+            `⚠️ automated check-in chain hit its ${CHECKIN_MAX_CHAINED_HOPS}-hop safety cap — stopping here, please check on it yourself.`,
+            null,
+            null,
+            threadId
           )
         } else {
-          scheduleCheckin(chatId, newSession?.id ?? sessionId, nextCheckin, hopCount)
+          scheduleCheckin(key, newSession?.id ?? sessionId, nextCheckin, hopCount)
         }
       }
     }
   } catch (e) {
-    log('runCheckin failed', chatId, e.message)
-    await sendReply(chatId, `⚠️ automated check-in failed: ${e.message}`).catch(() => {})
+    log('runCheckin failed', key, e.message)
+    await sendReply(chatId, `⚠️ automated check-in failed: ${e.message}`, null, null, threadId).catch(() => {})
   }
 }
 
@@ -795,7 +808,7 @@ async function transcribeVoiceLogged(filePath) {
   return transcription
 }
 
-async function sendVoiceReply(chatId, text, replyToMessageId) {
+async function sendVoiceReply(chatId, text, replyToMessageId, threadId) {
   const speechText = truncateForSpeech(buildSpeechText(text), voiceReplyConfig.maxTtsChars)
   if (!speechText) return []
   let apiKey
@@ -824,6 +837,7 @@ async function sendVoiceReply(chatId, text, replyToMessageId) {
     if (replyToMessageId != null) {
       form.append('reply_parameters', JSON.stringify({ message_id: replyToMessageId, allow_sending_without_reply: true }))
     }
+    if (threadId != null) form.append('message_thread_id', threadId)
     const sendRes = await fetchWithTimeout(fetch, `${API}/sendVoice`, { method: 'POST', body: form }, FILE_TRANSFER_TIMEOUT_MS)
     const data = await sendRes.json()
     if (!data.ok) throw new Error(data.description)
@@ -925,12 +939,13 @@ function isAuthorizedMessage(msg) {
   return true
 }
 
-async function withTypingIndicator(chatId, fn) {
+async function withTypingIndicator(chatId, threadId, fn) {
+  const chatActionParams = { chat_id: chatId, action: 'typing', ...(threadId != null ? { message_thread_id: threadId } : {}) }
   let typingAlive = true
   const typing = setInterval(() => {
-    if (typingAlive) tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {})
+    if (typingAlive) tg('sendChatAction', chatActionParams).catch(() => {})
   }, 4000)
-  await tg('sendChatAction', { chat_id: chatId, action: 'typing' }).catch(() => {})
+  await tg('sendChatAction', chatActionParams).catch(() => {})
   try {
     return await fn()
   } finally {
@@ -942,6 +957,8 @@ async function withTypingIndicator(chatId, fn) {
 // shared by handleMessage and handleContinue, so both get the same progress/cancel/continue plumbing; run is a pre-created, pre-registered activeRuns entry (see addPendingJoinMessage/handleJoinTap)
 async function runClaudeTurn(
   chatId,
+  key,
+  threadId,
   run,
   {
     prompt,
@@ -985,6 +1002,7 @@ async function runClaudeTurn(
         chat_id: chatId,
         text: DEFAULT_WORKING_STATUS,
         ...(currentPlaceholderId != null ? { reply_parameters: { message_id: currentPlaceholderId, allow_sending_without_reply: true } } : {}),
+        ...(threadId != null ? { message_thread_id: threadId } : {}),
       })
         .then(sub => {
           controller.setMessageId(sub.message_id)
@@ -1039,7 +1057,7 @@ async function runClaudeTurn(
     let newSession = priorSession
     if (result.session_id) {
       newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
-      state.sessions[chatId] = newSession
+      state.sessions[key] = newSession
       saveState(state)
     }
     const { text: cleanedResult, attachPaths, reactionEmoji, checkin, noReply } = extractResponseMarkers(result.result)
@@ -1056,7 +1074,7 @@ async function runClaudeTurn(
     }
     if (!suppressReply) {
       // new message, not an edit of the placeholder, so Telegram pushes a notification
-      botMessageIds.push(...(await sendReply(chatId, replyText, originMessageId)))
+      botMessageIds.push(...(await sendReply(chatId, replyText, originMessageId, null, threadId)))
     }
     if (currentPlaceholderId != null) {
       // only untrack on a confirmed delete, so a failed one still gets the finally block's cleanup + a rewind retry
@@ -1073,11 +1091,11 @@ async function runClaudeTurn(
       }
     }
     if (!result.is_error) {
-      botMessageIds.push(...(await sendAttachments(chatId, attachPaths, originMessageId)))
-      if (isVoiceReplyEnabled(state.voiceReply, chatId)) {
-        botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, originMessageId)))
+      botMessageIds.push(...(await sendAttachments(chatId, attachPaths, originMessageId, threadId)))
+      if (isVoiceReplyEnabled(state.voiceReply, key)) {
+        botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, originMessageId, threadId)))
       }
-      if (checkin) scheduleCheckin(chatId, newSession?.id ?? sessionId, checkin)
+      if (checkin) scheduleCheckin(key, newSession?.id ?? sessionId, checkin)
     }
     if (originMessageId != null) {
       // on success, clear the 👀 receipt reaction instead of swapping in a 👍 — the reply itself is the signal now
@@ -1090,15 +1108,15 @@ async function runClaudeTurn(
       // a hard kill often beats runClaude's own capturedSessionId to any stream line, so fall back to the resume id this turn was already given
       const resumableSessionId = e.cancelledResult?.session_id ?? getSessionId() ?? sessionId
       if (resumableSessionId) {
-        state.sessions[chatId] = accumulateSessionCost(
-          normalizeSession(state.sessions[chatId]),
+        state.sessions[key] = accumulateSessionCost(
+          normalizeSession(state.sessions[key]),
           resumableSessionId,
           e.cancelledResult?.total_cost_usd ?? 0
         )
       }
       if (currentPlaceholderId != null && resumableSessionId) {
         // leave the placeholder's progress log as-is — only the button changes, so Continue can pick up on the same visible history
-        state.pendingContinue[chatId] = {
+        state.pendingContinue[key] = {
           sessionId: resumableSessionId,
           placeholderId: currentPlaceholderId,
           isCompact,
@@ -1112,17 +1130,17 @@ async function runClaudeTurn(
           reply_markup: buildContinueKeyboard(chatId),
         }).catch(() => {})
       } else {
-        botMessageIds.push(...(await sendReply(chatId, '🚫 cancelled', originMessageId, currentPlaceholderId).catch(() => [])))
+        botMessageIds.push(...(await sendReply(chatId, '🚫 cancelled', originMessageId, currentPlaceholderId, threadId).catch(() => [])))
       }
       saveState(state)
     } else {
       log('handleMessage error', e)
-      botMessageIds.push(...(await sendReply(chatId, `⚠️ bridge error: ${e.message}`, originMessageId, currentPlaceholderId).catch(() => [])))
+      botMessageIds.push(...(await sendReply(chatId, `⚠️ bridge error: ${e.message}`, originMessageId, currentPlaceholderId, threadId).catch(() => [])))
       if (originMessageId != null) await setReaction(chatId, originMessageId, ERROR_REACTION)
     }
   } finally {
     rootController.statusUpdater.stop()
-    activeRuns.delete(chatId)
+    activeRuns.delete(key)
     // avoid wiping the Continue button the catch block may have just attached above
     if (currentPlaceholderId != null && !continueArmed) {
       await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: currentPlaceholderId, reply_markup: { inline_keyboard: [] } }).catch(() => {})
@@ -1144,47 +1162,51 @@ async function runClaudeTurn(
     subagentControllers.clear()
   }
 
-  return { cancelled, botMessageIds, sessionId: normalizeSession(state.sessions[chatId])?.id ?? null }
+  return { cancelled, botMessageIds, sessionId: normalizeSession(state.sessions[key])?.id ?? null }
 }
 
 async function handleMessage(msg) {
   const chatId = String(msg.chat.id)
+  const key = threadKey(chatId, msg)
+  const threadId = resolveThreadId(msg)
   const userId = String(msg.from?.id ?? '')
   if (!isAuthorizedMessage(msg)) return
   // every authorized message supersedes whatever interrupted turn a Continue button was still offering, regardless of which branch below handles it
-  await clearPendingContinue(chatId)
+  await clearPendingContinue(chatId, key)
   const attachment = extractAttachment(msg)
   const content = msg.text ?? msg.caption ?? null
   if (content == null && !attachment) {
     if (isServiceMessage(msg)) {
-      log('ignoring service message', chatId, msg.message_id)
+      log('ignoring service message', key, msg.message_id)
       return
     }
     await sendReply(
       chatId,
       '(bridge v1 only handles text messages, photos, documents, voice, audio, and video — this message type is not supported yet)',
-      msg.message_id
+      msg.message_id,
+      null,
+      threadId
     ).catch(() => {})
     return
   }
 
   const voiceToggle = parseVoiceToggleCommand(content, botIdentity.username)
   if (voiceToggle) {
-    state.voiceReply = setVoiceReplyPreference(state.voiceReply, chatId, voiceToggle === 'on')
+    state.voiceReply = setVoiceReplyPreference(state.voiceReply, key, voiceToggle === 'on')
     saveState(state)
-    await sendReply(chatId, buildVoiceToggleReply(voiceToggle === 'on'), msg.message_id).catch(() => {})
+    await sendReply(chatId, buildVoiceToggleReply(voiceToggle === 'on'), msg.message_id, null, threadId).catch(() => {})
     return
   }
 
   const command = classifyCommand(content, botIdentity.username)
 
   if (command === 'reset') {
-    delete state.sessions[chatId]
-    delete state.pendingRisky[chatId]
-    delete state.turns[chatId]
-    cancelCheckin(chatId)
+    delete state.sessions[key]
+    delete state.pendingRisky[key]
+    delete state.turns[key]
+    cancelCheckin(key)
     saveState(state)
-    await sendReply(chatId, '🔄 session reset — the next message starts a brand new conversation.', msg.message_id).catch(() => {})
+    await sendReply(chatId, '🔄 session reset — the next message starts a brand new conversation.', msg.message_id, null, threadId).catch(() => {})
     return
   }
 
@@ -1192,25 +1214,25 @@ async function handleMessage(msg) {
     const mode = command === 'authSubscription' ? 'subscription' : 'apikey'
     const unmet = AUTH_MODE_PREREQUISITES[mode]()
     if (unmet) {
-      await sendReply(chatId, unmet, msg.message_id).catch(() => {})
+      await sendReply(chatId, unmet, msg.message_id, null, threadId).catch(() => {})
       return
     }
-    state.authMode[chatId] = mode
+    state.authMode[key] = mode
     saveState(state)
     await setReaction(chatId, msg.message_id, AUTH_SWITCH_REACTION).catch(() => {})
     return
   }
 
-  const session = normalizeSession(state.sessions[chatId])
+  const session = normalizeSession(state.sessions[key])
   const sessionId = session?.id
 
   if (command === 'status') {
-    await sendReply(chatId, formatStatusText(session, state.authMode[chatId]), msg.message_id).catch(() => {})
+    await sendReply(chatId, formatStatusText(session, state.authMode[key]), msg.message_id, null, threadId).catch(() => {})
     return
   }
 
   if (command === 'compact' && !sessionId) {
-    await sendReply(chatId, 'ℹ️ no active session to compact yet.', msg.message_id).catch(() => {})
+    await sendReply(chatId, 'ℹ️ no active session to compact yet.', msg.message_id, null, threadId).catch(() => {})
     return
   }
 
@@ -1224,16 +1246,16 @@ async function handleMessage(msg) {
   let promptText = content ?? ''
   let meta = fallbackMeta
   if (command === null) {
-    const pendingEntry = state.pendingRisky[chatId]
+    const pendingEntry = state.pendingRisky[key]
     const decision = evaluateRiskyGuard(content ?? '', pendingEntry)
     if (decision.action === 'needsConfirmation') {
-      state.pendingRisky[chatId] = { text: decision.text, ...fallbackMeta }
+      state.pendingRisky[key] = { text: decision.text, ...fallbackMeta }
       saveState(state)
-      await sendReply(chatId, buildRiskyCommandWarning(decision.match), msg.message_id).catch(() => {})
+      await sendReply(chatId, buildRiskyCommandWarning(decision.match), msg.message_id, null, threadId).catch(() => {})
       return
     }
     if (pendingEntry) {
-      delete state.pendingRisky[chatId]
+      delete state.pendingRisky[key]
       saveState(state)
     }
     meta = resolveMessageMeta(decision, pendingEntry, fallbackMeta)
@@ -1260,13 +1282,13 @@ async function handleMessage(msg) {
     setKeyboard: () => {},
   }
   // registered before the placeholder exists so a slow attachment download/transcription doesn't hide the Join button
-  activeRuns.set(chatId, run)
+  activeRuns.set(key, run)
 
-  const turnResult = await withTypingIndicator(chatId, async () => {
+  const turnResult = await withTypingIndicator(chatId, threadId, async () => {
     try {
       const placeholder = await tg(
         'sendMessage',
-        buildWorkingPlaceholderParams(chatId, workingStatus, msg.message_id, buildCancelKeyboard(chatId, run.pending.length))
+        buildWorkingPlaceholderParams(chatId, workingStatus, msg.message_id, buildCancelKeyboard(chatId, run.pending.length), threadId)
       )
       run.placeholderId = placeholder.message_id
       botMessageIds.push(run.placeholderId)
@@ -1289,14 +1311,21 @@ async function handleMessage(msg) {
         if (quoteHtml) {
           const frozen =
             run.placeholderId != null
-              ? await freezePlaceholderAsTranscript(chatId, run.placeholderId, quoteHtml, workingStatus, buildCancelKeyboard(chatId, run.pending.length))
+              ? await freezePlaceholderAsTranscript(
+                  chatId,
+                  run.placeholderId,
+                  quoteHtml,
+                  workingStatus,
+                  buildCancelKeyboard(chatId, run.pending.length),
+                  threadId
+                )
               : null
           if (frozen?.frozen) {
             run.placeholderId = frozen.placeholderId
             if (run.placeholderId != null) botMessageIds.push(run.placeholderId)
           } else {
             // no placeholder to freeze, or freezing it failed outright — the transcript still has to show up somewhere
-            const quoteMessageId = await sendTranscriptQuote(chatId, quoteHtml, msg.message_id)
+            const quoteMessageId = await sendTranscriptQuote(chatId, quoteHtml, msg.message_id, threadId)
             if (quoteMessageId != null) botMessageIds.push(quoteMessageId)
           }
         }
@@ -1325,10 +1354,10 @@ async function handleMessage(msg) {
         ? content
         : buildChannelPrompt(chatId, meta.messageId, meta.user, meta.ts, promptText, channelAttrs)
 
-    return runClaudeTurn(chatId, run, {
+    return runClaudeTurn(chatId, key, threadId, run, {
       prompt,
       sessionId,
-      authMode: state.authMode[chatId],
+      authMode: state.authMode[key],
       priorSession: session,
       workingStatus,
       botMessageIds,
@@ -1338,7 +1367,7 @@ async function handleMessage(msg) {
     })
   })
 
-  state.turns = appendTurn(state.turns, chatId, {
+  state.turns = appendTurn(state.turns, key, {
     userMessageId: msg.message_id,
     anchorMessageId: meta.messageId,
     sessionId: turnResult.sessionId,
@@ -1347,8 +1376,8 @@ async function handleMessage(msg) {
   saveState(state)
 }
 
-async function handleContinue(chatId, pending) {
-  const priorSession = normalizeSession(state.sessions[chatId])
+async function handleContinue(chatId, key, threadId, pending) {
+  const priorSession = normalizeSession(state.sessions[key])
   const workingStatus = nextWorkingPhrase()
   const botMessageIds = [pending.placeholderId]
   const run = {
@@ -1364,13 +1393,13 @@ async function handleContinue(chatId, pending) {
     finished: false,
     setKeyboard: () => {},
   }
-  activeRuns.set(chatId, run)
+  activeRuns.set(key, run)
 
-  const turnResult = await withTypingIndicator(chatId, () =>
-    runClaudeTurn(chatId, run, {
+  const turnResult = await withTypingIndicator(chatId, threadId, () =>
+    runClaudeTurn(chatId, key, threadId, run, {
       prompt: buildContinuePrompt(),
       sessionId: pending.sessionId,
-      authMode: state.authMode[chatId],
+      authMode: state.authMode[key],
       priorSession,
       workingStatus,
       botMessageIds,
@@ -1382,7 +1411,7 @@ async function handleContinue(chatId, pending) {
     })
   )
 
-  state.turns = appendTurn(state.turns, chatId, {
+  state.turns = appendTurn(state.turns, key, {
     userMessageId: pending.originMessageId,
     anchorMessageId: pending.anchorMessageId,
     sessionId: turnResult.sessionId,
@@ -1393,7 +1422,7 @@ async function handleContinue(chatId, pending) {
 
 let botIdentity = { id: null, username: null }
 
-async function addPendingJoinMessage(chatId, run, msg) {
+async function addPendingJoinMessage(chatId, key, run, msg) {
   if (run.finished) return
   run.pending.push(msg)
   if (run.placeholderId == null) return
@@ -1401,7 +1430,7 @@ async function addPendingJoinMessage(chatId, run, msg) {
   run.setKeyboard(keyboard)
   const placeholderId = run.placeholderId
   await joinKeyboardQueue
-    .enqueue(chatId, () =>
+    .enqueue(key, () =>
       tg('editMessageReplyMarkup', { chat_id: chatId, message_id: placeholderId, reply_markup: keyboard }).catch(e =>
         log('failed to update join keyboard', e.message)
       )
@@ -1421,13 +1450,13 @@ async function transcribeJoinFragment(msg) {
   }
 }
 
-function handleJoinTap(chatId, run) {
+function handleJoinTap(chatId, key, run) {
   const batch = run.pending.splice(0, run.pending.length)
   if (!batch.length) return
-  let consumed = consumedByJoin.get(chatId)
+  let consumed = consumedByJoin.get(key)
   if (!consumed) {
     consumed = new Set()
-    consumedByJoin.set(chatId, consumed)
+    consumedByJoin.set(key, consumed)
   }
   for (const m of batch) consumed.add(m.message_id)
 
@@ -1435,19 +1464,20 @@ function handleJoinTap(chatId, run) {
 
   // enqueued synchronously, before transcription, so a message sent right after this tap can't jump ahead of the join in the per-chat queue
   chatQueue
-    .enqueue(chatId, async () => {
+    .enqueue(key, async () => {
       const results = await Promise.all(batch.map(transcribeJoinFragment))
       const fragments = results.map(r => r.promptText)
       const transcripts = results.map(r => r.transcript).filter(t => t != null && t.trim())
+      const last = batch[batch.length - 1]
       let quoteMessageId = null
       if (transcripts.length) {
         const quoteHtml = buildTranscriptQuoteHtml(transcripts.join('\n\n'))
-        if (quoteHtml) quoteMessageId = await sendTranscriptQuote(chatId, quoteHtml, batch[batch.length - 1].message_id)
+        if (quoteHtml) quoteMessageId = await sendTranscriptQuote(chatId, quoteHtml, last.message_id, resolveThreadId(last))
       }
       const joinedText = buildJoinedPromptText([run.promptText, ...fragments])
-      const last = batch[batch.length - 1]
       const replyToMessage = resolveJoinedReplyToMessage(run.replyToMessage, last.reply_to_message)
-      // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText
+      // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText;
+      // is_topic_message/message_thread_id survive the spread, so the joined message keeps its topic
       const syntheticMsg = {
         ...last,
         text: joinedText,
@@ -1464,10 +1494,10 @@ function handleJoinTap(chatId, run) {
     .catch(e => log('queued joined handleMessage rejected', e))
 }
 
-function runQueuedMessage(chatId, msg) {
-  const consumed = consumedByJoin.get(chatId)
+function runQueuedMessage(key, msg) {
+  const consumed = consumedByJoin.get(key)
   if (consumed?.delete(msg.message_id)) {
-    if (consumed.size === 0) consumedByJoin.delete(chatId)
+    if (consumed.size === 0) consumedByJoin.delete(key)
     return Promise.resolve()
   }
   return handleMessage(msg)
@@ -1478,12 +1508,13 @@ async function handleCallbackQuery(cq) {
   const parsed = parseCallbackData(cq.data)
   if (!parsed) {
     const chatId = String(cq.message?.chat?.id ?? '')
+    const key = threadKey(chatId, cq.message)
     await handleUnrecognizedCallback(cq, {
       chatId,
       buttonsLoader: loadButtonsModule,
       tg,
       isAuthorized: isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig),
-      enqueueMessage: msg => chatQueue.enqueue(chatId, () => handleMessage(msg)).catch(e => log('queued button-tap handleMessage rejected', e)),
+      enqueueMessage: msg => chatQueue.enqueue(key, () => handleMessage(msg)).catch(e => log('queued button-tap handleMessage rejected', e)),
       log,
     })
     return
@@ -1491,13 +1522,15 @@ async function handleCallbackQuery(cq) {
 
   // derived from the button's own message, not the callback_data payload, so a chat can only cancel/continue/join its own run
   const chatId = String(cq.message?.chat?.id ?? '')
+  const key = threadKey(chatId, cq.message)
+  const threadId = resolveThreadId(cq.message)
   if (!isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig)) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'not authorized', show_alert: true }).catch(() => {})
     return
   }
 
   if (parsed.action === 'cancel' || parsed.action === 'join') {
-    const run = activeRuns.get(chatId)
+    const run = activeRuns.get(key)
     if (!run || run.finished) {
       await tg('answerCallbackQuery', {
         callback_query_id: cq.id,
@@ -1510,7 +1543,7 @@ async function handleCallbackQuery(cq) {
         await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'nothing to join' }).catch(() => {})
         return
       }
-      handleJoinTap(chatId, run)
+      handleJoinTap(chatId, key, run)
       await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'joining…' }).catch(() => {})
       return
     }
@@ -1520,15 +1553,15 @@ async function handleCallbackQuery(cq) {
   }
 
   // action === 'continue'
-  const pending = state.pendingContinue[chatId]
+  const pending = state.pendingContinue[key]
   if (!pending) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'nothing to continue' }).catch(() => {})
     return
   }
-  delete state.pendingContinue[chatId]
+  delete state.pendingContinue[key]
   saveState(state)
   await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'continuing…' }).catch(() => {})
-  chatQueue.enqueue(chatId, () => handleContinue(chatId, pending)).catch(e => log('queued handleContinue rejected', e))
+  chatQueue.enqueue(key, () => handleContinue(chatId, key, threadId, pending)).catch(e => log('queued handleContinue rejected', e))
 }
 
 async function poll() {
@@ -1557,19 +1590,21 @@ async function poll() {
         saveState(state)
         if (u.message) {
           const chatId = String(u.message.chat.id)
-          const activeRun = activeRuns.get(chatId)
+          const key = threadKey(chatId, u.message)
+          const activeRun = activeRuns.get(key)
           if (activeRun && isAuthorizedMessage(u.message) && isJoinableMessage(u.message, botIdentity.username)) {
-            addPendingJoinMessage(chatId, activeRun, u.message).catch(e => log('failed to track pending join message', e.message))
+            addPendingJoinMessage(chatId, key, activeRun, u.message).catch(e => log('failed to track pending join message', e.message))
           }
-          chatQueue.enqueue(chatId, () => runQueuedMessage(chatId, u.message)).catch(e => log('queued handleMessage rejected', e))
+          chatQueue.enqueue(key, () => runQueuedMessage(key, u.message)).catch(e => log('queued handleMessage rejected', e))
         } else if (u.edited_message) {
           const chatId = String(u.edited_message.chat.id)
+          const key = threadKey(chatId, u.edited_message)
           if (isAuthorizedMessage(u.edited_message)) {
             // whatever is running now can only be this turn or a later one, and the rewind
             // is about to erase both — so stop it before it burns more tokens
-            activeRuns.get(chatId)?.cancel()
+            activeRuns.get(key)?.cancel()
             chatQueue
-              .enqueue(chatId, () => handleEditedMessage(u.edited_message))
+              .enqueue(key, () => handleEditedMessage(u.edited_message))
               .catch(e => log('queued handleEditedMessage rejected', e))
           }
         } else if (u.callback_query) {
