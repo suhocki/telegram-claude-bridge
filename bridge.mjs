@@ -1433,7 +1433,13 @@ function handleJoinTap(chatId, run) {
   // enqueued synchronously, before transcription, so a message sent right after this tap can't jump ahead of the join in the per-chat queue
   chatQueue
     .enqueue(chatId, async () => {
+      const attachments = batch.map(extractAttachment)
       const fragments = await Promise.all(batch.map(transcribeJoinFragment))
+      const voiceFragments = fragments.filter((f, i) => attachments[i]?.kind === 'voice')
+      if (voiceFragments.length) {
+        const quoteHtml = buildTranscriptQuoteHtml(voiceFragments.join('\n\n'))
+        if (quoteHtml) await sendTranscriptQuote(chatId, quoteHtml, batch[batch.length - 1].message_id)
+      }
       const joinedText = buildJoinedPromptText([run.promptText, ...fragments])
       const last = batch[batch.length - 1]
       const replyToMessage = resolveJoinedReplyToMessage(run.replyToMessage, last.reply_to_message)
