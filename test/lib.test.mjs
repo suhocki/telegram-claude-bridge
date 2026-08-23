@@ -68,6 +68,7 @@ import {
   buildContinuePrompt,
   buildJoinedPromptText,
   isJoinableMessage,
+  resolveJoinFragmentText,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
   isVoiceReplyEnabled,
@@ -1336,6 +1337,64 @@ test('isJoinableMessage: a /voice on|off toggle is not joinable', () => {
 
 test('isJoinableMessage: a service message (e.g. a chat title change) is not joinable, even carrying text', () => {
   assert.equal(isJoinableMessage({ text: 'renamed the chat', new_chat_title: 'renamed' }, 'mybot'), false)
+})
+
+test('isJoinableMessage: a plain voice message is joinable, even without any text', () => {
+  assert.equal(isJoinableMessage({ voice: { file_id: 'v1', file_size: 10 } }, 'mybot'), true)
+})
+
+test('isJoinableMessage: a non-voice attachment (photo/document/audio/video) stays excluded', () => {
+  assert.equal(isJoinableMessage({ document: { file_id: 'd1', file_size: 10 } }, 'mybot'), false)
+  assert.equal(isJoinableMessage({ audio: { file_id: 'a1', file_size: 10 } }, 'mybot'), false)
+  assert.equal(isJoinableMessage({ video: { file_id: 'vv1', file_size: 10 } }, 'mybot'), false)
+})
+
+test('isJoinableMessage: a service message carrying a voice attachment is still not joinable', () => {
+  assert.equal(
+    isJoinableMessage({ voice: { file_id: 'v1', file_size: 10 }, new_chat_title: 'renamed' }, 'mybot'),
+    false
+  )
+})
+
+test('isJoinableMessage: a voice message captioned with a recognized command (e.g. /reset) is not joinable, so the command still runs on its own', () => {
+  assert.equal(isJoinableMessage({ voice: { file_id: 'v1', file_size: 10 }, caption: '/reset' }, 'mybot'), false)
+})
+
+test('isJoinableMessage: a voice message captioned with a /voice on|off toggle is not joinable', () => {
+  assert.equal(isJoinableMessage({ voice: { file_id: 'v1', file_size: 10 }, caption: '/voice on' }, 'mybot'), false)
+})
+
+test('isJoinableMessage: a voice message with an ordinary (non-command) caption is joinable', () => {
+  assert.equal(isJoinableMessage({ voice: { file_id: 'v1', file_size: 10 }, caption: 'listen to this' }, 'mybot'), true)
+})
+
+test('resolveJoinFragmentText: a plain text message returns its own text', () => {
+  assert.equal(resolveJoinFragmentText({ text: 'hello there' }, null), 'hello there')
+})
+
+test('resolveJoinFragmentText: a voice message with a resolved transcript returns the wrapped transcript', () => {
+  const msg = { voice: { file_id: 'v1', file_size: 10 } }
+  assert.equal(resolveJoinFragmentText(msg, { text: 'buy some milk' }), buildVoiceTranscriptText('buy some milk'))
+})
+
+test('resolveJoinFragmentText: a voice message with a transcription error falls back to the attachment caption', () => {
+  const msg = { voice: { file_id: 'v1', file_size: 10 } }
+  assert.equal(resolveJoinFragmentText(msg, { error: 'ffmpeg exited 1' }), buildAttachmentCaption({ kind: 'voice' }))
+})
+
+test('resolveJoinFragmentText: a voice message with no transcription outcome yet falls back to the attachment caption', () => {
+  const msg = { voice: { file_id: 'v1', file_size: 10 } }
+  assert.equal(resolveJoinFragmentText(msg, null), buildAttachmentCaption({ kind: 'voice' }))
+})
+
+test('resolveJoinFragmentText: a voice message with a real caption falls back to that caption (not the generic placeholder) when transcription fails', () => {
+  const msg = { voice: { file_id: 'v1', file_size: 10 }, caption: 'check invoice #4521' }
+  assert.equal(resolveJoinFragmentText(msg, { error: 'ffmpeg exited 1' }), 'check invoice #4521')
+})
+
+test('resolveJoinFragmentText: a voice message with a real caption still uses the transcript (not the caption) when transcription succeeds', () => {
+  const msg = { voice: { file_id: 'v1', file_size: 10 }, caption: 'check invoice #4521' }
+  assert.equal(resolveJoinFragmentText(msg, { text: 'buy some milk' }), buildVoiceTranscriptText('buy some milk'))
 })
 
 test('buildPlaceholderEditParams: with a keyboard, attaches reply_markup so editMessageText does not drop the Cancel button', () => {

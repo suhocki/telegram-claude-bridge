@@ -75,6 +75,7 @@ import {
   buildContinuePrompt,
   buildJoinedPromptText,
   isJoinableMessage,
+  resolveJoinFragmentText,
   buildPlaceholderEditParams,
   buildWorkingPlaceholderParams,
   parseVoiceToggleCommand,
@@ -782,6 +783,18 @@ async function transcribeVoice(filePath) {
   }
 }
 
+async function downloadAttachmentLogged(attachment) {
+  const result = await downloadAttachment(attachment)
+  if (result.error) log('attachment download failed', attachment.kind, result.error)
+  return result
+}
+
+async function transcribeVoiceLogged(filePath) {
+  const transcription = await transcribeVoice(filePath)
+  if (transcription.error) log('voice transcription failed', transcription.error)
+  return transcription
+}
+
 async function sendVoiceReply(chatId, text, replyToMessageId) {
   const speechText = truncateForSpeech(buildSpeechText(text), voiceReplyConfig.maxTtsChars)
   if (!speechText) return []
@@ -1262,17 +1275,13 @@ async function handleMessage(msg) {
     }
 
     let attachmentResult = null
-    if (attachment) {
-      attachmentResult = await downloadAttachment(attachment)
-      if (attachmentResult.error) log('attachment download failed', attachment.kind, attachmentResult.error)
-    }
+    if (attachment) attachmentResult = await downloadAttachmentLogged(attachment)
 
     let transcriptionError = null
     if (attachment?.kind === 'voice' && attachmentResult?.path) {
-      const transcription = await transcribeVoice(attachmentResult.path)
+      const transcription = await transcribeVoiceLogged(attachmentResult.path)
       if (transcription.error) {
         transcriptionError = transcription.error
-        log('voice transcription failed', transcriptionError)
       } else {
         promptText = buildVoiceTranscriptText(transcription.text)
         run.promptText = promptText
@@ -1400,6 +1409,15 @@ async function addPendingJoinMessage(chatId, run, msg) {
     .catch(() => {})
 }
 
+async function transcribeJoinFragment(msg) {
+  const attachment = extractAttachment(msg)
+  if (attachment?.kind !== 'voice') return resolveJoinFragmentText(msg, null)
+  const downloaded = await downloadAttachmentLogged(attachment)
+  if (downloaded.error) return resolveJoinFragmentText(msg, { error: downloaded.error })
+  const transcription = await transcribeVoiceLogged(downloaded.path)
+  return resolveJoinFragmentText(msg, transcription)
+}
+
 function handleJoinTap(chatId, run) {
   const batch = run.pending.splice(0, run.pending.length)
   if (!batch.length) return
@@ -1412,12 +1430,27 @@ function handleJoinTap(chatId, run) {
 
   run.cancel()
 
-  const joinedText = buildJoinedPromptText([run.promptText, ...batch.map(m => m.text ?? m.caption ?? '')])
-  const last = batch[batch.length - 1]
-  const replyToMessage = resolveJoinedReplyToMessage(run.replyToMessage, last.reply_to_message)
-  // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText
-  const syntheticMsg = { ...last, text: joinedText, entities: undefined, caption_entities: undefined, reply_to_message: replyToMessage, joinedFromActiveRun: true }
-  chatQueue.enqueue(chatId, () => handleMessage(syntheticMsg)).catch(e => log('queued joined handleMessage rejected', e))
+  // enqueued synchronously, before transcription, so a message sent right after this tap can't jump ahead of the join in the per-chat queue
+  chatQueue
+    .enqueue(chatId, async () => {
+      const fragments = await Promise.all(batch.map(transcribeJoinFragment))
+      const joinedText = buildJoinedPromptText([run.promptText, ...fragments])
+      const last = batch[batch.length - 1]
+      const replyToMessage = resolveJoinedReplyToMessage(run.replyToMessage, last.reply_to_message)
+      // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText
+      const syntheticMsg = {
+        ...last,
+        text: joinedText,
+        entities: undefined,
+        caption: undefined,
+        caption_entities: undefined,
+        voice: undefined,
+        reply_to_message: replyToMessage,
+        joinedFromActiveRun: true,
+      }
+      return handleMessage(syntheticMsg)
+    })
+    .catch(e => log('queued joined handleMessage rejected', e))
 }
 
 function runQueuedMessage(chatId, msg) {
