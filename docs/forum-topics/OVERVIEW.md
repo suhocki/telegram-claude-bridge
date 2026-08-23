@@ -15,14 +15,29 @@ things in flight.
 
 ## Goal
 
-Use Telegram's native **Forum Topics** (available on regular, non-Premium
-accounts, in supergroups with Topics enabled — see the Telegram-side setup notes
-already covered in chat) as the unit of an isolated conversation: each topic in
-the group gets its own Claude session, its own command state (`/new`, `/compact`,
-`/voice`, auth mode, risky-command confirmation, check-ins, rewind-on-edit), fully
-independent from every other topic in the same group. Switching topics in
+Use Telegram's native **Forum Topics** as the unit of an isolated conversation:
+each topic gets its own Claude session, its own command state (`/new`,
+`/compact`, `/voice`, auth mode, risky-command confirmation, check-ins,
+rewind-on-edit), fully independent from every other topic. Switching topics in
 Telegram's UI (the horizontally-scrollable topic list) *is* switching
 conversations — no bot command needed.
+
+**Primary target, revised 2026-08-23: a bot's own private chat, not a
+supergroup.** Telegram has a "Threaded Mode" setting in BotFather (Bot Settings)
+that turns a bot's *existing private chat* into a forum — the same topic list
+UI as a supergroup, but with no group to create or manage at all. This is
+simpler than the original supergroup-based plan and was confirmed hands-on: with
+this already toggled on for one bot, incoming messages inside a topic are
+delivered and handled correctly, but the bot's own replies land in the wrong
+place (the chat's General area) instead of back in the topic — exactly the gap
+`IMPLEMENTATION.md` §4 already predicted (no outbound call sends
+`message_thread_id` today). A supergroup with Topics enabled remains supported
+too, and needs no separate implementation path: the design keys off per-message
+Bot API fields (`is_topic_message` / `message_thread_id`), which work
+identically regardless of whether the forum lives in a private chat or a
+supergroup. Per the user's direction, the private-chat path is the priority;
+supergroup-specific concerns (mainly group authorization policy, see below) are
+explicitly deprioritized, not dropped.
 
 Non-goal, explicitly dropped in favor of this: the earlier "reply to an old
 message to resume its session" idea. Forum Topics gives a native, discoverable UI
@@ -57,9 +72,11 @@ isolated per topic, with no exceptions:
 
 Two things stay chat-wide, unchanged, because they're not really
 "conversation state": the group-level authorization policy (`groupsConfig` — who's
-allowed to talk to the bot at all, and whether a mention is required) and the
-Telegram long-poll offset / working-phrase rotation, which are bot-global, not
-per-chat, today.
+allowed to talk to the bot at all, and whether a mention is required — only
+relevant at all for the deprioritized supergroup path, since a private chat's
+authorization is just the existing allow-list check, untouched by this feature)
+and the Telegram long-poll offset / working-phrase rotation, which are bot-global,
+not per-chat, today.
 
 ## New feature: auto-naming a topic
 
@@ -69,9 +86,12 @@ button). So: you create a topic with any placeholder name (a couple of random
 characters is fine), send your first message(s), and the bridge renames the topic
 itself once there's enough context to name it well — a work ticket number if
 that's what the conversation is about, one or two words otherwise. This uses the
-Bot API's `editForumTopic` method, which requires the bot to hold the
-`can_manage_topics` admin right in the group (a checkbox separate from plain
-"admin" — the setup notes need to call this out explicitly).
+Bot API's `editForumTopic` method. In a supergroup that requires the bot to hold
+the `can_manage_topics` admin right (a checkbox separate from plain "admin"); in
+the private-chat-forum case there's no "admin" concept, so this needs hands-on
+confirmation of whether a bot can rename its own private-chat topics
+unconditionally or whether an equivalent permission gate exists there too — flag
+as unverified in `IMPLEMENTATION.md` rather than assumed.
 
 Renaming happens once per topic, after a small fixed number of messages (see
 `IMPLEMENTATION.md` for the exact trigger and prompt), using one cheap, stateless
@@ -83,11 +103,21 @@ conversation itself.
 
 ## Rollout
 
-No data migration needed: existing `state.json` files for private chats and
-non-forum groups are already valid thread-keyed data (their thread key equals
-their chatId). The feature is opt-in per chat, automatically — it only activates
-when a message actually carries a `message_thread_id`, which only happens once
-you've created a forum group and enabled Topics there.
+No data migration needed: existing `state.json` files are already valid
+thread-keyed data (their thread key equals their chatId). The feature is opt-in
+per chat, automatically — it only activates when a message actually carries
+`is_topic_message: true`. Enabling it is a one-time, per-bot toggle in
+BotFather ("Threaded Mode"), not something that requires creating a new chat —
+the bot's existing private chat with the user becomes the forum.
+
+One thing to confirm hands-on before implementing (see `IMPLEMENTATION.md`'s
+verification note): whether Telegram's "General" area of a private-chat forum
+behaves like a supergroup's General topic (messages there arrive *without*
+`is_topic_message`, so the existing pre-feature conversation keeps working
+untouched), or whether enabling Threaded Mode changes that chat's behavior more
+broadly. The supergroup case is documented behavior; the private-chat case is
+new enough that it's worth checking directly against a real bot rather than
+assumed identical.
 
 ## Known sharp edges (detailed in IMPLEMENTATION.md)
 
@@ -108,6 +138,13 @@ you've created a forum group and enabled Topics there.
   already deliberately re-derives the chat id from that message rather than
   trusting the callback payload, so the thread id follows the same pattern for
   free.
+- Confirmed live, right now, on a bot with Threaded Mode already enabled: the
+  bot replies to topic messages fine (content-wise — there's no per-topic
+  session isolation yet, so every topic currently shares the one chat-wide
+  session), but its own replies land in the chat's General area instead of the
+  topic that was actually being used. This is the concrete, already-observed
+  version of the §4 gap in `IMPLEMENTATION.md` (no outbound call sends
+  `message_thread_id`) — not just a theoretical risk.
 
 ## Suggested phasing for the actual implementation (separate PRs, not this one)
 
@@ -119,9 +156,16 @@ you've created a forum group and enabled Topics there.
    call (including the three raw-multipart upload methods), and reading the
    thread id off the Cancel/Join/Continue buttons' own message. This is what
    actually makes replies land back in the right topic and buttons resolve to
-   the right topic's run.
+   the right topic's run — top priority, since it's a live, already-observed bug
+   on a bot with Threaded Mode already enabled, not just a hypothetical.
 3. Auto-rename feature, as a self-contained follow-up once (1) and (2) are live
-   and manually verified across at least two concurrent topics.
+   and manually verified.
+
+Deliberately **not** in this phasing, per the user's explicit priority call: any
+supergroup-specific work (extending `groupsConfig`/`resolveGroupPolicy` for
+per-topic policy). The private-chat-forum path needs none of that, and it's
+fine to revisit only if it turns out to be low-effort once (1) and (2) are done
+— not worth planning for up front.
 
 This spec (both files) is its own PR, reviewed independently per this repo's
 usual policy, before any of the above phases are implemented.
