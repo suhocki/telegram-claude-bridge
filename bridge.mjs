@@ -234,9 +234,9 @@ function nextWorkingPhrase() {
 
 const state = loadState()
 const chatQueue = createKeyedQueue()
-// chatId -> single in-flight run { cancel(), promptText, placeholderId, pending, finished, setKeyboard() }; chatQueue guarantees only one at a time.
+// thread key -> single in-flight run { cancel(), promptText, placeholderId, pending, finished, setKeyboard() }; chatQueue guarantees only one at a time.
 const activeRuns = new Map()
-// chatId -> Set<messageId> already folded into a join tap, so runQueuedMessage below no-ops their own already-queued run.
+// thread key -> Set<messageId> already folded into a join tap, so runQueuedMessage below no-ops their own already-queued run.
 const consumedByJoin = new Map()
 // serializes the join-count editMessageReplyMarkup calls per chat so back-to-back joins can't land out of order at Telegram
 const joinKeyboardQueue = createKeyedQueue()
