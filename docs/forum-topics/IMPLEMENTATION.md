@@ -2,21 +2,35 @@
 
 Status: **spec only, not implemented**. Companion to `OVERVIEW.md` in this folder.
 Line numbers below are as of the audit done for this spec (main branch, commit
-`304b9ed`) — re-check them before implementing, since this repo moves fast.
+`8706b27`) — re-check them before implementing, since this repo moves fast; two
+voice-join PRs landed in the hours before this spec was written and are already
+reflected here, but anything merged after `8706b27` won't be.
 
 ## 1. The `threadKey` helper
 
-New pure function in `lib.mjs`, next to the other small pure helpers:
+New pure function in `lib.mjs`, next to the other small pure helpers. **Gate on
+`is_topic_message`, not merely on `message_thread_id` being present**:
+Telegram's Bot API also stamps `message_thread_id` on ordinary reply-chains in
+regular, non-forum groups (Telegram's generic "message threads," unrelated to
+Forum Topics) — `is_topic_message` is the field that's `true` specifically when
+the message actually belongs to a forum topic. Keying on `message_thread_id`
+alone would silently fork an existing group's session the first time someone
+replies to a message in it, which directly breaks the "nothing changes for
+existing chats" guarantee this spec depends on.
 
 ```js
-export function threadKey(chatId, messageThreadId) {
-  return messageThreadId != null ? `${chatId}:${messageThreadId}` : String(chatId)
+export function threadKey(chatId, msg) {
+  return msg?.is_topic_message && msg.message_thread_id != null
+    ? `${chatId}:${msg.message_thread_id}`
+    : String(chatId)
 }
 ```
 
-Unit-testable in isolation: no thread id → bare chatId string (byte-identical to
-today's key, so old `state.json` data stays valid); a thread id present → the
-composite form. This is the single new primitive everything else below builds on.
+Unit-testable in isolation: no `is_topic_message` (or it's false/absent) → bare
+chatId string (byte-identical to today's key, so old `state.json` data stays
+valid, and a plain reply-thread reply in a non-forum group is *not* mistaken for
+a topic); `is_topic_message: true` with a thread id → the composite form. This is
+the single new primitive everything else below builds on.
 
 ### Where to compute it
 
@@ -30,7 +44,18 @@ Every place `chatId` is currently derived from `msg.chat.id` needs to also read
 - `bridge.mjs:1559,1566` — `poll()`'s update-dispatch loop
 - `lib.mjs:716` — `isCallbackQueryAuthorized` (same as above — chat-wide, no
   change)
-- `lib.mjs:745-746` — `buildButtonTapSyntheticMessage`
+- `handleCallbackQuery` (`bridge.mjs:1482,1493`) — see §5 below; this one does
+  **not** read `msg.chat.id`, it reads `cq.message.chat.id`, so it needs its own
+  entry rather than reusing the `msg.chat.id` pattern above.
+- `lib.mjs:743-751` — `buildButtonTapSyntheticMessage` — **implementer trap**:
+  this function builds a synthetic message as a hand-written object literal
+  (`message_id`, `chat`, `from`, `date`, `text`), not a spread of a real
+  Telegram message. Unlike the join-tap synthetic message (`bridge.mjs`'s
+  `handleJoinTap`, which spreads `...last` and gets `is_topic_message`/
+  `message_thread_id` for free), this literal needs those two fields added
+  explicitly (`is_topic_message: cq?.message?.is_topic_message`,
+  `message_thread_id: cq?.message?.message_thread_id`) or the custom
+  buttons-module fallback path silently loses thread isolation.
 
 Convention: keep a local `chatId` variable for anything that's an actual Telegram
 API `chat_id` parameter (unchanged), and introduce a separate `key` (or
@@ -115,25 +140,36 @@ need `form.append('message_thread_id', threadId)` added conditionally):**
 `deleteMessage` (601, 1011, 1064, 1140), and bot-level calls (`getMe`,
 `getUpdates`, `setMyCommands`/`deleteMyCommands`, `getFile`).
 
-## 5. `callback_data` redesign (Cancel / Join / Continue buttons)
+## 5. Cancel / Join / Continue buttons — no `callback_data` change needed
 
-Today: `buildCancelKeyboard`/`buildContinueKeyboard` (`lib.mjs:541-545, 573-575`)
-encode `` `cancel:${chatId}` ``, `` `join:${chatId}` ``, `` `continue:${chatId}` ``.
-`parseCallbackData` (`lib.mjs:577-582`, regex `CALLBACK_DATA_RE`) captures
-everything after the first colon as `parsed.chatId`, and every consumer
-(`bridge.mjs:1493, 1500`, etc.) uses that value directly as the state-lookup key.
+Corrected from an earlier draft of this spec, which wrongly assumed
+`parsed.chatId` (from `parseCallbackData`, `lib.mjs:577-582`) was used as the
+state-lookup key. It isn't: `handleCallbackQuery` (`bridge.mjs:1482-1493`)
+already deliberately ignores the `chatId` embedded in `callback_data` and
+re-derives `chatId` fresh from `cq.message.chat.id` instead, with an existing
+comment explaining why — *"derived from the button's own message, not the
+callback_data payload, so a chat can only cancel/continue/join its own run"*
+(`bridge.mjs:1492`). `parsed.chatId` (`lib.mjs:582`, the regex capture group) is
+in fact never read anywhere in `bridge.mjs` today — confirmed via
+`grep -n "parsed\." bridge.mjs`, which only turns up `parsed.action`.
 
-New encoding: `` `${action}:${chatId}:${threadId ?? ''}` `` — empty segment when
-there's no topic (private chat / non-forum group), so the composite key
-reconstructs via `threadKey(chatId, threadId || undefined)`. Telegram's 64-byte
-`callback_data` cap is not a practical concern here: chat ids run up to ~14
-characters (negative supergroup ids), thread ids are small integers, well within
-budget alongside the action word.
+Since the button's own message (`cq.message`) already carries
+`is_topic_message`/`message_thread_id` — Telegram stamps every message with its
+own thread membership, buttons included — the natural fix mirrors the existing
+pattern exactly: compute `threadKey(chatId, cq.message)` right where `chatId`
+is already derived (`bridge.mjs:1482,1493`), and use that for the
+`activeRuns`/`consumedByJoin`/`state.pendingContinue` lookups in this handler.
+**No change to `buildCancelKeyboard`, `buildContinueKeyboard`,
+`CALLBACK_DATA_RE`, or `parseCallbackData` is needed at all** — trusting the
+button's own message for the thread id is not just simpler than a
+`callback_data` schema change, it's the same trust boundary the existing
+chat-id handling already established, so it's the more consistent choice too.
 
-Update in lockstep: `CALLBACK_DATA_RE`, `parseCallbackData`, and every consumer
-that currently treats `parsed.chatId` as *the* lookup key — those all need to
-switch to computing `threadKey(parsed.chatId, parsed.threadId)` before touching
-`activeRuns`/`state.pendingContinue`/etc.
+The `if (!parsed)` fallback branch just above (`bridge.mjs:1479-1490`, the
+custom-buttons-module path) derives its own `chatId` from `cq.message?.chat?.id`
+the same way and feeds it straight into `chatQueue.enqueue(chatId, ...)` — needs
+the same `threadKey(chatId, cq.message)` treatment for consistency, even though
+it's a less-used path.
 
 ## 6. Rewind-on-edit correctness (the one place with a real bug risk)
 
@@ -215,13 +251,23 @@ If the call fails:
 - Never surface this failure to the user in-chat — it's a nice-to-have, not
   something that should interrupt or annotate the actual conversation.
 
-### Where this hooks into `handleMessage`
+### Where this hooks in
 
-After `appendTurn`/`saveState` at the end of `handleMessage` (`bridge.mjs:1341-
-1346`), check the trigger condition above and, if met, fire the rename as an
-un-awaited background task (`.catch(() => {})`-guarded, same pattern as other
-best-effort side calls in this file) so it never adds latency to the reply the
-user is waiting for.
+`appendTurn` is called from **two** places, not one: the end of `handleMessage`
+(`bridge.mjs:1341-1346`) and separately, with its own call, at the end of
+`handleContinue` (`bridge.mjs:1385-1390`, the Cancel→Continue resume path). A
+topic's turn count can reach the trigger threshold via either path (e.g. turn 1
+from `handleMessage`, turn 2 from a Continue after a Cancel) — the rename check
+needs to run after *both* `appendTurn` call sites, not just the one in
+`handleMessage`, or a topic that happens to hit the threshold via `handleContinue`
+permanently misses its rename (the count keeps climbing past the trigger with
+`state.topicNamed` never set). Cleanest is probably a small shared helper
+(`maybeRenameTopic(threadKey, chatId, messageThreadId)`) called from both sites
+rather than duplicating the check inline twice.
+
+Fire the rename as an un-awaited background task (`.catch(() => {})`-guarded,
+same pattern as other best-effort side calls in this file) from wherever it's
+called, so it never adds latency to the reply the user is waiting for.
 
 ## 9. Testing plan
 

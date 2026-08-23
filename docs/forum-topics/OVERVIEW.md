@@ -91,9 +91,11 @@ you've created a forum group and enabled Topics there.
 
 ## Known sharp edges (detailed in IMPLEMENTATION.md)
 
-- `callback_data` (used by the Cancel/Join/Continue buttons) is capped at 64
-  bytes by Telegram and currently encodes only `action:chatId` — it needs to grow
-  to also carry the topic id without blowing that limit.
+- The thread key must gate on `is_topic_message`, not merely on
+  `message_thread_id` being present — Telegram also stamps `message_thread_id`
+  on ordinary reply-chains in regular, non-forum groups, unrelated to Forum
+  Topics. Gating on presence alone would silently fork an existing group's
+  session the first time someone replies to a message in it.
 - Rewind-on-edit's turn history is a flat array indexed by arrival order; if the
   key-widening isn't applied to *every* read/write site in one pass, topics can
   corrupt each other's turn history (truncate the wrong topic's messages, delete
@@ -101,6 +103,11 @@ you've created a forum group and enabled Topics there.
   gradually.
 - Three outbound-attachment methods build raw multipart bodies by hand today and
   have no thread-id parameter at all yet.
+- The Cancel/Join/Continue buttons need **no** `callback_data` format change —
+  the button's own message already carries its thread id, and the handler
+  already deliberately re-derives the chat id from that message rather than
+  trusting the callback payload, so the thread id follows the same pattern for
+  free.
 
 ## Suggested phasing for the actual implementation (separate PRs, not this one)
 
@@ -109,9 +116,10 @@ you've created a forum group and enabled Topics there.
    history, active-run tracking, per-chat queues, auth mode, voice-reply flag) to
    use it. No user-visible behavior change yet for existing chats.
 2. Telegram-facing changes: `message_thread_id` threaded through every outbound
-   call (including the three raw-multipart upload methods), and the
-   `callback_data` encoding/parsing redesign. This is what actually makes replies
-   land back in the right topic and buttons resolve to the right topic's run.
+   call (including the three raw-multipart upload methods), and reading the
+   thread id off the Cancel/Join/Continue buttons' own message. This is what
+   actually makes replies land back in the right topic and buttons resolve to
+   the right topic's run.
 3. Auto-rename feature, as a self-contained follow-up once (1) and (2) are live
    and manually verified across at least two concurrent topics.
 
