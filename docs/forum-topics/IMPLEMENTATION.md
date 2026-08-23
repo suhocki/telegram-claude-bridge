@@ -310,10 +310,17 @@ Not unit-testable without a much larger test-harness investment (consistent
 with this repo's existing gap — `bridge.mjs` has no exports or test file today,
 and this spec doesn't propose changing that): the actual re-keying of
 `activeRuns`/`chatQueue`/etc., the Telegram-call wiring, and the rewind
-correctness fix. These need manual QA:
+correctness fix. These need manual QA, run primarily against the
+**private-chat-forum** setup (the prioritized target), with the supergroup
+variant as an optional secondary pass if that's also being kept working:
 
-1. Create a forum group, enable Topics, add the bot as admin with
-   `can_manage_topics`.
+1. **Private-chat-forum setup** (primary): in BotFather, Bot Settings → enable
+   "Threaded Mode" for the bot being tested. Confirm topics can actually be
+   created in the existing private chat with it (this alone is part of the
+   unresolved verification note above — do this first, before writing any
+   code, to nail down the real mechanics). *Supergroup setup (secondary,
+   optional): create a forum group, enable Topics, add the bot as admin with
+   `can_manage_topics`.*
 2. Open two topics, interleave messages between them (send in A, then B, then A
    again) — confirm each topic's Claude session only ever sees its own history
    (ask "what did I just say" in each and confirm no cross-contamination).
@@ -321,10 +328,15 @@ correctness fix. These need manual QA:
    in-flight run — confirm each button only ever affects its own topic's run.
 4. Edit an old message in topic A — confirm topic B's turn history and bot
    messages are untouched.
-5. Send 2 messages in a freshly created topic — confirm it gets auto-renamed;
-   then temporarily revoke the bot's `can_manage_topics` right and repeat in a
-   new topic — confirm it fails silently (logged, conversation unaffected) and
-   isn't retried every message.
+5. Send 2 messages in a freshly created topic — confirm it gets auto-renamed.
+   For the failure-path half of this check (confirm a rename failure fails
+   silently and isn't retried every message), the supergroup setup gives a
+   known way to force it: temporarily revoke the bot's `can_manage_topics`
+   right and repeat in a new topic. Whether an equivalent failure can be forced
+   for a private-chat-forum topic is itself part of the open verification
+   question (§8) — if no such lever exists there, this half of the check only
+   needs to run against the supergroup setup, which is fine since the failure
+   handling code path is identical either way.
 
 ## 10. Suggested PR breakdown for the actual implementation
 
