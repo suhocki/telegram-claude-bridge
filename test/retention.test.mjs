@@ -44,6 +44,24 @@ test('sweepOldFiles: recurses into subdirectories', () => {
   rmSync(dir, { recursive: true, force: true })
 })
 
+test('sweepOldFiles: with { recurse: false }, only removes top-level files and leaves subdirectories untouched', () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'retention-'))
+  const now = Date.parse('2026-08-26T00:00:00Z')
+  const topLevelOld = path.join(dir, 'legacy.txt')
+  touch(topLevelOld, 20 * DAY_MS, now)
+  const sub = path.join(dir, 'tldr')
+  mkdirSync(sub)
+  const subOld = path.join(sub, 'old.txt')
+  touch(subOld, 20 * DAY_MS, now)
+
+  const { removed } = sweepOldFiles(dir, 14 * DAY_MS, now, { recurse: false })
+
+  assert.deepEqual(removed, [topLevelOld])
+  assert.equal(existsSync(topLevelOld), false)
+  assert.equal(existsSync(subOld), true)
+  rmSync(dir, { recursive: true, force: true })
+})
+
 test('sweepOldFiles: a missing directory is not an error', () => {
   const { removed } = sweepOldFiles('/no/such/directory/at/all', 14 * DAY_MS)
   assert.deepEqual(removed, [])

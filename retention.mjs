@@ -2,7 +2,7 @@ import { readdirSync, statSync, rmSync } from 'node:fs'
 import path from 'node:path'
 
 // Missing/unreadable dirs are not an error — inbox/tmp/outbox/rewind-backups are created lazily on first use.
-export function sweepOldFiles(dir, maxAgeMs, now = Date.now()) {
+export function sweepOldFiles(dir, maxAgeMs, now = Date.now(), { recurse = true } = {}) {
   let entries
   try {
     entries = readdirSync(dir, { withFileTypes: true })
@@ -14,7 +14,7 @@ export function sweepOldFiles(dir, maxAgeMs, now = Date.now()) {
   for (const entry of entries) {
     const full = path.join(dir, entry.name)
     if (entry.isDirectory()) {
-      removed.push(...sweepOldFiles(full, maxAgeMs, now).removed)
+      if (recurse) removed.push(...sweepOldFiles(full, maxAgeMs, now, { recurse }).removed)
       continue
     }
     if (!entry.isFile()) continue

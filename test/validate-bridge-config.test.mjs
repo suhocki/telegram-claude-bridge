@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { validateBridgeConfig, resolveBotSlug } from '../lib.mjs'
+import { validateBridgeConfig, resolveBotSlug, resolveBotStateFile } from '../lib.mjs'
 
 const VALID = { botToken: '123:abc', cwd: '/repo', allowedUserIds: [1] }
 
@@ -20,6 +20,13 @@ test('validateBridgeConfig: missing cwd is an error', () => {
   assert.match(validateBridgeConfig({ ...VALID, cwd: '' }), /cwd/)
 })
 
+test('validateBridgeConfig: a non-string stateFile is an error instead of crashing downstream path resolution', () => {
+  assert.match(validateBridgeConfig({ ...VALID, stateFile: 123 }), /stateFile/)
+  assert.match(validateBridgeConfig({ ...VALID, stateFile: {} }), /stateFile/)
+  assert.equal(validateBridgeConfig({ ...VALID, stateFile: 'state/tldr.json' }), null)
+  assert.equal(validateBridgeConfig({ ...VALID, stateFile: undefined }), null)
+})
+
 test('validateBridgeConfig: allowedUserIds missing/empty with no groups either is an error', () => {
   assert.match(validateBridgeConfig({ ...VALID, allowedUserIds: undefined }), /allowedUserIds/)
   assert.match(validateBridgeConfig({ ...VALID, allowedUserIds: [] }), /allowedUserIds/)
@@ -36,17 +43,33 @@ test('validateBridgeConfig: an empty allowedUserIds is fine for a group-only bot
   assert.equal(validateBridgeConfig(groupOnly), null)
 })
 
-test('validateBridgeConfig: a botSlug already claimed by another config in the repo is an error', () => {
-  const err = validateBridgeConfig(VALID, { botSlug: 'tldr', existingBotSlugs: ['tldr', 'ig'] })
-  assert.match(err, /tldr/)
+test('validateBridgeConfig: a stateFilePath already claimed by another config in the repo is an error', () => {
+  const err = validateBridgeConfig(VALID, {
+    stateFilePath: '/repo/state/tldr.json',
+    existingStateFilePaths: ['/repo/state/tldr.json', '/repo/state/ig.json'],
+  })
+  assert.match(err, /tldr\.json/)
 })
 
-test('validateBridgeConfig: a botSlug not claimed by any other config passes', () => {
-  assert.equal(validateBridgeConfig(VALID, { botSlug: 'tldr', existingBotSlugs: ['ig'] }), null)
+test('validateBridgeConfig: a stateFilePath not claimed by any other config passes', () => {
+  assert.equal(
+    validateBridgeConfig(VALID, { stateFilePath: '/repo/state/tldr.json', existingStateFilePaths: ['/repo/state/ig.json'] }),
+    null
+  )
 })
 
-test('validateBridgeConfig: no existingBotSlugs option means no collision check', () => {
-  assert.equal(validateBridgeConfig(VALID, { botSlug: 'tldr' }), null)
+test('validateBridgeConfig: two different directories that merely share a basename do not collide', () => {
+  assert.equal(
+    validateBridgeConfig(VALID, {
+      stateFilePath: '/repo/stateA/bot.json',
+      existingStateFilePaths: ['/repo/stateB/bot.json'],
+    }),
+    null
+  )
+})
+
+test('validateBridgeConfig: no existingStateFilePaths option means no collision check', () => {
+  assert.equal(validateBridgeConfig(VALID, { stateFilePath: '/repo/state/tldr.json' }), null)
 })
 
 test('validateBridgeConfig: retentionDays must be a positive number when given', () => {
@@ -57,15 +80,21 @@ test('validateBridgeConfig: retentionDays must be a positive number when given',
   assert.equal(validateBridgeConfig({ ...VALID, retentionDays: undefined }), null)
 })
 
-test('validateBridgeConfig: claudeTurnTimeoutMs/subprocessTimeoutMs must be non-negative numbers when given, but 0 (disabled) is fine', () => {
+test('validateBridgeConfig: claudeTurnTimeoutMs/subprocessTimeoutMs must be non-negative numbers within setTimeout range, but 0 (disabled) is fine', () => {
   for (const field of ['claudeTurnTimeoutMs', 'subprocessTimeoutMs']) {
     assert.match(validateBridgeConfig({ ...VALID, [field]: '20m' }), new RegExp(field))
     assert.match(validateBridgeConfig({ ...VALID, [field]: -1 }), new RegExp(field))
     assert.match(validateBridgeConfig({ ...VALID, [field]: NaN }), new RegExp(field))
+    assert.match(validateBridgeConfig({ ...VALID, [field]: 2 ** 31 }), new RegExp(field))
     assert.equal(validateBridgeConfig({ ...VALID, [field]: 0 }), null)
     assert.equal(validateBridgeConfig({ ...VALID, [field]: 60000 }), null)
     assert.equal(validateBridgeConfig({ ...VALID, [field]: undefined }), null)
   }
+})
+
+test('resolveBotStateFile: resolves a relative stateFile against configDir, defaulting to state.json', () => {
+  assert.equal(resolveBotStateFile('/repo', 'state/tldr.json'), '/repo/state/tldr.json')
+  assert.equal(resolveBotStateFile('/repo', undefined), '/repo/state.json')
 })
 
 test('resolveBotSlug: derives the basename without extension from a given stateFile', () => {
@@ -76,12 +105,4 @@ test('resolveBotSlug: derives the basename without extension from a given stateF
 test('resolveBotSlug: falls back to "state" (from the default state.json) when stateFile is omitted', () => {
   assert.equal(resolveBotSlug('/repo', undefined), 'state')
   assert.equal(resolveBotSlug('/repo', null), 'state')
-})
-
-test('resolveBotSlug: two configs that both omit stateFile collide on the same slug', () => {
-  assert.equal(resolveBotSlug('/repo', undefined), resolveBotSlug('/repo', undefined))
-})
-
-test('resolveBotSlug: different directories with the same basename still collide (same as the bridge\'s own directory namespacing)', () => {
-  assert.equal(resolveBotSlug('/repo', 'state/tldr.json'), resolveBotSlug('/repo', 'archive/tldr.json'))
 })

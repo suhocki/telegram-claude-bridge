@@ -114,6 +114,7 @@ import {
   FetchTimeoutError,
   validateBridgeConfig,
   resolveBotSlug,
+  resolveBotStateFile,
 } from './lib.mjs'
 import { sweepOldFiles } from './retention.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml } from './markdown-html.mjs'
@@ -139,19 +140,20 @@ if (!configPath) {
 
 const config = JSON.parse(readFileSync(configPath, 'utf8'))
 const configDir = path.dirname(path.resolve(configPath))
-const botSlug = resolveBotSlug(configDir, config.stateFile)
 // Only scans configDir, matching how every bot in this repo is actually launched (all *.config.json colocated at the repo root).
-const siblingBotSlugs = readdirSync(configDir)
+const siblingStateFilePaths = readdirSync(configDir)
   .filter(f => f.endsWith('.config.json') && path.resolve(configDir, f) !== path.resolve(configPath))
   .flatMap(f => {
     try {
       const siblingStateFile = JSON.parse(readFileSync(path.join(configDir, f), 'utf8')).stateFile
-      return [resolveBotSlug(configDir, siblingStateFile)]
+      return typeof siblingStateFile === 'string' || siblingStateFile == null ? [resolveBotStateFile(configDir, siblingStateFile)] : []
     } catch {
       return []
     }
   })
-const configError = validateBridgeConfig(config, { botSlug, existingBotSlugs: siblingBotSlugs })
+const stateFilePath =
+  config.stateFile == null || typeof config.stateFile === 'string' ? resolveBotStateFile(configDir, config.stateFile) : null
+const configError = validateBridgeConfig(config, { stateFilePath, existingStateFilePaths: siblingStateFilePaths })
 if (configError) {
   console.error(`invalid config ${configPath}: ${configError}`)
   process.exit(1)
@@ -159,8 +161,9 @@ if (configError) {
 
 const { botToken, cwd, allowedUserIds, appendSystemPrompt, claudeArgs, costWarnUsd, groups, buttonsModule } = config
 const groupsConfig = groups ?? {}
-const stateFile = path.resolve(configDir, config.stateFile ?? 'state.json')
+const stateFile = stateFilePath
 const stateDir = path.dirname(stateFile)
+const botSlug = resolveBotSlug(configDir, config.stateFile)
 // Namespaced by botSlug: every *.config.json in this repo resolves stateDir to the same directory.
 const inboxDir = path.join(stateDir, 'inbox', botSlug)
 const tmpDir = path.join(stateDir, 'tmp', botSlug)
@@ -547,6 +550,7 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
 
   function cancel() {
     if (child.exitCode != null || child.signalCode != null) return
+    if (sigkillTimer) return // already cancelling (e.g. a manual Cancel racing the turn timeout) — don't orphan the first SIGKILL timer
     try {
       process.kill(-child.pid, 'SIGTERM')
     } catch (e) {
@@ -784,7 +788,8 @@ async function runCheckin(key) {
     }
   } catch (e) {
     log('runCheckin failed', key, e.message)
-    await sendReply(chatId, `⚠️ automated check-in failed: ${e.message}`, null, null, threadId).catch(() => {})
+    const text = e.timedOut ? '⏱️ automated check-in timed out' : `⚠️ automated check-in failed: ${e.message}`
+    await sendReply(chatId, text, null, null, threadId).catch(() => {})
   }
 }
 
@@ -815,14 +820,19 @@ async function downloadAttachment(attachment) {
 
 function runSpawn(cmd, args, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args)
+    // detached so a timeout SIGKILLs the whole process group, not just this direct child (mirrors runClaude's cancel()).
+    const child = spawn(cmd, args, { detached: true })
     let err = ''
     child.stderr.on('data', d => (err = (err + d).slice(-2000)))
     let timedOut = false
     const timer = timeoutMs
       ? setTimeout(() => {
           timedOut = true
-          child.kill('SIGKILL')
+          try {
+            process.kill(-child.pid, 'SIGKILL')
+          } catch (e) {
+            log(`runSpawn: SIGKILL failed for ${cmd}`, e.message)
+          }
         }, timeoutMs)
       : null
     child.on('error', e => {
@@ -831,7 +841,7 @@ function runSpawn(cmd, args, timeoutMs) {
     })
     child.on('close', code => {
       if (timer) clearTimeout(timer)
-      if (timedOut) return reject(new Error(`${cmd} timed out after ${timeoutMs}ms`))
+      if (timedOut) return reject(Object.assign(new Error(`${cmd} timed out after ${timeoutMs}ms`), { timedOut: true }))
       if (code === 0) resolve()
       else reject(new Error(`${cmd} exited ${code}: ${err.slice(-500).trim()}`))
     })
@@ -1686,11 +1696,15 @@ async function poll() {
 }
 
 function sweepStateDirectories() {
-  // Sweeps the shared parent (e.g. state/inbox), not just this bot's own <dir>/<botSlug>
-  // subdirectory, so it also catches pre-migration files left flat at the top level.
-  for (const dir of [inboxDir, tmpDir, outboxDir, rewindBackupDir].map(d => path.dirname(d))) {
+  const retentionDays = config.retentionDays ?? 14
+  for (const dir of [inboxDir, tmpDir, outboxDir, rewindBackupDir]) {
     const { removed } = sweepOldFiles(dir, RETENTION_SWEEP_MAX_AGE_MS)
-    if (removed.length) log('retention sweep removed', removed.length, `file(s) older than ${config.retentionDays ?? 14}d from`, dir)
+    if (removed.length) log('retention sweep removed', removed.length, `file(s) older than ${retentionDays}d from`, dir)
+  }
+  // Shallow only: cleans up pre-migration flat files at the shared parent without touching a sibling bot's own subtree.
+  for (const dir of [inboxDir, tmpDir, outboxDir, rewindBackupDir].map(d => path.dirname(d))) {
+    const { removed } = sweepOldFiles(dir, RETENTION_SWEEP_MAX_AGE_MS, undefined, { recurse: false })
+    if (removed.length) log('retention sweep removed', removed.length, `legacy flat file(s) older than ${retentionDays}d from`, dir)
   }
 }
 

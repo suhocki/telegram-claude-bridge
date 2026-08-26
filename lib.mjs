@@ -941,19 +941,29 @@ export function validateNotifyConfig(config) {
   return null
 }
 
-// Lets validateBridgeConfig catch a collision between configs even when "stateFile" is omitted/differs but resolves to the same basename.
+// The absolute path bridge.mjs actually reads/writes as its state file, applying the same default it does.
+export function resolveBotStateFile(configDir, stateFileValue) {
+  return path.resolve(configDir, stateFileValue ?? 'state.json')
+}
+
+// The subdirectory name inbox/tmp/outbox/rewind-backups get namespaced under; a plain basename is fine since it's always joined back onto that bot's own stateDir.
 export function resolveBotSlug(configDir, stateFileValue) {
-  const resolved = path.resolve(configDir, stateFileValue ?? 'state.json')
+  const resolved = resolveBotStateFile(configDir, stateFileValue)
   return path.basename(resolved, path.extname(resolved))
 }
 
+const MAX_TIMEOUT_MS = 2 ** 31 - 1 // Node's setTimeout silently clamps anything past this to 1ms
+
 // Fails fast on a copy-paste config mistake instead of looping forever in poll()'s retry loop or silently corrupting a shared state.json.
-export function validateBridgeConfig(config, { botSlug, existingBotSlugs = [] } = {}) {
+export function validateBridgeConfig(config, { stateFilePath, existingStateFilePaths = [] } = {}) {
   if (!config || typeof config.botToken !== 'string' || !config.botToken.trim()) {
     return 'config is missing "botToken"'
   }
   if (typeof config.cwd !== 'string' || !config.cwd.trim()) {
     return 'config is missing "cwd"'
+  }
+  if (config.stateFile != null && typeof config.stateFile !== 'string') {
+    return '"stateFile" must be a string when given'
   }
   // allowedUserIds only gates DMs; a group-only bot is authorized via "groups" instead.
   const hasAllowedUserIds = Array.isArray(config.allowedUserIds) && config.allowedUserIds.length > 0
@@ -961,17 +971,18 @@ export function validateBridgeConfig(config, { botSlug, existingBotSlugs = [] } 
   if (!hasAllowedUserIds && !hasGroupsConfig) {
     return 'config has neither a non-empty "allowedUserIds" array nor any "groups" entries — nobody could ever be authorized'
   }
-  if (botSlug != null && existingBotSlugs.includes(botSlug)) {
-    return `"stateFile" resolves to the same bot slug ("${botSlug}") as another config in this repo — each bot needs its own`
+  // Full resolved path, not just the basename-derived slug, so different-directory/same-filename configs don't false-collide.
+  if (stateFilePath != null && existingStateFilePaths.includes(stateFilePath)) {
+    return `"stateFile" resolves to the same path (${stateFilePath}) as another config in this repo — each bot needs its own`
   }
   if (config.retentionDays != null && (typeof config.retentionDays !== 'number' || !(config.retentionDays > 0))) {
     return '"retentionDays" must be a positive number when given'
   }
-  // 0 disables the timeout (runClaude/runSpawn's own convention), so these allow 0 but not negative/NaN/non-numeric.
+  // 0 disables the timeout (runClaude/runSpawn's own convention); the upper bound guards against Node's silent setTimeout clamping.
   for (const field of ['claudeTurnTimeoutMs', 'subprocessTimeoutMs']) {
     const value = config[field]
-    if (value != null && (typeof value !== 'number' || Number.isNaN(value) || value < 0)) {
-      return `"${field}" must be a non-negative number when given`
+    if (value != null && (typeof value !== 'number' || Number.isNaN(value) || value < 0 || value > MAX_TIMEOUT_MS)) {
+      return `"${field}" must be a number between 0 and ${MAX_TIMEOUT_MS} when given`
     }
   }
   return null
