@@ -140,6 +140,7 @@ if (!configPath) {
 const config = JSON.parse(readFileSync(configPath, 'utf8'))
 const configDir = path.dirname(path.resolve(configPath))
 const botSlug = resolveBotSlug(configDir, config.stateFile)
+// Only scans configDir, matching how every bot in this repo is actually launched (all *.config.json colocated at the repo root).
 const siblingBotSlugs = readdirSync(configDir)
   .filter(f => f.endsWith('.config.json') && path.resolve(configDir, f) !== path.resolve(configPath))
   .flatMap(f => {
@@ -521,6 +522,13 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
 
   let sigkillTimer = null
   let timedOut = false
+  // 0/falsy means "no timeout", matching runSpawn's convention below.
+  const turnTimeoutTimer = CLAUDE_TURN_TIMEOUT_MS
+    ? setTimeout(() => {
+        timedOut = true
+        cancel()
+      }, CLAUDE_TURN_TIMEOUT_MS)
+    : null
   const promise = new Promise((resolve, reject) => {
     child.on('error', e => {
       if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer)
@@ -529,18 +537,13 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
     child.on('close', code => {
       if (sigkillTimer) clearTimeout(sigkillTimer)
       if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer)
-      if (timedOut) return reject(Object.assign(new Error(`claude timed out after ${CLAUDE_TURN_TIMEOUT_MS}ms with no result`), { timedOut: true }))
+      // a result that arrived just as the timeout killed the process is still a real result — same
+      // priority the caller already gives a result that beats a manual cancel's SIGTERM to the exit.
       if (result) return resolve(result)
+      if (timedOut) return reject(Object.assign(new Error(`claude timed out after ${CLAUDE_TURN_TIMEOUT_MS}ms with no result`), { timedOut: true }))
       reject(new Error(err || `claude exited ${code} with no result event\n${stdoutTail}`))
     })
   })
-  // 0/falsy means "no timeout", matching runSpawn's convention below.
-  const turnTimeoutTimer = CLAUDE_TURN_TIMEOUT_MS
-    ? setTimeout(() => {
-        timedOut = true
-        cancel()
-      }, CLAUDE_TURN_TIMEOUT_MS)
-    : null
 
   function cancel() {
     if (child.exitCode != null || child.signalCode != null) return
@@ -1683,7 +1686,9 @@ async function poll() {
 }
 
 function sweepStateDirectories() {
-  for (const dir of [inboxDir, tmpDir, outboxDir, rewindBackupDir]) {
+  // Sweeps the shared parent (e.g. state/inbox), not just this bot's own <dir>/<botSlug>
+  // subdirectory, so it also catches pre-migration files left flat at the top level.
+  for (const dir of [inboxDir, tmpDir, outboxDir, rewindBackupDir].map(d => path.dirname(d))) {
     const { removed } = sweepOldFiles(dir, RETENTION_SWEEP_MAX_AGE_MS)
     if (removed.length) log('retention sweep removed', removed.length, `file(s) older than ${config.retentionDays ?? 14}d from`, dir)
   }

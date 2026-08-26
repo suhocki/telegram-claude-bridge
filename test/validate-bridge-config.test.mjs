@@ -57,6 +57,17 @@ test('validateBridgeConfig: retentionDays must be a positive number when given',
   assert.equal(validateBridgeConfig({ ...VALID, retentionDays: undefined }), null)
 })
 
+test('validateBridgeConfig: claudeTurnTimeoutMs/subprocessTimeoutMs must be non-negative numbers when given, but 0 (disabled) is fine', () => {
+  for (const field of ['claudeTurnTimeoutMs', 'subprocessTimeoutMs']) {
+    assert.match(validateBridgeConfig({ ...VALID, [field]: '20m' }), new RegExp(field))
+    assert.match(validateBridgeConfig({ ...VALID, [field]: -1 }), new RegExp(field))
+    assert.match(validateBridgeConfig({ ...VALID, [field]: NaN }), new RegExp(field))
+    assert.equal(validateBridgeConfig({ ...VALID, [field]: 0 }), null)
+    assert.equal(validateBridgeConfig({ ...VALID, [field]: 60000 }), null)
+    assert.equal(validateBridgeConfig({ ...VALID, [field]: undefined }), null)
+  }
+})
+
 test('resolveBotSlug: derives the basename without extension from a given stateFile', () => {
   assert.equal(resolveBotSlug('/repo', 'state/tldr.json'), 'tldr')
   assert.equal(resolveBotSlug('/repo', 'state/ig.json'), 'ig')

@@ -967,6 +967,13 @@ export function validateBridgeConfig(config, { botSlug, existingBotSlugs = [] } 
   if (config.retentionDays != null && (typeof config.retentionDays !== 'number' || !(config.retentionDays > 0))) {
     return '"retentionDays" must be a positive number when given'
   }
+  // 0 disables the timeout (runClaude/runSpawn's own convention), so these allow 0 but not negative/NaN/non-numeric.
+  for (const field of ['claudeTurnTimeoutMs', 'subprocessTimeoutMs']) {
+    const value = config[field]
+    if (value != null && (typeof value !== 'number' || Number.isNaN(value) || value < 0)) {
+      return `"${field}" must be a non-negative number when given`
+    }
+  }
   return null
 }
 
