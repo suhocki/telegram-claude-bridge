@@ -28,6 +28,11 @@ export function parseThreadKey(key) {
   return { chatId: s.slice(0, idx), threadId: Number(s.slice(idx + 1)) }
 }
 
+// Keeps only the tail once a growing buffer (stdout/stderr from a long-running subprocess) exceeds limit.
+export function appendCapped(acc, piece, limit) {
+  return (acc + piece).slice(-limit)
+}
+
 export function chunk(text, limit = 4096) {
   const out = []
   let rest = text
@@ -937,6 +942,53 @@ export function buildRewindUnavailableNotice() {
 export function validateNotifyConfig(config) {
   if (!config || typeof config.botToken !== 'string' || !config.botToken.trim()) {
     return 'config is missing "botToken"'
+  }
+  return null
+}
+
+// The absolute path bridge.mjs actually reads/writes as its state file, applying the same default it does.
+export function resolveBotStateFile(configDir, stateFileValue) {
+  return path.resolve(configDir, stateFileValue ?? 'state.json')
+}
+
+// The subdirectory name inbox/tmp/outbox/rewind-backups get namespaced under; a plain basename is fine since it's always joined back onto that bot's own stateDir.
+export function resolveBotSlug(configDir, stateFileValue) {
+  const resolved = resolveBotStateFile(configDir, stateFileValue)
+  return path.basename(resolved, path.extname(resolved))
+}
+
+const MAX_TIMEOUT_MS = 2 ** 31 - 1 // Node's setTimeout silently clamps anything past this to 1ms
+
+// Fails fast on a copy-paste config mistake instead of looping forever in poll()'s retry loop or silently corrupting a shared state.json.
+export function validateBridgeConfig(config, { stateFilePath, existingStateFilePaths = [] } = {}) {
+  if (!config || typeof config.botToken !== 'string' || !config.botToken.trim()) {
+    return 'config is missing "botToken"'
+  }
+  if (typeof config.cwd !== 'string' || !config.cwd.trim()) {
+    return 'config is missing "cwd"'
+  }
+  if (config.stateFile != null && typeof config.stateFile !== 'string') {
+    return '"stateFile" must be a string when given'
+  }
+  // allowedUserIds only gates DMs; a group-only bot is authorized via "groups" instead.
+  const hasAllowedUserIds = Array.isArray(config.allowedUserIds) && config.allowedUserIds.length > 0
+  const hasGroupsConfig = config.groups && typeof config.groups === 'object' && Object.keys(config.groups).length > 0
+  if (!hasAllowedUserIds && !hasGroupsConfig) {
+    return 'config has neither a non-empty "allowedUserIds" array nor any "groups" entries — nobody could ever be authorized'
+  }
+  // Full resolved path (case-insensitive, matching macOS's default filesystem), not just the basename-derived slug.
+  if (stateFilePath != null && existingStateFilePaths.some(p => p.toLowerCase() === stateFilePath.toLowerCase())) {
+    return `"stateFile" resolves to the same path (${stateFilePath}) as another config in this repo — each bot needs its own`
+  }
+  if (config.retentionDays != null && (typeof config.retentionDays !== 'number' || !(config.retentionDays > 0))) {
+    return '"retentionDays" must be a positive number when given'
+  }
+  // 0 disables the timeout (runClaude/runSpawn's own convention); the upper bound guards against Node's silent setTimeout clamping.
+  for (const field of ['claudeTurnTimeoutMs', 'subprocessTimeoutMs']) {
+    const value = config[field]
+    if (value != null && (typeof value !== 'number' || Number.isNaN(value) || value < 0 || value > MAX_TIMEOUT_MS)) {
+      return `"${field}" must be a number between 0 and ${MAX_TIMEOUT_MS} when given`
+    }
   }
   return null
 }

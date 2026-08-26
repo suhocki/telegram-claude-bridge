@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   chunk,
+  appendCapped,
   sanitizeAttr,
   threadKey,
   resolveThreadId,
@@ -182,6 +183,14 @@ test('threadIdParam: null/undefined threadId spreads to nothing', () => {
 
 test('threadIdParam: a numeric threadId spreads to message_thread_id', () => {
   assert.deepEqual(threadIdParam(55), { message_thread_id: 55 })
+})
+
+test('appendCapped: below the limit, just concatenates', () => {
+  assert.equal(appendCapped('ab', 'cd', 10), 'abcd')
+})
+
+test('appendCapped: past the limit, keeps only the tail', () => {
+  assert.equal(appendCapped('a'.repeat(1990), 'b'.repeat(20), 2000), 'a'.repeat(1980) + 'b'.repeat(20))
 })
 
 test('chunk: text under the limit is returned as a single part', () => {
