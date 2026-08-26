@@ -971,8 +971,8 @@ export function validateBridgeConfig(config, { stateFilePath, existingStateFileP
   if (!hasAllowedUserIds && !hasGroupsConfig) {
     return 'config has neither a non-empty "allowedUserIds" array nor any "groups" entries — nobody could ever be authorized'
   }
-  // Full resolved path, not just the basename-derived slug, so different-directory/same-filename configs don't false-collide.
-  if (stateFilePath != null && existingStateFilePaths.includes(stateFilePath)) {
+  // Full resolved path (case-insensitive, matching macOS's default filesystem), not just the basename-derived slug.
+  if (stateFilePath != null && existingStateFilePaths.some(p => p.toLowerCase() === stateFilePath.toLowerCase())) {
     return `"stateFile" resolves to the same path (${stateFilePath}) as another config in this repo — each bot needs its own`
   }
   if (config.retentionDays != null && (typeof config.retentionDays !== 'number' || !(config.retentionDays > 0))) {

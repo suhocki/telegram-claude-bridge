@@ -540,8 +540,7 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
     child.on('close', code => {
       if (sigkillTimer) clearTimeout(sigkillTimer)
       if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer)
-      // a result that arrived just as the timeout killed the process is still a real result — same
-      // priority the caller already gives a result that beats a manual cancel's SIGTERM to the exit.
+      // a result that arrived just as the timeout killed the process is still a real result, same as for a manual cancel.
       if (result) return resolve(result)
       if (timedOut) return reject(Object.assign(new Error(`claude timed out after ${CLAUDE_TURN_TIMEOUT_MS}ms with no result`), { timedOut: true }))
       reject(new Error(err || `claude exited ${code} with no result event\n${stdoutTail}`))
@@ -1204,11 +1203,9 @@ async function runClaudeTurn(
           reply_markup: buildContinueKeyboard(chatId),
         }).catch(() => {})
       } else {
-        botMessageIds.push(
-          ...(await sendReply(chatId, e.timedOut ? '⏱️ timed out' : '🚫 cancelled', originMessageId, currentPlaceholderId, threadId).catch(
-            () => []
-          ))
-        )
+        // cancelled wins if both raced (a manual cancel right as the turn timeout also fired) — it reflects user intent.
+        const text = !cancelled && e.timedOut ? '⏱️ timed out' : '🚫 cancelled'
+        botMessageIds.push(...(await sendReply(chatId, text, originMessageId, currentPlaceholderId, threadId).catch(() => [])))
       }
       saveState(state)
     } else {
@@ -1697,12 +1694,13 @@ async function poll() {
 
 function sweepStateDirectories() {
   const retentionDays = config.retentionDays ?? 14
-  for (const dir of [inboxDir, tmpDir, outboxDir, rewindBackupDir]) {
+  const namespacedDirs = [inboxDir, tmpDir, outboxDir, rewindBackupDir]
+  for (const dir of namespacedDirs) {
     const { removed } = sweepOldFiles(dir, RETENTION_SWEEP_MAX_AGE_MS)
     if (removed.length) log('retention sweep removed', removed.length, `file(s) older than ${retentionDays}d from`, dir)
   }
   // Shallow only: cleans up pre-migration flat files at the shared parent without touching a sibling bot's own subtree.
-  for (const dir of [inboxDir, tmpDir, outboxDir, rewindBackupDir].map(d => path.dirname(d))) {
+  for (const dir of namespacedDirs.map(d => path.dirname(d))) {
     const { removed } = sweepOldFiles(dir, RETENTION_SWEEP_MAX_AGE_MS, undefined, { recurse: false })
     if (removed.length) log('retention sweep removed', removed.length, `legacy flat file(s) older than ${retentionDays}d from`, dir)
   }

@@ -51,6 +51,14 @@ test('validateBridgeConfig: a stateFilePath already claimed by another config in
   assert.match(err, /tldr\.json/)
 })
 
+test('validateBridgeConfig: the stateFilePath collision check is case-insensitive (matching macOS\'s default filesystem)', () => {
+  const err = validateBridgeConfig(VALID, {
+    stateFilePath: '/repo/state/Tldr.json',
+    existingStateFilePaths: ['/repo/state/tldr.json'],
+  })
+  assert.match(err, /Tldr\.json/)
+})
+
 test('validateBridgeConfig: a stateFilePath not claimed by any other config passes', () => {
   assert.equal(
     validateBridgeConfig(VALID, { stateFilePath: '/repo/state/tldr.json', existingStateFilePaths: ['/repo/state/ig.json'] }),
