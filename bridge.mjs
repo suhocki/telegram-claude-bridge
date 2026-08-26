@@ -113,6 +113,7 @@ import {
   fetchWithTimeout,
   FetchTimeoutError,
   validateBridgeConfig,
+  resolveBotSlug,
 } from './lib.mjs'
 import { sweepOldFiles } from './retention.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml } from './markdown-html.mjs'
@@ -138,17 +139,18 @@ if (!configPath) {
 
 const config = JSON.parse(readFileSync(configPath, 'utf8'))
 const configDir = path.dirname(path.resolve(configPath))
-const siblingStateFiles = readdirSync(configDir)
+const botSlug = resolveBotSlug(configDir, config.stateFile)
+const siblingBotSlugs = readdirSync(configDir)
   .filter(f => f.endsWith('.config.json') && path.resolve(configDir, f) !== path.resolve(configPath))
   .flatMap(f => {
     try {
-      const stateFileValue = JSON.parse(readFileSync(path.join(configDir, f), 'utf8')).stateFile
-      return stateFileValue ? [stateFileValue] : []
+      const siblingStateFile = JSON.parse(readFileSync(path.join(configDir, f), 'utf8')).stateFile
+      return [resolveBotSlug(configDir, siblingStateFile)]
     } catch {
       return []
     }
   })
-const configError = validateBridgeConfig(config, { existingStateFiles: siblingStateFiles })
+const configError = validateBridgeConfig(config, { botSlug, existingBotSlugs: siblingBotSlugs })
 if (configError) {
   console.error(`invalid config ${configPath}: ${configError}`)
   process.exit(1)
@@ -156,11 +158,9 @@ if (configError) {
 
 const { botToken, cwd, allowedUserIds, appendSystemPrompt, claudeArgs, costWarnUsd, groups, buttonsModule } = config
 const groupsConfig = groups ?? {}
-const stateFile = path.resolve(path.dirname(configPath), config.stateFile ?? 'state.json')
+const stateFile = path.resolve(configDir, config.stateFile ?? 'state.json')
 const stateDir = path.dirname(stateFile)
-// Namespaced per bot: every *.config.json in this repo resolves stateDir to the same
-// telegram-bridge/state/ directory, so without this every bot shared one inbox/tmp/outbox.
-const botSlug = path.basename(stateFile, path.extname(stateFile))
+// Namespaced by botSlug: every *.config.json in this repo resolves stateDir to the same directory.
 const inboxDir = path.join(stateDir, 'inbox', botSlug)
 const tmpDir = path.join(stateDir, 'tmp', botSlug)
 const outboxDir = path.join(stateDir, 'outbox', botSlug)
@@ -180,8 +180,7 @@ const TTS_REQUEST_TIMEOUT_MS = 30000
 // Telegram rate-limits editMessageText to roughly 1/sec per chat; this stays safely under
 // that while still feeling "live" for the growing-text placeholder preview.
 const STREAM_EDIT_INTERVAL_MS = 1300
-// A hung `claude` process (stuck tool call, OOM without exit) would otherwise block its
-// chat/topic queue forever, since the only other way to stop it is a user tapping Cancel.
+// A hung `claude` process would otherwise block its chat/topic queue forever with no recovery.
 const CLAUDE_TURN_TIMEOUT_MS = config.claudeTurnTimeoutMs ?? 20 * 60 * 1000
 const SUBPROCESS_TIMEOUT_MS = config.subprocessTimeoutMs ?? 5 * 60 * 1000
 const RETENTION_SWEEP_MAX_AGE_MS = (config.retentionDays ?? 14) * 24 * 60 * 60 * 1000
@@ -523,19 +522,25 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
   let sigkillTimer = null
   let timedOut = false
   const promise = new Promise((resolve, reject) => {
-    child.on('error', reject)
+    child.on('error', e => {
+      if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer)
+      reject(e)
+    })
     child.on('close', code => {
       if (sigkillTimer) clearTimeout(sigkillTimer)
-      clearTimeout(turnTimeoutTimer)
-      if (timedOut) return reject(new Error(`claude timed out after ${CLAUDE_TURN_TIMEOUT_MS}ms with no result`))
+      if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer)
+      if (timedOut) return reject(Object.assign(new Error(`claude timed out after ${CLAUDE_TURN_TIMEOUT_MS}ms with no result`), { timedOut: true }))
       if (result) return resolve(result)
       reject(new Error(err || `claude exited ${code} with no result event\n${stdoutTail}`))
     })
   })
-  const turnTimeoutTimer = setTimeout(() => {
-    timedOut = true
-    cancel()
-  }, CLAUDE_TURN_TIMEOUT_MS)
+  // 0/falsy means "no timeout", matching runSpawn's convention below.
+  const turnTimeoutTimer = CLAUDE_TURN_TIMEOUT_MS
+    ? setTimeout(() => {
+        timedOut = true
+        cancel()
+      }, CLAUDE_TURN_TIMEOUT_MS)
+    : null
 
   function cancel() {
     if (child.exitCode != null || child.signalCode != null) return
@@ -817,7 +822,10 @@ function runSpawn(cmd, args, timeoutMs) {
           child.kill('SIGKILL')
         }, timeoutMs)
       : null
-    child.on('error', reject)
+    child.on('error', e => {
+      if (timer) clearTimeout(timer)
+      reject(e)
+    })
     child.on('close', code => {
       if (timer) clearTimeout(timer)
       if (timedOut) return reject(new Error(`${cmd} timed out after ${timeoutMs}ms`))
@@ -1157,7 +1165,7 @@ async function runClaudeTurn(
   } catch (e) {
     run.finished = true
     rootController.statusUpdater.stop()
-    if (cancelled) {
+    if (cancelled || e.timedOut) {
       // a hard kill often beats runClaude's own capturedSessionId to any stream line, so fall back to the resume id this turn was already given
       const resumableSessionId = e.cancelledResult?.session_id ?? getSessionId() ?? sessionId
       if (resumableSessionId) {
@@ -1183,7 +1191,11 @@ async function runClaudeTurn(
           reply_markup: buildContinueKeyboard(chatId),
         }).catch(() => {})
       } else {
-        botMessageIds.push(...(await sendReply(chatId, '🚫 cancelled', originMessageId, currentPlaceholderId, threadId).catch(() => [])))
+        botMessageIds.push(
+          ...(await sendReply(chatId, e.timedOut ? '⏱️ timed out' : '🚫 cancelled', originMessageId, currentPlaceholderId, threadId).catch(
+            () => []
+          ))
+        )
       }
       saveState(state)
     } else {

@@ -1,9 +1,7 @@
 import { readdirSync, statSync, rmSync } from 'node:fs'
 import path from 'node:path'
 
-// Recurses so a single call can cover a per-bot subdirectory tree (e.g. inbox/<bot>/...).
-// Missing/unreadable dirs are not an error — most of these (inbox, tmp, outbox,
-// rewind-backups) are only created lazily on first use.
+// Missing/unreadable dirs are not an error — inbox/tmp/outbox/rewind-backups are created lazily on first use.
 export function sweepOldFiles(dir, maxAgeMs, now = Date.now()) {
   let entries
   try {
