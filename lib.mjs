@@ -28,6 +28,11 @@ export function parseThreadKey(key) {
   return { chatId: s.slice(0, idx), threadId: Number(s.slice(idx + 1)) }
 }
 
+// Keeps only the tail once a growing buffer (stdout/stderr from a long-running subprocess) exceeds limit.
+export function appendCapped(acc, piece, limit) {
+  return (acc + piece).slice(-limit)
+}
+
 export function chunk(text, limit = 4096) {
   const out = []
   let rest = text

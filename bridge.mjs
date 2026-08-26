@@ -115,6 +115,7 @@ import {
   validateBridgeConfig,
   resolveBotSlug,
   resolveBotStateFile,
+  appendCapped,
 } from './lib.mjs'
 import { sweepOldFiles } from './retention.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml } from './markdown-html.mjs'
@@ -504,7 +505,7 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
   let stdoutTail = ''
   child.stdout.on('data', d => {
     const text = d.toString()
-    stdoutTail = (stdoutTail + text).slice(-2000)
+    stdoutTail = appendCapped(stdoutTail, text, 2000)
     for (const line of pushChunk(text)) {
       const event = parseJsonlLine(line)
       if (!event) continue
@@ -521,7 +522,7 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
       }
     }
   })
-  child.stderr.on('data', d => (err = (err + d).slice(-2000)))
+  child.stderr.on('data', d => (err = appendCapped(err, d, 2000)))
 
   let sigkillTimer = null
   let timedOut = false
@@ -822,7 +823,7 @@ function runSpawn(cmd, args, timeoutMs) {
     // detached so a timeout SIGKILLs the whole process group, not just this direct child (mirrors runClaude's cancel()).
     const child = spawn(cmd, args, { detached: true })
     let err = ''
-    child.stderr.on('data', d => (err = (err + d).slice(-2000)))
+    child.stderr.on('data', d => (err = appendCapped(err, d, 2000)))
     let timedOut = false
     const timer = timeoutMs
       ? setTimeout(() => {
