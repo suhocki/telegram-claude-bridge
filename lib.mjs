@@ -941,6 +941,29 @@ export function validateNotifyConfig(config) {
   return null
 }
 
+// Fails fast on a copy-paste config mistake instead of looping forever inside poll()'s
+// catch-and-retry (a missing/typo'd botToken) or, worse, silently corrupting state (two
+// bots pointed at the same stateFile, both doing unsynchronized writes to one state.json).
+export function validateBridgeConfig(config, { existingStateFiles = [] } = {}) {
+  if (!config || typeof config.botToken !== 'string' || !config.botToken.trim()) {
+    return 'config is missing "botToken"'
+  }
+  if (typeof config.cwd !== 'string' || !config.cwd.trim()) {
+    return 'config is missing "cwd"'
+  }
+  // allowedUserIds only gates DMs — a group-only bot (requireMention/allowFrom under "groups")
+  // legitimately has none, so either one being present is enough.
+  const hasAllowedUserIds = Array.isArray(config.allowedUserIds) && config.allowedUserIds.length > 0
+  const hasGroupsConfig = config.groups && typeof config.groups === 'object' && Object.keys(config.groups).length > 0
+  if (!hasAllowedUserIds && !hasGroupsConfig) {
+    return 'config has neither a non-empty "allowedUserIds" array nor any "groups" entries — nobody could ever be authorized'
+  }
+  if (config.stateFile != null && existingStateFiles.includes(config.stateFile)) {
+    return `"stateFile" (${config.stateFile}) is already used by another config in this repo — each bot needs its own`
+  }
+  return null
+}
+
 export function resolveNotifyChatId(config, explicitChatId) {
   if (explicitChatId != null && String(explicitChatId).trim()) return String(explicitChatId).trim()
   if (config?.notifyChatId != null && String(config.notifyChatId).trim()) return String(config.notifyChatId).trim()

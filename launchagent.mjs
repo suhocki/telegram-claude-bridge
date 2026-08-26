@@ -52,7 +52,10 @@ ${envXml}${schedulingXml}  <key>StandardOutPath</key>
 
 export function buildLaunchAgentPlist({ label, programArguments, workingDirectory, logPath, env = {} }) {
   checkCommonFields({ label, programArguments, workingDirectory, logPath })
-  const schedulingXml = '  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <true/>\n'
+  // Without this, a fast crash loop (bad config, missing binary, revoked token) restarts as
+  // fast as launchd allows, hammering the Telegram API on every getMe/setMyCommands/getUpdates call.
+  const schedulingXml =
+    '  <key>RunAtLoad</key>\n  <true/>\n  <key>KeepAlive</key>\n  <true/>\n  <key>ThrottleInterval</key>\n  <integer>10</integer>\n'
   return renderPlist({ label, programArguments, workingDirectory, logPath, env, schedulingXml })
 }
 

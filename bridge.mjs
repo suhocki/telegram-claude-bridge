@@ -112,7 +112,9 @@ import {
   createTelegramClient,
   fetchWithTimeout,
   FetchTimeoutError,
+  validateBridgeConfig,
 } from './lib.mjs'
+import { sweepOldFiles } from './retention.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml } from './markdown-html.mjs'
 import {
   DEFAULT_WORKING_STATUS,
@@ -135,14 +137,34 @@ if (!configPath) {
 }
 
 const config = JSON.parse(readFileSync(configPath, 'utf8'))
+const configDir = path.dirname(path.resolve(configPath))
+const siblingStateFiles = readdirSync(configDir)
+  .filter(f => f.endsWith('.config.json') && path.resolve(configDir, f) !== path.resolve(configPath))
+  .flatMap(f => {
+    try {
+      const stateFileValue = JSON.parse(readFileSync(path.join(configDir, f), 'utf8')).stateFile
+      return stateFileValue ? [stateFileValue] : []
+    } catch {
+      return []
+    }
+  })
+const configError = validateBridgeConfig(config, { existingStateFiles: siblingStateFiles })
+if (configError) {
+  console.error(`invalid config ${configPath}: ${configError}`)
+  process.exit(1)
+}
+
 const { botToken, cwd, allowedUserIds, appendSystemPrompt, claudeArgs, costWarnUsd, groups, buttonsModule } = config
 const groupsConfig = groups ?? {}
 const stateFile = path.resolve(path.dirname(configPath), config.stateFile ?? 'state.json')
 const stateDir = path.dirname(stateFile)
-const inboxDir = path.join(stateDir, 'inbox')
-const tmpDir = path.join(stateDir, 'tmp')
-const outboxDir = path.join(stateDir, 'outbox')
-const rewindBackupDir = path.join(stateDir, 'rewind-backups')
+// Namespaced per bot: every *.config.json in this repo resolves stateDir to the same
+// telegram-bridge/state/ directory, so without this every bot shared one inbox/tmp/outbox.
+const botSlug = path.basename(stateFile, path.extname(stateFile))
+const inboxDir = path.join(stateDir, 'inbox', botSlug)
+const tmpDir = path.join(stateDir, 'tmp', botSlug)
+const outboxDir = path.join(stateDir, 'outbox', botSlug)
+const rewindBackupDir = path.join(stateDir, 'rewind-backups', botSlug)
 // Resolved against the bridge module's own directory, not cwd/configPath, so every config shares one file.
 const workingPhrasesFile = path.join(path.dirname(fileURLToPath(import.meta.url)), 'working-phrases.json')
 const API = `https://api.telegram.org/bot${botToken}`
@@ -158,6 +180,12 @@ const TTS_REQUEST_TIMEOUT_MS = 30000
 // Telegram rate-limits editMessageText to roughly 1/sec per chat; this stays safely under
 // that while still feeling "live" for the growing-text placeholder preview.
 const STREAM_EDIT_INTERVAL_MS = 1300
+// A hung `claude` process (stuck tool call, OOM without exit) would otherwise block its
+// chat/topic queue forever, since the only other way to stop it is a user tapping Cancel.
+const CLAUDE_TURN_TIMEOUT_MS = config.claudeTurnTimeoutMs ?? 20 * 60 * 1000
+const SUBPROCESS_TIMEOUT_MS = config.subprocessTimeoutMs ?? 5 * 60 * 1000
+const RETENTION_SWEEP_MAX_AGE_MS = (config.retentionDays ?? 14) * 24 * 60 * 60 * 1000
+const RETENTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
 
 const voiceTranscriptionConfig = {
   whisperBin: DEFAULT_WHISPER_BIN,
@@ -212,7 +240,7 @@ function loadState() {
 function saveState(state) {
   const tmp = stateFile + '.tmp'
   writeFileSync(tmp, JSON.stringify(state, null, 2))
-  writeFileSync(stateFile, readFileSync(tmp))
+  renameSync(tmp, stateFile)
 }
 
 // Reads working-phrases.json fresh each call; never throws, since it runs before handleMessage's own try/catch.
@@ -490,17 +518,24 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
       }
     }
   })
-  child.stderr.on('data', d => (err += d))
+  child.stderr.on('data', d => (err = (err + d).slice(-2000)))
 
   let sigkillTimer = null
+  let timedOut = false
   const promise = new Promise((resolve, reject) => {
     child.on('error', reject)
     child.on('close', code => {
       if (sigkillTimer) clearTimeout(sigkillTimer)
+      clearTimeout(turnTimeoutTimer)
+      if (timedOut) return reject(new Error(`claude timed out after ${CLAUDE_TURN_TIMEOUT_MS}ms with no result`))
       if (result) return resolve(result)
       reject(new Error(err || `claude exited ${code} with no result event\n${stdoutTail}`))
     })
   })
+  const turnTimeoutTimer = setTimeout(() => {
+    timedOut = true
+    cancel()
+  }, CLAUDE_TURN_TIMEOUT_MS)
 
   function cancel() {
     if (child.exitCode != null || child.signalCode != null) return
@@ -770,13 +805,22 @@ async function downloadAttachment(attachment) {
   }
 }
 
-function runSpawn(cmd, args) {
+function runSpawn(cmd, args, timeoutMs) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args)
     let err = ''
-    child.stderr.on('data', d => (err += d))
+    child.stderr.on('data', d => (err = (err + d).slice(-2000)))
+    let timedOut = false
+    const timer = timeoutMs
+      ? setTimeout(() => {
+          timedOut = true
+          child.kill('SIGKILL')
+        }, timeoutMs)
+      : null
     child.on('error', reject)
     child.on('close', code => {
+      if (timer) clearTimeout(timer)
+      if (timedOut) return reject(new Error(`${cmd} timed out after ${timeoutMs}ms`))
       if (code === 0) resolve()
       else reject(new Error(`${cmd} exited ${code}: ${err.slice(-500).trim()}`))
     })
@@ -789,9 +833,13 @@ async function transcribeVoice(filePath) {
   const wavPath = `${base}.wav`
   const txtPath = `${base}.txt`
   try {
-    await runSpawn('ffmpeg', buildFfmpegConvertArgs(filePath, wavPath))
+    await runSpawn('ffmpeg', buildFfmpegConvertArgs(filePath, wavPath), SUBPROCESS_TIMEOUT_MS)
     const modelPath = expandHome(voiceTranscriptionConfig.modelPath, homedir())
-    await runSpawn(voiceTranscriptionConfig.whisperBin, buildWhisperArgs(wavPath, modelPath, voiceTranscriptionConfig.language, base))
+    await runSpawn(
+      voiceTranscriptionConfig.whisperBin,
+      buildWhisperArgs(wavPath, modelPath, voiceTranscriptionConfig.language, base),
+      SUBPROCESS_TIMEOUT_MS
+    )
     return { text: parseWhisperTranscript(readFileSync(txtPath, 'utf8')) }
   } catch (e) {
     return { error: e.message }
@@ -1622,5 +1670,14 @@ async function poll() {
   }
 }
 
+function sweepStateDirectories() {
+  for (const dir of [inboxDir, tmpDir, outboxDir, rewindBackupDir]) {
+    const { removed } = sweepOldFiles(dir, RETENTION_SWEEP_MAX_AGE_MS)
+    if (removed.length) log('retention sweep removed', removed.length, `file(s) older than ${config.retentionDays ?? 14}d from`, dir)
+  }
+}
+
 process.on('unhandledRejection', e => log('unhandled rejection', e))
+sweepStateDirectories()
+setInterval(sweepStateDirectories, RETENTION_SWEEP_INTERVAL_MS)
 poll()

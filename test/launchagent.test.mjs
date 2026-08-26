@@ -33,6 +33,16 @@ test('buildLaunchAgentPlist: emits Label, ProgramArguments, WorkingDirectory, Ru
   assert.match(xml, /<key>KeepAlive<\/key>\s*<true\/>/)
 })
 
+test('buildLaunchAgentPlist: emits a ThrottleInterval so a fast crash loop cannot hammer the Telegram API', () => {
+  const xml = buildLaunchAgentPlist({
+    label: 'com.tgbridge.tldr',
+    programArguments: ['/usr/bin/node'],
+    workingDirectory: '/repo',
+    logPath: '/logs/telegram-bridge-tldr.log',
+  })
+  assert.match(xml, /<key>ThrottleInterval<\/key>\s*<integer>\d+<\/integer>/)
+})
+
 test('buildLaunchAgentPlist: StandardOutPath and StandardErrorPath both point at the same log file', () => {
   const xml = buildLaunchAgentPlist({
     label: 'com.tgbridge.tldr',
