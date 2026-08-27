@@ -118,6 +118,7 @@ import {
   appendCapped,
 } from './lib.mjs'
 import { sweepOldFiles } from './retention.mjs'
+import { loadGlobalAuthMode, saveGlobalAuthMode } from './auth-mode.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml } from './markdown-html.mjs'
 import {
   DEFAULT_WORKING_STATUS,
@@ -170,6 +171,8 @@ const inboxDir = path.join(stateDir, 'inbox', botSlug)
 const tmpDir = path.join(stateDir, 'tmp', botSlug)
 const outboxDir = path.join(stateDir, 'outbox', botSlug)
 const rewindBackupDir = path.join(stateDir, 'rewind-backups', botSlug)
+// Deliberately NOT namespaced by botSlug: switching auth mode anywhere should apply to every bot sharing this stateDir.
+const authModeFile = path.join(stateDir, 'auth-mode.json')
 // Resolved against the bridge module's own directory, not cwd/configPath, so every config shares one file.
 const workingPhrasesFile = path.join(path.dirname(fileURLToPath(import.meta.url)), 'working-phrases.json')
 const API = `https://api.telegram.org/bot${botToken}`
@@ -219,7 +222,6 @@ function emptyState() {
     pendingCheckins: {},
     turns: {},
     workingPhraseQueue: null,
-    authMode: {},
     pendingContinue: {},
   }
 }
@@ -233,12 +235,17 @@ function loadState() {
     state.pendingCheckins ??= {}
     state.turns ??= {}
     state.workingPhraseQueue ??= null
-    state.authMode ??= {}
     state.pendingContinue ??= {}
     return state
   } catch {
     return emptyState()
   }
+}
+
+// Read fresh every time (not cached in `state`) so a mode switch made by any bot/chat sharing
+// this stateDir takes effect for this process on its very next turn, no restart needed.
+function currentAuthMode() {
+  return loadGlobalAuthMode(authModeFile)
 }
 
 function saveState(state) {
@@ -750,7 +757,7 @@ async function runCheckin(key) {
   }
 
   try {
-    const { promise: checkinPromise } = runClaude(buildCheckinFollowupPrompt(pending.instruction), sessionId, undefined, state.authMode[key])
+    const { promise: checkinPromise } = runClaude(buildCheckinFollowupPrompt(pending.instruction), sessionId, undefined, currentAuthMode())
     const result = await checkinPromise
     const priorSession = normalizeSession(state.sessions[key])
     let newSession = priorSession
@@ -1293,8 +1300,7 @@ async function handleMessage(msg) {
       await sendReply(chatId, unmet, msg.message_id, null, threadId).catch(() => {})
       return
     }
-    state.authMode[key] = mode
-    saveState(state)
+    saveGlobalAuthMode(authModeFile, mode)
     await setReaction(chatId, msg.message_id, AUTH_SWITCH_REACTION).catch(() => {})
     return
   }
@@ -1303,7 +1309,7 @@ async function handleMessage(msg) {
   const sessionId = session?.id
 
   if (command === 'status') {
-    await sendReply(chatId, formatStatusText(session, state.authMode[key]), msg.message_id, null, threadId).catch(() => {})
+    await sendReply(chatId, formatStatusText(session, currentAuthMode()), msg.message_id, null, threadId).catch(() => {})
     return
   }
 
@@ -1433,7 +1439,7 @@ async function handleMessage(msg) {
     return runClaudeTurn(chatId, key, threadId, run, {
       prompt,
       sessionId,
-      authMode: state.authMode[key],
+      authMode: currentAuthMode(),
       priorSession: session,
       workingStatus,
       botMessageIds,
@@ -1475,7 +1481,7 @@ async function handleContinue(chatId, key, threadId, pending) {
     runClaudeTurn(chatId, key, threadId, run, {
       prompt: buildContinuePrompt(),
       sessionId: pending.sessionId,
-      authMode: state.authMode[key],
+      authMode: currentAuthMode(),
       priorSession,
       workingStatus,
       botMessageIds,

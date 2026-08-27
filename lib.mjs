@@ -841,8 +841,8 @@ export function buildBotCommands() {
     { command: 'new', description: 'start a new conversation (clears the context)' },
     { command: 'status', description: 'show the session id and cost so far' },
     { command: 'compact', description: 'compact the conversation to free up context' },
-    { command: 'subscription', description: 'run claude on the subscription (OAuth) login' },
-    { command: 'apikey', description: 'run claude on the ANTHROPIC_API_KEY' },
+    { command: 'subscription', description: 'run claude on the subscription (OAuth) login, everywhere' },
+    { command: 'apikey', description: 'run claude on the ANTHROPIC_API_KEY, everywhere' },
   ]
 }
 
