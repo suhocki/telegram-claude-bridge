@@ -513,6 +513,7 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
 
   let sigkillTimer = null
   let timedOut = false
+  let timedOutReason = null // 'idle' | 'absolute' — kept distinct so a future log/metric can tell a hang apart from a runaway loop
   let turnTimeoutTimer = null
   // Idle timeout (rearmed below on every stdout chunk) so a busy-but-progressing turn is never killed.
   function armTurnTimeout() {
@@ -520,6 +521,7 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
     if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer)
     turnTimeoutTimer = setTimeout(() => {
       timedOut = true
+      timedOutReason = 'idle'
       cancel()
     }, CLAUDE_TURN_TIMEOUT_MS)
   }
@@ -528,6 +530,7 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
   const absoluteTimeoutTimer = CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS
     ? setTimeout(() => {
         timedOut = true
+        timedOutReason = 'absolute'
         cancel()
       }, CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS)
     : null
@@ -566,7 +569,13 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
       if (absoluteTimeoutTimer) clearTimeout(absoluteTimeoutTimer)
       // a result that arrived just as the timeout killed the process is still a real result, same as for a manual cancel.
       if (result) return resolve(result)
-      if (timedOut) return reject(Object.assign(new Error('claude turn timed out (idle or absolute cap)'), { timedOut: true }))
+      if (timedOut) {
+        const detail =
+          timedOutReason === 'idle'
+            ? `no output for ${CLAUDE_TURN_TIMEOUT_MS}ms`
+            : `still running after ${CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS}ms`
+        return reject(Object.assign(new Error(`claude turn timed out (${timedOutReason}: ${detail})`), { timedOut: true, timedOutReason }))
+      }
       reject(new Error(err || `claude exited ${code} with no result event\n${stdoutTail}`))
     })
   })
