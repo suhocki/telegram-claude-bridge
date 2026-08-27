@@ -100,6 +100,19 @@ test('validateBridgeConfig: claudeTurnTimeoutMs/claudeTurnAbsoluteTimeoutMs/subp
   }
 })
 
+test('validateBridgeConfig: claudeTurnAbsoluteTimeoutMs must be at least claudeTurnTimeoutMs when both are given', () => {
+  const err = validateBridgeConfig({ ...VALID, claudeTurnTimeoutMs: 1200000, claudeTurnAbsoluteTimeoutMs: 300000 })
+  assert.match(err, /claudeTurnAbsoluteTimeoutMs/)
+  assert.equal(validateBridgeConfig({ ...VALID, claudeTurnTimeoutMs: 1200000, claudeTurnAbsoluteTimeoutMs: 1200000 }), null)
+  assert.equal(validateBridgeConfig({ ...VALID, claudeTurnTimeoutMs: 1200000, claudeTurnAbsoluteTimeoutMs: 14400000 }), null)
+})
+
+test('validateBridgeConfig: the ordering check does not apply when either side is 0 (disabled) or unset', () => {
+  assert.equal(validateBridgeConfig({ ...VALID, claudeTurnTimeoutMs: 0, claudeTurnAbsoluteTimeoutMs: 300000 }), null)
+  assert.equal(validateBridgeConfig({ ...VALID, claudeTurnTimeoutMs: 1200000, claudeTurnAbsoluteTimeoutMs: 0 }), null)
+  assert.equal(validateBridgeConfig({ ...VALID, claudeTurnTimeoutMs: 1200000 }), null)
+})
+
 test('resolveBotStateFile: resolves a relative stateFile against configDir, defaulting to state.json', () => {
   assert.equal(resolveBotStateFile('/repo', 'state/tldr.json'), '/repo/state/tldr.json')
   assert.equal(resolveBotStateFile('/repo', undefined), '/repo/state.json')
