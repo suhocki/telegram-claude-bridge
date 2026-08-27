@@ -588,6 +588,7 @@ function hasOAuthLogin() {
   }
 }
 
+// Only checks the switching bot's own process env, even though the switch itself is global — accepted because every com.tgbridge.* launchd plist is generated from the same ANTHROPIC_API_KEY, so they can't actually diverge in this deployment.
 const AUTH_MODE_PREREQUISITES = {
   subscription: () =>
     hasOAuthLogin() ? null : '⚠️ no Claude subscription (OAuth) login found on this machine — run `claude login` first, then try again.',
