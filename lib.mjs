@@ -2,8 +2,16 @@
 
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { writeFileSync, renameSync } from 'node:fs'
 import { markdownToTelegramHtml, htmlToPlainFallback, escapeHtml } from './markdown-html.mjs'
 import { truncateStatus } from './stream-progress.mjs'
+
+// pid-suffixed so two processes writing the same path (e.g. auth-mode.json, shared across every bot) never share one tmp file.
+export function atomicWriteFileSync(filePath, content) {
+  const tmp = `${filePath}.tmp.${process.pid}`
+  writeFileSync(tmp, content)
+  renameSync(tmp, filePath)
+}
 
 // Gate on is_topic_message, not merely message_thread_id presence: Telegram also stamps the latter on plain reply-chains in non-forum groups.
 export function threadKey(chatId, msg) {
@@ -89,6 +97,11 @@ export function classifyCommand(text, botUsername) {
 // unset/unrecognized state defaults to the pre-existing "pass the env through" behavior
 export function normalizeAuthMode(raw) {
   return raw === 'subscription' ? 'subscription' : 'apikey'
+}
+
+// One-time migration input: any chat anywhere having run /subscription before means the operator wants it, so it wins over apikey.
+export function deriveLegacyAuthMode(authModeValues) {
+  return authModeValues.includes('subscription') ? 'subscription' : 'apikey'
 }
 
 export function buildChildEnv(baseEnv, authMode) {
@@ -841,8 +854,8 @@ export function buildBotCommands() {
     { command: 'new', description: 'start a new conversation (clears the context)' },
     { command: 'status', description: 'show the session id and cost so far' },
     { command: 'compact', description: 'compact the conversation to free up context' },
-    { command: 'subscription', description: 'run claude on the subscription (OAuth) login' },
-    { command: 'apikey', description: 'run claude on the ANTHROPIC_API_KEY' },
+    { command: 'subscription', description: 'run claude on the subscription (OAuth) login, everywhere' },
+    { command: 'apikey', description: 'run claude on the ANTHROPIC_API_KEY, everywhere' },
   ]
 }
 

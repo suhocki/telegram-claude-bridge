@@ -11,7 +11,6 @@ import {
   statSync,
   rmSync,
   readdirSync,
-  renameSync,
   copyFileSync,
   realpathSync,
 } from 'node:fs'
@@ -116,8 +115,11 @@ import {
   resolveBotSlug,
   resolveBotStateFile,
   appendCapped,
+  atomicWriteFileSync,
+  deriveLegacyAuthMode,
 } from './lib.mjs'
 import { sweepOldFiles } from './retention.mjs'
+import { loadGlobalAuthMode, saveGlobalAuthMode, seedGlobalAuthModeIfMissing, collectLegacyAuthModeValues } from './auth-mode.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml } from './markdown-html.mjs'
 import {
   DEFAULT_WORKING_STATUS,
@@ -170,6 +172,8 @@ const inboxDir = path.join(stateDir, 'inbox', botSlug)
 const tmpDir = path.join(stateDir, 'tmp', botSlug)
 const outboxDir = path.join(stateDir, 'outbox', botSlug)
 const rewindBackupDir = path.join(stateDir, 'rewind-backups', botSlug)
+// Deliberately NOT namespaced by botSlug: switching auth mode anywhere should apply to every bot sharing this stateDir.
+const authModeFile = path.join(stateDir, 'auth-mode.txt')
 // Resolved against the bridge module's own directory, not cwd/configPath, so every config shares one file.
 const workingPhrasesFile = path.join(path.dirname(fileURLToPath(import.meta.url)), 'working-phrases.json')
 const API = `https://api.telegram.org/bot${botToken}`
@@ -219,7 +223,6 @@ function emptyState() {
     pendingCheckins: {},
     turns: {},
     workingPhraseQueue: null,
-    authMode: {},
     pendingContinue: {},
   }
 }
@@ -233,7 +236,6 @@ function loadState() {
     state.pendingCheckins ??= {}
     state.turns ??= {}
     state.workingPhraseQueue ??= null
-    state.authMode ??= {}
     state.pendingContinue ??= {}
     return state
   } catch {
@@ -241,10 +243,13 @@ function loadState() {
   }
 }
 
+// Read fresh (not cached in `state`) so a switch made anywhere takes effect here on the very next turn.
+function currentAuthMode() {
+  return loadGlobalAuthMode(authModeFile)
+}
+
 function saveState(state) {
-  const tmp = stateFile + '.tmp'
-  writeFileSync(tmp, JSON.stringify(state, null, 2))
-  renameSync(tmp, stateFile)
+  atomicWriteFileSync(stateFile, JSON.stringify(state, null, 2))
 }
 
 // Reads working-phrases.json fresh each call; never throws, since it runs before handleMessage's own try/catch.
@@ -583,6 +588,7 @@ function hasOAuthLogin() {
   }
 }
 
+// Only checks the switching bot's own process env, even though the switch itself is global — accepted because every com.tgbridge.* launchd plist is generated from the same ANTHROPIC_API_KEY, so they can't actually diverge in this deployment.
 const AUTH_MODE_PREREQUISITES = {
   subscription: () =>
     hasOAuthLogin() ? null : '⚠️ no Claude subscription (OAuth) login found on this machine — run `claude login` first, then try again.',
@@ -630,9 +636,7 @@ function rewindTranscript(sessionId, anchorMessageId) {
   } catch (e) {
     log('rewind backup failed, continuing anyway', e.message)
   }
-  const tmp = `${file}.rewind.tmp`
-  writeFileSync(tmp, kept.length ? `${kept.join('\n')}\n` : '')
-  renameSync(tmp, file)
+  atomicWriteFileSync(file, kept.length ? `${kept.join('\n')}\n` : '')
   return { ok: true, removed: lines.length - kept.length, sessionUsable: hasConversationEntry(kept) }
 }
 
@@ -750,7 +754,7 @@ async function runCheckin(key) {
   }
 
   try {
-    const { promise: checkinPromise } = runClaude(buildCheckinFollowupPrompt(pending.instruction), sessionId, undefined, state.authMode[key])
+    const { promise: checkinPromise } = runClaude(buildCheckinFollowupPrompt(pending.instruction), sessionId, undefined, currentAuthMode())
     const result = await checkinPromise
     const priorSession = normalizeSession(state.sessions[key])
     let newSession = priorSession
@@ -1293,8 +1297,7 @@ async function handleMessage(msg) {
       await sendReply(chatId, unmet, msg.message_id, null, threadId).catch(() => {})
       return
     }
-    state.authMode[key] = mode
-    saveState(state)
+    saveGlobalAuthMode(authModeFile, mode)
     await setReaction(chatId, msg.message_id, AUTH_SWITCH_REACTION).catch(() => {})
     return
   }
@@ -1303,7 +1306,7 @@ async function handleMessage(msg) {
   const sessionId = session?.id
 
   if (command === 'status') {
-    await sendReply(chatId, formatStatusText(session, state.authMode[key]), msg.message_id, null, threadId).catch(() => {})
+    await sendReply(chatId, formatStatusText(session, currentAuthMode()), msg.message_id, null, threadId).catch(() => {})
     return
   }
 
@@ -1433,7 +1436,7 @@ async function handleMessage(msg) {
     return runClaudeTurn(chatId, key, threadId, run, {
       prompt,
       sessionId,
-      authMode: state.authMode[key],
+      authMode: currentAuthMode(),
       priorSession: session,
       workingStatus,
       botMessageIds,
@@ -1475,7 +1478,7 @@ async function handleContinue(chatId, key, threadId, pending) {
     runClaudeTurn(chatId, key, threadId, run, {
       prompt: buildContinuePrompt(),
       sessionId: pending.sessionId,
-      authMode: state.authMode[key],
+      authMode: currentAuthMode(),
       priorSession,
       workingStatus,
       botMessageIds,
@@ -1707,7 +1710,15 @@ function sweepStateDirectories() {
   }
 }
 
+// One-time: seeds the new global file from old per-chat state.authMode data (existsSync is just a fast-path skip, not the race guard).
+function migrateLegacyAuthModeIfNeeded() {
+  if (existsSync(authModeFile)) return
+  const mode = deriveLegacyAuthMode(collectLegacyAuthModeValues(stateDir))
+  if (seedGlobalAuthModeIfMissing(authModeFile, mode)) log('migrated legacy per-chat auth mode to global:', mode)
+}
+
 process.on('unhandledRejection', e => log('unhandled rejection', e))
+migrateLegacyAuthModeIfNeeded()
 sweepStateDirectories()
 setInterval(sweepStateDirectories, RETENTION_SWEEP_INTERVAL_MS)
 poll()

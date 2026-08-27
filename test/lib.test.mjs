@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   chunk,
   appendCapped,
+  atomicWriteFileSync,
   sanitizeAttr,
   threadKey,
   resolveThreadId,
@@ -115,10 +116,13 @@ import {
   MAX_TRACKED_TURNS,
   TELEGRAM_ALLOWED_UPDATES,
   normalizeAuthMode,
+  deriveLegacyAuthMode,
   buildChildEnv,
   AUTH_SWITCH_REACTION,
 } from '../lib.mjs'
 import path from 'node:path'
+import { mkdtempSync, rmSync, readFileSync, readdirSync } from 'node:fs'
+import os from 'node:os'
 
 function deferred() {
   let resolve, reject
@@ -191,6 +195,24 @@ test('appendCapped: below the limit, just concatenates', () => {
 
 test('appendCapped: past the limit, keeps only the tail', () => {
   assert.equal(appendCapped('a'.repeat(1990), 'b'.repeat(20), 2000), 'a'.repeat(1980) + 'b'.repeat(20))
+})
+
+test('atomicWriteFileSync: writes the content and leaves no stray tmp file behind', () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'atomic-write-'))
+  const file = path.join(dir, 'out.json')
+  atomicWriteFileSync(file, JSON.stringify({ a: 1 }))
+  assert.equal(readFileSync(file, 'utf8'), JSON.stringify({ a: 1 }))
+  assert.deepEqual(readdirSync(dir), ['out.json'])
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('atomicWriteFileSync: a second write overwrites the first', () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'atomic-write-'))
+  const file = path.join(dir, 'out.json')
+  atomicWriteFileSync(file, 'first')
+  atomicWriteFileSync(file, 'second')
+  assert.equal(readFileSync(file, 'utf8'), 'second')
+  rmSync(dir, { recursive: true, force: true })
 })
 
 test('chunk: text under the limit is returned as a single part', () => {
@@ -314,6 +336,16 @@ test('normalizeAuthMode: anything else (including unset) defaults to "apikey"', 
   assert.equal(normalizeAuthMode(undefined), 'apikey')
   assert.equal(normalizeAuthMode(null), 'apikey')
   assert.equal(normalizeAuthMode('bogus'), 'apikey')
+})
+
+test('deriveLegacyAuthMode: any "subscription" among the legacy per-chat values wins', () => {
+  assert.equal(deriveLegacyAuthMode(['apikey', 'subscription', 'apikey']), 'subscription')
+  assert.equal(deriveLegacyAuthMode(['subscription']), 'subscription')
+})
+
+test('deriveLegacyAuthMode: no "subscription" anywhere (including empty) defaults to "apikey"', () => {
+  assert.equal(deriveLegacyAuthMode(['apikey', 'apikey']), 'apikey')
+  assert.equal(deriveLegacyAuthMode([]), 'apikey')
 })
 
 test('buildChildEnv: "apikey" mode (and unset) passes the environment through unchanged', () => {
