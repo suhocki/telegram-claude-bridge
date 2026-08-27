@@ -191,8 +191,8 @@ const TTS_REQUEST_TIMEOUT_MS = 30000
 const STREAM_EDIT_INTERVAL_MS = 1300
 // Idle timeout (no stdout output at all for this long), not a cap on total turn duration — a long but actively streaming turn never trips it.
 const CLAUDE_TURN_TIMEOUT_MS = config.claudeTurnTimeoutMs ?? 20 * 60 * 1000
-// Backstop for a runaway loop the idle timeout alone wouldn't catch; defaults to disabled too if claudeTurnTimeoutMs was explicitly set to 0.
-const CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS = config.claudeTurnAbsoluteTimeoutMs ?? (CLAUDE_TURN_TIMEOUT_MS ? 4 * 60 * 60 * 1000 : 0)
+// Backstop for a runaway loop the idle timeout alone wouldn't catch; scales with it (default 20min idle -> 4h) so a longer configured idle timeout can't end up shorter than its own backstop, and 0 stays disabled.
+const CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS = config.claudeTurnAbsoluteTimeoutMs ?? CLAUDE_TURN_TIMEOUT_MS * 12
 const SUBPROCESS_TIMEOUT_MS = config.subprocessTimeoutMs ?? 5 * 60 * 1000
 const RETENTION_SWEEP_MAX_AGE_MS = (config.retentionDays ?? 14) * 24 * 60 * 60 * 1000
 const RETENTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -513,26 +513,24 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
 
   let sigkillTimer = null
   let timedOut = false
-  let timedOutReason = null // 'idle' | 'absolute' — kept distinct so a future log/metric can tell a hang apart from a runaway loop
+  let timedOutReason = null // 'idle' | 'absolute' — first one to fire wins, kept distinct so a future log/metric can tell a hang apart from a runaway loop
   let turnTimeoutTimer = null
+  function markTimedOut(reason) {
+    if (timedOut) return // already timed out via the other timer — don't overwrite which one actually caught it
+    timedOut = true
+    timedOutReason = reason
+    cancel()
+  }
   // Idle timeout (rearmed below on every stdout chunk) so a busy-but-progressing turn is never killed.
   function armTurnTimeout() {
     if (!CLAUDE_TURN_TIMEOUT_MS) return
     if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer)
-    turnTimeoutTimer = setTimeout(() => {
-      timedOut = true
-      timedOutReason = 'idle'
-      cancel()
-    }, CLAUDE_TURN_TIMEOUT_MS)
+    turnTimeoutTimer = setTimeout(() => markTimedOut('idle'), CLAUDE_TURN_TIMEOUT_MS)
   }
   armTurnTimeout()
   // Absolute backstop, never rearmed: catches a runaway loop that keeps emitting small chunks forever (idle timeout alone wouldn't).
   const absoluteTimeoutTimer = CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS
-    ? setTimeout(() => {
-        timedOut = true
-        timedOutReason = 'absolute'
-        cancel()
-      }, CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS)
+    ? setTimeout(() => markTimedOut('absolute'), CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS)
     : null
 
   child.stdout.on('data', d => {
