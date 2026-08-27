@@ -191,8 +191,8 @@ const TTS_REQUEST_TIMEOUT_MS = 30000
 const STREAM_EDIT_INTERVAL_MS = 1300
 // Idle timeout (no stdout output at all for this long), not a cap on total turn duration — a long but actively streaming turn never trips it.
 const CLAUDE_TURN_TIMEOUT_MS = config.claudeTurnTimeoutMs ?? 20 * 60 * 1000
-// Backstop for a runaway loop that keeps emitting small chunks forever, which the idle timeout alone would never catch.
-const CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS = config.claudeTurnAbsoluteTimeoutMs ?? 4 * 60 * 60 * 1000
+// Backstop for a runaway loop the idle timeout alone wouldn't catch; defaults to disabled too if claudeTurnTimeoutMs was explicitly set to 0.
+const CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS = config.claudeTurnAbsoluteTimeoutMs ?? (CLAUDE_TURN_TIMEOUT_MS ? 4 * 60 * 60 * 1000 : 0)
 const SUBPROCESS_TIMEOUT_MS = config.subprocessTimeoutMs ?? 5 * 60 * 1000
 const RETENTION_SWEEP_MAX_AGE_MS = (config.retentionDays ?? 14) * 24 * 60 * 60 * 1000
 const RETENTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
