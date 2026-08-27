@@ -99,15 +99,12 @@ test('seedGlobalAuthModeIfMissing: simulates the exact race this guards against 
   })
 })
 
-test('collectLegacyAuthModeValues: flattens authMode values across every state/*.json, skipping the target file itself', () => {
+test('collectLegacyAuthModeValues: flattens authMode values across every state/*.json (a plain-text auth-mode.txt is skipped, it is not .json)', () => {
   withTmpDir(dir => {
     writeFileSync(path.join(dir, 'tldr.json'), JSON.stringify({ authMode: { '111': 'subscription' } }))
     writeFileSync(path.join(dir, 'ig.json'), JSON.stringify({ authMode: { '222': 'apikey', '333': 'subscription' } }))
     writeFileSync(path.join(dir, 'auth-mode.txt'), 'subscription')
-    assert.deepEqual(
-      collectLegacyAuthModeValues(dir, 'auth-mode.txt').sort(),
-      ['apikey', 'subscription', 'subscription'].sort()
-    )
+    assert.deepEqual(collectLegacyAuthModeValues(dir).sort(), ['apikey', 'subscription', 'subscription'].sort())
   })
 })
 
@@ -116,10 +113,10 @@ test('collectLegacyAuthModeValues: a config with no authMode field, malformed JS
     writeFileSync(path.join(dir, 'jobsearch.json'), JSON.stringify({ offset: 1 }))
     writeFileSync(path.join(dir, 'bad.json'), '{not json')
     writeFileSync(path.join(dir, 'notes.txt'), 'subscription')
-    assert.deepEqual(collectLegacyAuthModeValues(dir, 'auth-mode.txt'), [])
+    assert.deepEqual(collectLegacyAuthModeValues(dir), [])
   })
 })
 
 test('collectLegacyAuthModeValues: a missing stateDir is not an error', () => {
-  assert.deepEqual(collectLegacyAuthModeValues('/no/such/directory/at/all', 'auth-mode.txt'), [])
+  assert.deepEqual(collectLegacyAuthModeValues('/no/such/directory/at/all'), [])
 })

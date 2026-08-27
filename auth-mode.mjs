@@ -28,7 +28,7 @@ export function seedGlobalAuthModeIfMissing(filePath, mode) {
 }
 
 // Missing/unreadable stateDir or per-bot state files just mean "nothing to migrate", not an error.
-export function collectLegacyAuthModeValues(stateDir, excludeFileName) {
+export function collectLegacyAuthModeValues(stateDir) {
   let entries
   try {
     entries = readdirSync(stateDir)
@@ -36,7 +36,7 @@ export function collectLegacyAuthModeValues(stateDir, excludeFileName) {
     return []
   }
   return entries
-    .filter(f => f.endsWith('.json') && f !== excludeFileName)
+    .filter(f => f.endsWith('.json'))
     .flatMap(f => {
       try {
         const raw = JSON.parse(readFileSync(path.join(stateDir, f), 'utf8'))

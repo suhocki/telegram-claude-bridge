@@ -1709,10 +1709,10 @@ function sweepStateDirectories() {
   }
 }
 
-// One-time: seeds the new global file from old per-chat state.authMode data so upgrading doesn't silently revert everyone to apikey.
+// One-time: seeds the new global file from old per-chat state.authMode data (existsSync is just a fast-path skip, not the race guard).
 function migrateLegacyAuthModeIfNeeded() {
-  const legacyValues = collectLegacyAuthModeValues(stateDir, path.basename(authModeFile))
-  const mode = deriveLegacyAuthMode(legacyValues)
+  if (existsSync(authModeFile)) return
+  const mode = deriveLegacyAuthMode(collectLegacyAuthModeValues(stateDir))
   if (seedGlobalAuthModeIfMissing(authModeFile, mode)) log('migrated legacy per-chat auth mode to global:', mode)
 }
 
