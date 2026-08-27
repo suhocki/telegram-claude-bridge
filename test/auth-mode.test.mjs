@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { loadGlobalAuthMode, saveGlobalAuthMode } from '../auth-mode.mjs'
@@ -38,12 +38,12 @@ test('saveGlobalAuthMode then loadGlobalAuthMode round-trips "subscription"', ()
   })
 })
 
-test('saveGlobalAuthMode writes atomically (rename, not a stray .tmp file left behind)', () => {
+test('saveGlobalAuthMode writes atomically (rename, not a stray tmp file left behind)', () => {
   withTmpDir(dir => {
     const file = path.join(dir, 'auth-mode.json')
     saveGlobalAuthMode(file, 'apikey')
     assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { mode: 'apikey' })
-    assert.throws(() => readFileSync(`${file}.tmp`))
+    assert.deepEqual(readdirSync(dir), ['auth-mode.json'])
   })
 })
 

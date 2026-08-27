@@ -1,8 +1,7 @@
-import { readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs'
-import { normalizeAuthMode } from './lib.mjs'
+import { readFileSync, existsSync } from 'node:fs'
+import { normalizeAuthMode, atomicWriteFileSync } from './lib.mjs'
 
-// One file per repo checkout (path chosen by the caller, typically the shared state/ dir every
-// bot config resolves to), so switching mode in any chat of any bot flips it for all of them.
+// The path is chosen by the caller (typically the shared state/ dir every bot config resolves to), so this same file is read/written by every bot.
 export function loadGlobalAuthMode(filePath) {
   if (!existsSync(filePath)) return 'apikey'
   try {
@@ -13,7 +12,5 @@ export function loadGlobalAuthMode(filePath) {
 }
 
 export function saveGlobalAuthMode(filePath, mode) {
-  const tmp = `${filePath}.tmp`
-  writeFileSync(tmp, JSON.stringify({ mode: normalizeAuthMode(mode) }))
-  renameSync(tmp, filePath)
+  atomicWriteFileSync(filePath, JSON.stringify({ mode: normalizeAuthMode(mode) }))
 }

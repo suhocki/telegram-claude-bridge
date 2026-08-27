@@ -116,6 +116,7 @@ import {
   resolveBotSlug,
   resolveBotStateFile,
   appendCapped,
+  atomicWriteFileSync,
 } from './lib.mjs'
 import { sweepOldFiles } from './retention.mjs'
 import { loadGlobalAuthMode, saveGlobalAuthMode } from './auth-mode.mjs'
@@ -242,16 +243,13 @@ function loadState() {
   }
 }
 
-// Read fresh every time (not cached in `state`) so a mode switch made by any bot/chat sharing
-// this stateDir takes effect for this process on its very next turn, no restart needed.
+// Read fresh (not cached in `state`) so a switch made anywhere takes effect here on the very next turn.
 function currentAuthMode() {
   return loadGlobalAuthMode(authModeFile)
 }
 
 function saveState(state) {
-  const tmp = stateFile + '.tmp'
-  writeFileSync(tmp, JSON.stringify(state, null, 2))
-  renameSync(tmp, stateFile)
+  atomicWriteFileSync(stateFile, JSON.stringify(state, null, 2))
 }
 
 // Reads working-phrases.json fresh each call; never throws, since it runs before handleMessage's own try/catch.
@@ -637,9 +635,7 @@ function rewindTranscript(sessionId, anchorMessageId) {
   } catch (e) {
     log('rewind backup failed, continuing anyway', e.message)
   }
-  const tmp = `${file}.rewind.tmp`
-  writeFileSync(tmp, kept.length ? `${kept.join('\n')}\n` : '')
-  renameSync(tmp, file)
+  atomicWriteFileSync(file, kept.length ? `${kept.join('\n')}\n` : '')
   return { ok: true, removed: lines.length - kept.length, sessionUsable: hasConversationEntry(kept) }
 }
 

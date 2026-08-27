@@ -2,8 +2,16 @@
 
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { writeFileSync, renameSync } from 'node:fs'
 import { markdownToTelegramHtml, htmlToPlainFallback, escapeHtml } from './markdown-html.mjs'
 import { truncateStatus } from './stream-progress.mjs'
+
+// pid-suffixed so two processes writing the same path (e.g. auth-mode.json, shared across every bot) never share one tmp file.
+export function atomicWriteFileSync(filePath, content) {
+  const tmp = `${filePath}.tmp.${process.pid}`
+  writeFileSync(tmp, content)
+  renameSync(tmp, filePath)
+}
 
 // Gate on is_topic_message, not merely message_thread_id presence: Telegram also stamps the latter on plain reply-chains in non-forum groups.
 export function threadKey(chatId, msg) {
