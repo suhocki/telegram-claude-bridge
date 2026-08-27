@@ -119,7 +119,7 @@ import {
   deriveLegacyAuthMode,
 } from './lib.mjs'
 import { sweepOldFiles } from './retention.mjs'
-import { loadGlobalAuthMode, saveGlobalAuthMode } from './auth-mode.mjs'
+import { loadGlobalAuthMode, saveGlobalAuthMode, seedGlobalAuthModeIfMissing, collectLegacyAuthModeValues } from './auth-mode.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml } from './markdown-html.mjs'
 import {
   DEFAULT_WORKING_STATUS,
@@ -1711,24 +1711,9 @@ function sweepStateDirectories() {
 
 // One-time: seeds the new global file from old per-chat state.authMode data so upgrading doesn't silently revert everyone to apikey.
 function migrateLegacyAuthModeIfNeeded() {
-  if (existsSync(authModeFile)) return
-  try {
-    const legacyValues = readdirSync(stateDir)
-      .filter(f => f.endsWith('.json'))
-      .flatMap(f => {
-        try {
-          const raw = JSON.parse(readFileSync(path.join(stateDir, f), 'utf8'))
-          return raw.authMode && typeof raw.authMode === 'object' ? Object.values(raw.authMode) : []
-        } catch {
-          return []
-        }
-      })
-    const mode = deriveLegacyAuthMode(legacyValues)
-    saveGlobalAuthMode(authModeFile, mode)
-    log('migrated legacy per-chat auth mode to global:', mode)
-  } catch (e) {
-    log('legacy auth-mode migration failed, defaulting to apikey', e.message)
-  }
+  const legacyValues = collectLegacyAuthModeValues(stateDir, path.basename(authModeFile))
+  const mode = deriveLegacyAuthMode(legacyValues)
+  if (seedGlobalAuthModeIfMissing(authModeFile, mode)) log('migrated legacy per-chat auth mode to global:', mode)
 }
 
 process.on('unhandledRejection', e => log('unhandled rejection', e))
