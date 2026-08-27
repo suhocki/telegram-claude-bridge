@@ -189,7 +189,7 @@ const TTS_REQUEST_TIMEOUT_MS = 30000
 // Telegram rate-limits editMessageText to roughly 1/sec per chat; this stays safely under
 // that while still feeling "live" for the growing-text placeholder preview.
 const STREAM_EDIT_INTERVAL_MS = 1300
-// A hung `claude` process would otherwise block its chat/topic queue forever with no recovery.
+// Idle timeout (no stdout output at all for this long), not a cap on total turn duration — a long but actively streaming turn never trips it.
 const CLAUDE_TURN_TIMEOUT_MS = config.claudeTurnTimeoutMs ?? 20 * 60 * 1000
 const SUBPROCESS_TIMEOUT_MS = config.subprocessTimeoutMs ?? 5 * 60 * 1000
 const RETENTION_SWEEP_MAX_AGE_MS = (config.retentionDays ?? 14) * 24 * 60 * 60 * 1000
@@ -508,7 +508,25 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
   let capturedSessionId = null
   let err = ''
   let stdoutTail = ''
+
+  let sigkillTimer = null
+  let timedOut = false
+  let turnTimeoutTimer = null
+  // Idle timeout, not a flat turn-duration cap: rearmed on every stdout chunk below, so a turn
+  // that's actively streaming (long-running but making progress) never trips it — only a genuine
+  // hang (no output at all for this long) does. 0/falsy means "no timeout".
+  function armTurnTimeout() {
+    if (!CLAUDE_TURN_TIMEOUT_MS) return
+    if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer)
+    turnTimeoutTimer = setTimeout(() => {
+      timedOut = true
+      cancel()
+    }, CLAUDE_TURN_TIMEOUT_MS)
+  }
+  armTurnTimeout()
+
   child.stdout.on('data', d => {
+    armTurnTimeout()
     const text = d.toString()
     stdoutTail = appendCapped(stdoutTail, text, 2000)
     for (const line of pushChunk(text)) {
@@ -529,15 +547,6 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
   })
   child.stderr.on('data', d => (err = appendCapped(err, d, 2000)))
 
-  let sigkillTimer = null
-  let timedOut = false
-  // 0/falsy means "no timeout", matching runSpawn's convention below.
-  const turnTimeoutTimer = CLAUDE_TURN_TIMEOUT_MS
-    ? setTimeout(() => {
-        timedOut = true
-        cancel()
-      }, CLAUDE_TURN_TIMEOUT_MS)
-    : null
   const promise = new Promise((resolve, reject) => {
     child.on('error', e => {
       if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer)
@@ -548,7 +557,7 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
       if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer)
       // a result that arrived just as the timeout killed the process is still a real result, same as for a manual cancel.
       if (result) return resolve(result)
-      if (timedOut) return reject(Object.assign(new Error(`claude timed out after ${CLAUDE_TURN_TIMEOUT_MS}ms with no result`), { timedOut: true }))
+      if (timedOut) return reject(Object.assign(new Error(`claude produced no output for ${CLAUDE_TURN_TIMEOUT_MS}ms, assumed hung`), { timedOut: true }))
       reject(new Error(err || `claude exited ${code} with no result event\n${stdoutTail}`))
     })
   })
