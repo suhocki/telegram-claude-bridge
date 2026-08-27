@@ -970,7 +970,7 @@ export function resolveBotSlug(configDir, stateFileValue) {
   return path.basename(resolved, path.extname(resolved))
 }
 
-const MAX_TIMEOUT_MS = 2 ** 31 - 1 // Node's setTimeout silently clamps anything past this to 1ms
+export const MAX_TIMEOUT_MS = 2 ** 31 - 1 // Node's setTimeout silently clamps anything past this to 1ms
 
 // Fails fast on a copy-paste config mistake instead of looping forever in poll()'s retry loop or silently corrupting a shared state.json.
 export function validateBridgeConfig(config, { stateFilePath, existingStateFilePaths = [] } = {}) {

@@ -117,6 +117,7 @@ import {
   appendCapped,
   atomicWriteFileSync,
   deriveLegacyAuthMode,
+  MAX_TIMEOUT_MS,
 } from './lib.mjs'
 import { sweepOldFiles } from './retention.mjs'
 import { loadGlobalAuthMode, saveGlobalAuthMode, seedGlobalAuthModeIfMissing, collectLegacyAuthModeValues } from './auth-mode.mjs'
@@ -191,8 +192,8 @@ const TTS_REQUEST_TIMEOUT_MS = 30000
 const STREAM_EDIT_INTERVAL_MS = 1300
 // Idle timeout (no stdout output at all for this long), not a cap on total turn duration — a long but actively streaming turn never trips it.
 const CLAUDE_TURN_TIMEOUT_MS = config.claudeTurnTimeoutMs ?? 20 * 60 * 1000
-// Backstop for a runaway loop the idle timeout alone wouldn't catch; scales with it (default 20min idle -> 4h) so a longer configured idle timeout can't end up shorter than its own backstop, and 0 stays disabled.
-const CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS = config.claudeTurnAbsoluteTimeoutMs ?? CLAUDE_TURN_TIMEOUT_MS * 12
+// Backstop for a runaway loop the idle timeout alone wouldn't catch; scales with it (default 20min idle -> 4h), clamped to MAX_TIMEOUT_MS so a very large claudeTurnTimeoutMs can't overflow setTimeout's range and fire almost instantly.
+const CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS = config.claudeTurnAbsoluteTimeoutMs ?? Math.min(CLAUDE_TURN_TIMEOUT_MS * 12, MAX_TIMEOUT_MS)
 const SUBPROCESS_TIMEOUT_MS = config.subprocessTimeoutMs ?? 5 * 60 * 1000
 const RETENTION_SWEEP_MAX_AGE_MS = (config.retentionDays ?? 14) * 24 * 60 * 60 * 1000
 const RETENTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
