@@ -99,6 +99,11 @@ export function normalizeAuthMode(raw) {
   return raw === 'subscription' ? 'subscription' : 'apikey'
 }
 
+// One-time migration input: any chat anywhere having run /subscription before means the operator wants it, so it wins over apikey.
+export function deriveLegacyAuthMode(authModeValues) {
+  return authModeValues.includes('subscription') ? 'subscription' : 'apikey'
+}
+
 export function buildChildEnv(baseEnv, authMode) {
   if (normalizeAuthMode(authMode) !== 'subscription') return baseEnv
   const next = { ...baseEnv }

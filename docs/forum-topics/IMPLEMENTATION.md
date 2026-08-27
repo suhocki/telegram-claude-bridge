@@ -96,7 +96,6 @@ and write site below to index by `threadKey(chatId, messageThreadId)` instead:
 | `state.pendingContinue` | 1101-1107, 1523, 1528 | 580-589, 1350-1392 |
 | `state.pendingCheckins` | 663-668 | 635, 1185, boot re-arm at 240-241 |
 | `state.turns` | 591-597 (`trackBotMessages`), 632 (rewind slice) | 610-640, 1183, 1341-1346, 1385-1390 |
-| `state.authMode` | 1198 | 691, 1208, 1331, 1373 |
 | `state.voiceReply` | 1077 | 1173 |
 
 This must land as **one atomic change** — not field-by-field over several PRs.

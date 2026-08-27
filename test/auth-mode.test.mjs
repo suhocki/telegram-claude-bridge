@@ -16,23 +16,31 @@ function withTmpDir(fn) {
 
 test('loadGlobalAuthMode: missing file defaults to "apikey"', () => {
   withTmpDir(dir => {
-    assert.equal(loadGlobalAuthMode(path.join(dir, 'auth-mode.json')), 'apikey')
+    assert.equal(loadGlobalAuthMode(path.join(dir, 'auth-mode.txt')), 'apikey')
   })
 })
 
-test('loadGlobalAuthMode: invalid JSON or an unrecognized mode defaults to "apikey"', () => {
+test('loadGlobalAuthMode: garbage content or an unrecognized mode defaults to "apikey"', () => {
   withTmpDir(dir => {
-    const file = path.join(dir, 'auth-mode.json')
-    writeFileSync(file, '{not json')
+    const file = path.join(dir, 'auth-mode.txt')
+    writeFileSync(file, '{not even trying to be valid')
     assert.equal(loadGlobalAuthMode(file), 'apikey')
-    writeFileSync(file, JSON.stringify({ mode: 'bogus' }))
+    writeFileSync(file, 'bogus')
     assert.equal(loadGlobalAuthMode(file), 'apikey')
+  })
+})
+
+test('loadGlobalAuthMode: tolerates trailing whitespace/newline', () => {
+  withTmpDir(dir => {
+    const file = path.join(dir, 'auth-mode.txt')
+    writeFileSync(file, 'subscription\n')
+    assert.equal(loadGlobalAuthMode(file), 'subscription')
   })
 })
 
 test('saveGlobalAuthMode then loadGlobalAuthMode round-trips "subscription"', () => {
   withTmpDir(dir => {
-    const file = path.join(dir, 'auth-mode.json')
+    const file = path.join(dir, 'auth-mode.txt')
     saveGlobalAuthMode(file, 'subscription')
     assert.equal(loadGlobalAuthMode(file), 'subscription')
   })
@@ -40,16 +48,16 @@ test('saveGlobalAuthMode then loadGlobalAuthMode round-trips "subscription"', ()
 
 test('saveGlobalAuthMode writes atomically (rename, not a stray tmp file left behind)', () => {
   withTmpDir(dir => {
-    const file = path.join(dir, 'auth-mode.json')
+    const file = path.join(dir, 'auth-mode.txt')
     saveGlobalAuthMode(file, 'apikey')
-    assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { mode: 'apikey' })
-    assert.deepEqual(readdirSync(dir), ['auth-mode.json'])
+    assert.equal(readFileSync(file, 'utf8'), 'apikey')
+    assert.deepEqual(readdirSync(dir), ['auth-mode.txt'])
   })
 })
 
 test('saveGlobalAuthMode normalizes an unrecognized mode to "apikey"', () => {
   withTmpDir(dir => {
-    const file = path.join(dir, 'auth-mode.json')
+    const file = path.join(dir, 'auth-mode.txt')
     saveGlobalAuthMode(file, 'bogus')
     assert.equal(loadGlobalAuthMode(file), 'apikey')
   })
@@ -57,7 +65,7 @@ test('saveGlobalAuthMode normalizes an unrecognized mode to "apikey"', () => {
 
 test('one shared file behaves the same regardless of which "bot" reads/writes it (the whole point of the global switch)', () => {
   withTmpDir(dir => {
-    const sharedFile = path.join(dir, 'auth-mode.json')
+    const sharedFile = path.join(dir, 'auth-mode.txt')
     // simulates two separate bot processes pointed at the same stateDir
     saveGlobalAuthMode(sharedFile, 'subscription')
     assert.equal(loadGlobalAuthMode(sharedFile), 'subscription')

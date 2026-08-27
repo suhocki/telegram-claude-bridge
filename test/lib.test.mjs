@@ -116,6 +116,7 @@ import {
   MAX_TRACKED_TURNS,
   TELEGRAM_ALLOWED_UPDATES,
   normalizeAuthMode,
+  deriveLegacyAuthMode,
   buildChildEnv,
   AUTH_SWITCH_REACTION,
 } from '../lib.mjs'
@@ -335,6 +336,16 @@ test('normalizeAuthMode: anything else (including unset) defaults to "apikey"', 
   assert.equal(normalizeAuthMode(undefined), 'apikey')
   assert.equal(normalizeAuthMode(null), 'apikey')
   assert.equal(normalizeAuthMode('bogus'), 'apikey')
+})
+
+test('deriveLegacyAuthMode: any "subscription" among the legacy per-chat values wins', () => {
+  assert.equal(deriveLegacyAuthMode(['apikey', 'subscription', 'apikey']), 'subscription')
+  assert.equal(deriveLegacyAuthMode(['subscription']), 'subscription')
+})
+
+test('deriveLegacyAuthMode: no "subscription" anywhere (including empty) defaults to "apikey"', () => {
+  assert.equal(deriveLegacyAuthMode(['apikey', 'apikey']), 'apikey')
+  assert.equal(deriveLegacyAuthMode([]), 'apikey')
 })
 
 test('buildChildEnv: "apikey" mode (and unset) passes the environment through unchanged', () => {

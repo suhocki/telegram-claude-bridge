@@ -11,7 +11,6 @@ import {
   statSync,
   rmSync,
   readdirSync,
-  renameSync,
   copyFileSync,
   realpathSync,
 } from 'node:fs'
@@ -117,6 +116,7 @@ import {
   resolveBotStateFile,
   appendCapped,
   atomicWriteFileSync,
+  deriveLegacyAuthMode,
 } from './lib.mjs'
 import { sweepOldFiles } from './retention.mjs'
 import { loadGlobalAuthMode, saveGlobalAuthMode } from './auth-mode.mjs'
@@ -173,7 +173,7 @@ const tmpDir = path.join(stateDir, 'tmp', botSlug)
 const outboxDir = path.join(stateDir, 'outbox', botSlug)
 const rewindBackupDir = path.join(stateDir, 'rewind-backups', botSlug)
 // Deliberately NOT namespaced by botSlug: switching auth mode anywhere should apply to every bot sharing this stateDir.
-const authModeFile = path.join(stateDir, 'auth-mode.json')
+const authModeFile = path.join(stateDir, 'auth-mode.txt')
 // Resolved against the bridge module's own directory, not cwd/configPath, so every config shares one file.
 const workingPhrasesFile = path.join(path.dirname(fileURLToPath(import.meta.url)), 'working-phrases.json')
 const API = `https://api.telegram.org/bot${botToken}`
@@ -1709,7 +1709,30 @@ function sweepStateDirectories() {
   }
 }
 
+// One-time: seeds the new global file from old per-chat state.authMode data so upgrading doesn't silently revert everyone to apikey.
+function migrateLegacyAuthModeIfNeeded() {
+  if (existsSync(authModeFile)) return
+  try {
+    const legacyValues = readdirSync(stateDir)
+      .filter(f => f.endsWith('.json'))
+      .flatMap(f => {
+        try {
+          const raw = JSON.parse(readFileSync(path.join(stateDir, f), 'utf8'))
+          return raw.authMode && typeof raw.authMode === 'object' ? Object.values(raw.authMode) : []
+        } catch {
+          return []
+        }
+      })
+    const mode = deriveLegacyAuthMode(legacyValues)
+    saveGlobalAuthMode(authModeFile, mode)
+    log('migrated legacy per-chat auth mode to global:', mode)
+  } catch (e) {
+    log('legacy auth-mode migration failed, defaulting to apikey', e.message)
+  }
+}
+
 process.on('unhandledRejection', e => log('unhandled rejection', e))
+migrateLegacyAuthModeIfNeeded()
 sweepStateDirectories()
 setInterval(sweepStateDirectories, RETENTION_SWEEP_INTERVAL_MS)
 poll()
