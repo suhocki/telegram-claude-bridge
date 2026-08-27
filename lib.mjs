@@ -970,7 +970,7 @@ export function resolveBotSlug(configDir, stateFileValue) {
   return path.basename(resolved, path.extname(resolved))
 }
 
-const MAX_TIMEOUT_MS = 2 ** 31 - 1 // Node's setTimeout silently clamps anything past this to 1ms
+export const MAX_TIMEOUT_MS = 2 ** 31 - 1 // Node's setTimeout silently clamps anything past this to 1ms
 
 // Fails fast on a copy-paste config mistake instead of looping forever in poll()'s retry loop or silently corrupting a shared state.json.
 export function validateBridgeConfig(config, { stateFilePath, existingStateFilePaths = [] } = {}) {
@@ -997,11 +997,15 @@ export function validateBridgeConfig(config, { stateFilePath, existingStateFileP
     return '"retentionDays" must be a positive number when given'
   }
   // 0 disables the timeout (runClaude/runSpawn's own convention); the upper bound guards against Node's silent setTimeout clamping.
-  for (const field of ['claudeTurnTimeoutMs', 'subprocessTimeoutMs']) {
+  for (const field of ['claudeTurnTimeoutMs', 'claudeTurnAbsoluteTimeoutMs', 'subprocessTimeoutMs']) {
     const value = config[field]
     if (value != null && (typeof value !== 'number' || Number.isNaN(value) || value < 0 || value > MAX_TIMEOUT_MS)) {
       return `"${field}" must be a number between 0 and ${MAX_TIMEOUT_MS} when given`
     }
+  }
+  // If the backstop is shorter than the idle timeout it's meant to back up, it fires first and defeats the point of having an idle timeout at all.
+  if (config.claudeTurnTimeoutMs > 0 && config.claudeTurnAbsoluteTimeoutMs > 0 && config.claudeTurnAbsoluteTimeoutMs < config.claudeTurnTimeoutMs) {
+    return '"claudeTurnAbsoluteTimeoutMs" must be at least "claudeTurnTimeoutMs" when both are given'
   }
   return null
 }

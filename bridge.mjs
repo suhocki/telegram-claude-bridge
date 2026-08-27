@@ -117,6 +117,7 @@ import {
   appendCapped,
   atomicWriteFileSync,
   deriveLegacyAuthMode,
+  MAX_TIMEOUT_MS,
 } from './lib.mjs'
 import { sweepOldFiles } from './retention.mjs'
 import { loadGlobalAuthMode, saveGlobalAuthMode, seedGlobalAuthModeIfMissing, collectLegacyAuthModeValues } from './auth-mode.mjs'
@@ -189,8 +190,10 @@ const TTS_REQUEST_TIMEOUT_MS = 30000
 // Telegram rate-limits editMessageText to roughly 1/sec per chat; this stays safely under
 // that while still feeling "live" for the growing-text placeholder preview.
 const STREAM_EDIT_INTERVAL_MS = 1300
-// A hung `claude` process would otherwise block its chat/topic queue forever with no recovery.
+// Idle timeout (no stdout output at all for this long), not a cap on total turn duration — a long but actively streaming turn never trips it.
 const CLAUDE_TURN_TIMEOUT_MS = config.claudeTurnTimeoutMs ?? 20 * 60 * 1000
+// Backstop for a runaway loop the idle timeout alone wouldn't catch; scales with it (default 20min idle -> 4h), clamped to MAX_TIMEOUT_MS so a very large claudeTurnTimeoutMs can't overflow setTimeout's range and fire almost instantly.
+const CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS = config.claudeTurnAbsoluteTimeoutMs ?? Math.min(CLAUDE_TURN_TIMEOUT_MS * 12, MAX_TIMEOUT_MS)
 const SUBPROCESS_TIMEOUT_MS = config.subprocessTimeoutMs ?? 5 * 60 * 1000
 const RETENTION_SWEEP_MAX_AGE_MS = (config.retentionDays ?? 14) * 24 * 60 * 60 * 1000
 const RETENTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -508,7 +511,31 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
   let capturedSessionId = null
   let err = ''
   let stdoutTail = ''
+
+  let sigkillTimer = null
+  let timedOut = false
+  let timedOutReason = null // 'idle' | 'absolute' — first one to fire wins, kept distinct so a future log/metric can tell a hang apart from a runaway loop
+  let turnTimeoutTimer = null
+  function markTimedOut(reason) {
+    if (timedOut) return // already timed out via the other timer — don't overwrite which one actually caught it
+    timedOut = true
+    timedOutReason = reason
+    cancel()
+  }
+  // Idle timeout (rearmed below on every stdout chunk) so a busy-but-progressing turn is never killed.
+  function armTurnTimeout() {
+    if (!CLAUDE_TURN_TIMEOUT_MS) return
+    if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer)
+    turnTimeoutTimer = setTimeout(() => markTimedOut('idle'), CLAUDE_TURN_TIMEOUT_MS)
+  }
+  armTurnTimeout()
+  // Absolute backstop, never rearmed: catches a runaway loop that keeps emitting small chunks forever (idle timeout alone wouldn't).
+  const absoluteTimeoutTimer = CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS
+    ? setTimeout(() => markTimedOut('absolute'), CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS)
+    : null
+
   child.stdout.on('data', d => {
+    armTurnTimeout()
     const text = d.toString()
     stdoutTail = appendCapped(stdoutTail, text, 2000)
     for (const line of pushChunk(text)) {
@@ -529,26 +556,25 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
   })
   child.stderr.on('data', d => (err = appendCapped(err, d, 2000)))
 
-  let sigkillTimer = null
-  let timedOut = false
-  // 0/falsy means "no timeout", matching runSpawn's convention below.
-  const turnTimeoutTimer = CLAUDE_TURN_TIMEOUT_MS
-    ? setTimeout(() => {
-        timedOut = true
-        cancel()
-      }, CLAUDE_TURN_TIMEOUT_MS)
-    : null
   const promise = new Promise((resolve, reject) => {
     child.on('error', e => {
       if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer)
+      if (absoluteTimeoutTimer) clearTimeout(absoluteTimeoutTimer)
       reject(e)
     })
     child.on('close', code => {
       if (sigkillTimer) clearTimeout(sigkillTimer)
       if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer)
+      if (absoluteTimeoutTimer) clearTimeout(absoluteTimeoutTimer)
       // a result that arrived just as the timeout killed the process is still a real result, same as for a manual cancel.
       if (result) return resolve(result)
-      if (timedOut) return reject(Object.assign(new Error(`claude timed out after ${CLAUDE_TURN_TIMEOUT_MS}ms with no result`), { timedOut: true }))
+      if (timedOut) {
+        const detail =
+          timedOutReason === 'idle'
+            ? `no output for ${CLAUDE_TURN_TIMEOUT_MS}ms`
+            : `still running after ${CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS}ms`
+        return reject(Object.assign(new Error(`claude turn timed out (${timedOutReason}: ${detail})`), { timedOut: true, timedOutReason }))
+      }
       reject(new Error(err || `claude exited ${code} with no result event\n${stdoutTail}`))
     })
   })
