@@ -191,6 +191,8 @@ const TTS_REQUEST_TIMEOUT_MS = 30000
 const STREAM_EDIT_INTERVAL_MS = 1300
 // Idle timeout (no stdout output at all for this long), not a cap on total turn duration — a long but actively streaming turn never trips it.
 const CLAUDE_TURN_TIMEOUT_MS = config.claudeTurnTimeoutMs ?? 20 * 60 * 1000
+// Backstop for a runaway loop that keeps emitting small chunks forever, which the idle timeout alone would never catch.
+const CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS = config.claudeTurnAbsoluteTimeoutMs ?? 4 * 60 * 60 * 1000
 const SUBPROCESS_TIMEOUT_MS = config.subprocessTimeoutMs ?? 5 * 60 * 1000
 const RETENTION_SWEEP_MAX_AGE_MS = (config.retentionDays ?? 14) * 24 * 60 * 60 * 1000
 const RETENTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -512,9 +514,7 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
   let sigkillTimer = null
   let timedOut = false
   let turnTimeoutTimer = null
-  // Idle timeout, not a flat turn-duration cap: rearmed on every stdout chunk below, so a turn
-  // that's actively streaming (long-running but making progress) never trips it — only a genuine
-  // hang (no output at all for this long) does. 0/falsy means "no timeout".
+  // Idle timeout (rearmed below on every stdout chunk) so a busy-but-progressing turn is never killed.
   function armTurnTimeout() {
     if (!CLAUDE_TURN_TIMEOUT_MS) return
     if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer)
@@ -524,6 +524,13 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
     }, CLAUDE_TURN_TIMEOUT_MS)
   }
   armTurnTimeout()
+  // Absolute backstop, never rearmed: catches a runaway loop that keeps emitting small chunks forever (idle timeout alone wouldn't).
+  const absoluteTimeoutTimer = CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS
+    ? setTimeout(() => {
+        timedOut = true
+        cancel()
+      }, CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS)
+    : null
 
   child.stdout.on('data', d => {
     armTurnTimeout()
@@ -550,14 +557,16 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
   const promise = new Promise((resolve, reject) => {
     child.on('error', e => {
       if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer)
+      if (absoluteTimeoutTimer) clearTimeout(absoluteTimeoutTimer)
       reject(e)
     })
     child.on('close', code => {
       if (sigkillTimer) clearTimeout(sigkillTimer)
       if (turnTimeoutTimer) clearTimeout(turnTimeoutTimer)
+      if (absoluteTimeoutTimer) clearTimeout(absoluteTimeoutTimer)
       // a result that arrived just as the timeout killed the process is still a real result, same as for a manual cancel.
       if (result) return resolve(result)
-      if (timedOut) return reject(Object.assign(new Error(`claude produced no output for ${CLAUDE_TURN_TIMEOUT_MS}ms, assumed hung`), { timedOut: true }))
+      if (timedOut) return reject(Object.assign(new Error('claude turn timed out (idle or absolute cap)'), { timedOut: true }))
       reject(new Error(err || `claude exited ${code} with no result event\n${stdoutTail}`))
     })
   })

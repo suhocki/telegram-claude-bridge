@@ -997,7 +997,7 @@ export function validateBridgeConfig(config, { stateFilePath, existingStateFileP
     return '"retentionDays" must be a positive number when given'
   }
   // 0 disables the timeout (runClaude/runSpawn's own convention); the upper bound guards against Node's silent setTimeout clamping.
-  for (const field of ['claudeTurnTimeoutMs', 'subprocessTimeoutMs']) {
+  for (const field of ['claudeTurnTimeoutMs', 'claudeTurnAbsoluteTimeoutMs', 'subprocessTimeoutMs']) {
     const value = config[field]
     if (value != null && (typeof value !== 'number' || Number.isNaN(value) || value < 0 || value > MAX_TIMEOUT_MS)) {
       return `"${field}" must be a number between 0 and ${MAX_TIMEOUT_MS} when given`

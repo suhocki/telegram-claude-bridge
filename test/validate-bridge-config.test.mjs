@@ -88,8 +88,8 @@ test('validateBridgeConfig: retentionDays must be a positive number when given',
   assert.equal(validateBridgeConfig({ ...VALID, retentionDays: undefined }), null)
 })
 
-test('validateBridgeConfig: claudeTurnTimeoutMs/subprocessTimeoutMs must be non-negative numbers within setTimeout range, but 0 (disabled) is fine', () => {
-  for (const field of ['claudeTurnTimeoutMs', 'subprocessTimeoutMs']) {
+test('validateBridgeConfig: claudeTurnTimeoutMs/claudeTurnAbsoluteTimeoutMs/subprocessTimeoutMs must be non-negative numbers within setTimeout range, but 0 (disabled) is fine', () => {
+  for (const field of ['claudeTurnTimeoutMs', 'claudeTurnAbsoluteTimeoutMs', 'subprocessTimeoutMs']) {
     assert.match(validateBridgeConfig({ ...VALID, [field]: '20m' }), new RegExp(field))
     assert.match(validateBridgeConfig({ ...VALID, [field]: -1 }), new RegExp(field))
     assert.match(validateBridgeConfig({ ...VALID, [field]: NaN }), new RegExp(field))
