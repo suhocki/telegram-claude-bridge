@@ -63,6 +63,7 @@ isolated per topic, with no exceptions:
 - `/new`, `/compact`, `/status`.
 - `/voice on|off` (voice-reply preference).
 - `/subscription` / `/apikey` (auth mode).
+- `/config` (model/reasoning-effort selection).
 - The risky-command confirmation guard (a "CONFIRM" typed in one topic must never
   confirm a risky command flagged in another).
 - Scheduled check-ins.

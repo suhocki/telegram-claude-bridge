@@ -91,6 +91,7 @@ export function classifyCommand(text, botUsername) {
   if (parsed.command === '/status') return 'status'
   if (parsed.command === '/subscription') return 'authSubscription'
   if (parsed.command === '/apikey') return 'authApiKey'
+  if (parsed.command === '/config') return 'config'
   return null
 }
 
@@ -624,6 +625,95 @@ export function parseCallbackData(data) {
   return m ? { action: m[1], chatId: m[2] } : null
 }
 
+// claude CLI aliases (see `claude --help`); kept short since they double as button labels
+export const CONFIG_MODELS = ['fable', 'sonnet', 'opus']
+export const CONFIG_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
+
+const CONFIG_MODEL_LABELS = { fable: 'Fable', sonnet: 'Sonnet', opus: 'Opus' }
+
+// per chat key, not global like auth-mode: a per-project quality/cost choice, not a machine-wide credential switch.
+export function getModelConfig(modelConfigState, key) {
+  return modelConfigState?.[key] ?? {}
+}
+
+// tapping the already-selected button again clears just that field, back to CLI default
+export function setModelConfigField(modelConfigState, key, field, value) {
+  const current = modelConfigState?.[key] ?? {}
+  const nextEntry = { ...current }
+  if (current[field] === value) delete nextEntry[field]
+  else nextEntry[field] = value
+  const next = { ...modelConfigState }
+  if (Object.keys(nextEntry).length) next[key] = nextEntry
+  else delete next[key]
+  return next
+}
+
+export function resetModelConfig(modelConfigState, key) {
+  const next = { ...modelConfigState }
+  delete next[key]
+  return next
+}
+
+export function isValidModelConfigValue(field, value) {
+  if (field === 'reset') return true
+  if (field === 'model') return CONFIG_MODELS.includes(value)
+  if (field === 'effort') return CONFIG_EFFORTS.includes(value)
+  return false
+}
+
+export function buildModelConfigArgs(entry) {
+  const args = []
+  if (entry?.model) args.push('--model', entry.model)
+  if (entry?.effort) args.push('--effort', entry.effort)
+  return args
+}
+
+export function buildConfigText(entry) {
+  const model = entry?.model ? CONFIG_MODEL_LABELS[entry.model] ?? entry.model : 'default'
+  const effort = entry?.effort ?? 'default'
+  return `⚙️ model: ${model}\nreasoning effort: ${effort}\n\ntap to change, tap the same choice again to clear it, or reset both to default.`
+}
+
+export function buildConfigKeyboard(chatId, entry) {
+  const modelRow = CONFIG_MODELS.map(m => ({
+    text: entry?.model === m ? `✅ ${CONFIG_MODEL_LABELS[m]}` : CONFIG_MODEL_LABELS[m],
+    callback_data: `cfg:model:${m}:${chatId}`,
+  }))
+  const effortRow = CONFIG_EFFORTS.map(e => ({
+    text: entry?.effort === e ? `✅ ${e}` : e,
+    callback_data: `cfg:effort:${e}:${chatId}`,
+  }))
+  return {
+    inline_keyboard: [modelRow, effortRow, [{ text: '↩️ Reset to default', callback_data: `cfg:reset:x:${chatId}` }]],
+  }
+}
+
+export function buildConfigMessageParams(chatId, entry, threadId) {
+  return {
+    chat_id: chatId,
+    text: buildConfigText(entry),
+    reply_markup: buildConfigKeyboard(chatId, entry),
+    ...threadIdParam(threadId),
+  }
+}
+
+export function buildConfigEditParams(chatId, messageId, entry) {
+  return {
+    chat_id: chatId,
+    message_id: messageId,
+    text: buildConfigText(entry),
+    reply_markup: buildConfigKeyboard(chatId, entry),
+  }
+}
+
+// value is captured but deliberately ignored by the caller for 'reset' — kept in the payload only for a consistent cfg:<field>:<value>:<chatId> shape
+const CONFIG_CALLBACK_RE = /^cfg:(model|effort|reset):([a-z]+):(.+)$/
+
+export function parseConfigCallbackData(data) {
+  const m = String(data ?? '').match(CONFIG_CALLBACK_RE)
+  return m ? { field: m[1], value: m[2], chatId: m[3] } : null
+}
+
 // editMessageText drops any existing inline keyboard unless reply_markup is passed again on
 // every edit, so the caller must thread `keyboard` through each streaming update or the Cancel
 // button vanishes the moment the placeholder's first edit lands.
@@ -856,6 +946,7 @@ export function buildBotCommands() {
     { command: 'compact', description: 'compact the conversation to free up context' },
     { command: 'subscription', description: 'run claude on the subscription (OAuth) login, everywhere' },
     { command: 'apikey', description: 'run claude on the ANTHROPIC_API_KEY, everywhere' },
+    { command: 'config', description: 'choose the model and reasoning effort for this chat' },
   ]
 }
 
