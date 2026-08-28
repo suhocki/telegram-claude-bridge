@@ -71,6 +71,17 @@ import {
   buildCancelKeyboard,
   buildContinueKeyboard,
   parseCallbackData,
+  CONFIG_MODELS,
+  CONFIG_EFFORTS,
+  getModelConfig,
+  setModelConfigField,
+  resetModelConfig,
+  buildModelConfigArgs,
+  buildConfigText,
+  buildConfigKeyboard,
+  buildConfigMessageParams,
+  buildConfigEditParams,
+  parseConfigCallbackData,
   buildContinuePrompt,
   buildJoinedPromptText,
   isJoinableMessage,
@@ -285,6 +296,10 @@ test('classifyCommand: "/status" classifies as status', () => {
 test('classifyCommand: "/subscription" and "/apikey" classify as auth-mode switches', () => {
   assert.equal(classifyCommand('/subscription'), 'authSubscription')
   assert.equal(classifyCommand('/apikey'), 'authApiKey')
+})
+
+test('classifyCommand: "/config" classifies as config', () => {
+  assert.equal(classifyCommand('/config'), 'config')
 })
 
 test('classifyCommand: ordinary text is not a command', () => {
@@ -1399,6 +1414,128 @@ test('parseCallbackData: an unrecognized prefix, empty string, or missing data r
   assert.equal(parseCallbackData(null), null)
 })
 
+test('getModelConfig: returns the stored entry, or {} when the key or state is missing', () => {
+  assert.deepEqual(getModelConfig({ a: { model: 'opus' } }, 'a'), { model: 'opus' })
+  assert.deepEqual(getModelConfig({ a: { model: 'opus' } }, 'b'), {})
+  assert.deepEqual(getModelConfig(undefined, 'a'), {})
+})
+
+test('setModelConfigField: sets a field without mutating the input', () => {
+  const before = { a: { model: 'opus' } }
+  const after = setModelConfigField(before, 'a', 'effort', 'high')
+  assert.deepEqual(after, { a: { model: 'opus', effort: 'high' } })
+  assert.deepEqual(before, { a: { model: 'opus' } })
+})
+
+test('setModelConfigField: creates a new entry for a key with no prior config', () => {
+  assert.deepEqual(setModelConfigField({}, 'a', 'model', 'sonnet'), { a: { model: 'sonnet' } })
+})
+
+test('setModelConfigField: tapping the already-selected value again clears just that field', () => {
+  const after = setModelConfigField({ a: { model: 'opus', effort: 'high' } }, 'a', 'model', 'opus')
+  assert.deepEqual(after, { a: { effort: 'high' } })
+})
+
+test('setModelConfigField: clearing the last field drops the key entirely', () => {
+  const after = setModelConfigField({ a: { model: 'opus' } }, 'a', 'model', 'opus')
+  assert.deepEqual(after, {})
+})
+
+test('setModelConfigField: other keys are left untouched', () => {
+  const after = setModelConfigField({ a: { model: 'opus' }, b: { effort: 'low' } }, 'a', 'effort', 'max')
+  assert.deepEqual(after.b, { effort: 'low' })
+})
+
+test('resetModelConfig: drops the key without mutating the input, leaves other keys alone', () => {
+  const before = { a: { model: 'opus' }, b: { effort: 'low' } }
+  const after = resetModelConfig(before, 'a')
+  assert.deepEqual(after, { b: { effort: 'low' } })
+  assert.deepEqual(before, { a: { model: 'opus' }, b: { effort: 'low' } })
+})
+
+test('resetModelConfig: resetting an already-unset key is a no-op', () => {
+  assert.deepEqual(resetModelConfig({ b: { effort: 'low' } }, 'a'), { b: { effort: 'low' } })
+})
+
+test('buildModelConfigArgs: no entry means no flags at all (inherits the CLI default)', () => {
+  assert.deepEqual(buildModelConfigArgs({}), [])
+  assert.deepEqual(buildModelConfigArgs(undefined), [])
+})
+
+test('buildModelConfigArgs: model and/or effort become --model/--effort flags', () => {
+  assert.deepEqual(buildModelConfigArgs({ model: 'opus' }), ['--model', 'opus'])
+  assert.deepEqual(buildModelConfigArgs({ effort: 'high' }), ['--effort', 'high'])
+  assert.deepEqual(buildModelConfigArgs({ model: 'opus', effort: 'high' }), ['--model', 'opus', '--effort', 'high'])
+})
+
+test('buildConfigText: reports "default" for whatever is not explicitly set', () => {
+  assert.match(buildConfigText({}), /model: default/)
+  assert.match(buildConfigText({}), /reasoning effort: default/)
+})
+
+test('buildConfigText: reports the chosen model label and effort level', () => {
+  const text = buildConfigText({ model: 'opus', effort: 'xhigh' })
+  assert.match(text, /model: Opus/)
+  assert.match(text, /reasoning effort: xhigh/)
+})
+
+test('buildConfigKeyboard: lists every model and effort as a button, checkmarking the current selection', () => {
+  const keyboard = buildConfigKeyboard('123', { model: 'sonnet', effort: 'high' })
+  assert.equal(keyboard.inline_keyboard.length, 3)
+  const [modelRow, effortRow, resetRow] = keyboard.inline_keyboard
+  assert.deepEqual(modelRow.map(b => b.callback_data), CONFIG_MODELS.map(m => `cfg:model:${m}:123`))
+  assert.ok(modelRow.some(b => b.text === '✅ Sonnet'))
+  assert.deepEqual(effortRow.map(b => b.callback_data), CONFIG_EFFORTS.map(e => `cfg:effort:${e}:123`))
+  assert.ok(effortRow.some(b => b.text === '✅ high'))
+  assert.equal(resetRow.length, 1)
+  assert.equal(resetRow[0].callback_data, 'cfg:reset:x:123')
+})
+
+test('buildConfigKeyboard: nothing selected means no checkmarked button', () => {
+  const keyboard = buildConfigKeyboard('123', {})
+  const flat = keyboard.inline_keyboard.flat()
+  assert.ok(flat.every(b => !b.text.startsWith('✅')))
+})
+
+test('buildConfigMessageParams: builds a sendMessage-shaped payload with the config text and keyboard', () => {
+  const params = buildConfigMessageParams('123', { model: 'opus' }, null)
+  assert.equal(params.chat_id, '123')
+  assert.equal(params.text, buildConfigText({ model: 'opus' }))
+  assert.deepEqual(params.reply_markup, buildConfigKeyboard('123', { model: 'opus' }))
+  assert.equal('message_thread_id' in params, false)
+})
+
+test('buildConfigMessageParams: includes message_thread_id when given a threadId', () => {
+  const params = buildConfigMessageParams('123', {}, 42)
+  assert.equal(params.message_thread_id, 42)
+})
+
+test('buildConfigEditParams: builds an editMessageText-shaped payload', () => {
+  const params = buildConfigEditParams('123', 456, { effort: 'low' })
+  assert.equal(params.chat_id, '123')
+  assert.equal(params.message_id, 456)
+  assert.equal(params.text, buildConfigText({ effort: 'low' }))
+  assert.deepEqual(params.reply_markup, buildConfigKeyboard('123', { effort: 'low' }))
+})
+
+test('parseConfigCallbackData: parses model/effort/reset payloads into field, value and chat id', () => {
+  assert.deepEqual(parseConfigCallbackData('cfg:model:opus:123'), { field: 'model', value: 'opus', chatId: '123' })
+  assert.deepEqual(parseConfigCallbackData('cfg:effort:xhigh:123'), { field: 'effort', value: 'xhigh', chatId: '123' })
+  assert.deepEqual(parseConfigCallbackData('cfg:reset:x:123'), { field: 'reset', value: 'x', chatId: '123' })
+})
+
+test('parseConfigCallbackData: a chat id containing a colon (e.g. a supergroup topic id) is kept whole', () => {
+  assert.deepEqual(parseConfigCallbackData('cfg:model:opus:-100123:456'), { field: 'model', value: 'opus', chatId: '-100123:456' })
+})
+
+test('parseConfigCallbackData: an unrecognized field, malformed payload, or missing data returns null', () => {
+  assert.equal(parseConfigCallbackData('cfg:bogus:opus:123'), null)
+  assert.equal(parseConfigCallbackData('cancel:123'), null)
+  assert.equal(parseConfigCallbackData(''), null)
+  assert.equal(parseConfigCallbackData(undefined), null)
+  assert.equal(parseConfigCallbackData(null), null)
+})
+
 test('buildCancelKeyboard: joinCount=0 (the default) omits the Join button entirely', () => {
   assert.deepEqual(buildCancelKeyboard('123', 0), {
     inline_keyboard: [[{ text: '🚫 Cancel', callback_data: 'cancel:123' }]],
@@ -2212,9 +2349,9 @@ const userTurnLine = (messageId, text = 'hi') =>
     message: { role: 'user', content: `<channel source="telegram" chat_id="1" message_id="${messageId}" user="u" ts="t">\n${text}\n</channel>` },
   })
 
-test('buildBotCommands: registers /new, /status, /compact, /subscription and /apikey with descriptions', () => {
+test('buildBotCommands: registers /new, /status, /compact, /subscription, /apikey and /config with descriptions', () => {
   const commands = buildBotCommands()
-  assert.deepEqual(commands.map(c => c.command), ['new', 'status', 'compact', 'subscription', 'apikey'])
+  assert.deepEqual(commands.map(c => c.command), ['new', 'status', 'compact', 'subscription', 'apikey', 'config'])
   for (const { command, description } of commands) {
     assert.match(command, /^[a-z0-9_]{1,32}$/)
     assert.ok(description.length > 0 && description.length <= 256)

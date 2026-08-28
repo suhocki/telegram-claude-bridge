@@ -75,6 +75,13 @@ import {
   buildCancelKeyboard,
   buildContinueKeyboard,
   parseCallbackData,
+  getModelConfig,
+  setModelConfigField,
+  resetModelConfig,
+  buildModelConfigArgs,
+  buildConfigMessageParams,
+  buildConfigEditParams,
+  parseConfigCallbackData,
   buildContinuePrompt,
   buildJoinedPromptText,
   isJoinableMessage,
@@ -227,6 +234,7 @@ function emptyState() {
     turns: {},
     workingPhraseQueue: null,
     pendingContinue: {},
+    modelConfig: {},
   }
 }
 
@@ -240,6 +248,7 @@ function loadState() {
     state.turns ??= {}
     state.workingPhraseQueue ??= null
     state.pendingContinue ??= {}
+    state.modelConfig ??= {}
     return state
   } catch {
     return emptyState()
@@ -249,6 +258,10 @@ function loadState() {
 // Read fresh (not cached in `state`) so a switch made anywhere takes effect here on the very next turn.
 function currentAuthMode() {
   return loadGlobalAuthMode(authModeFile)
+}
+
+function currentModelConfig(key) {
+  return getModelConfig(state.modelConfig, key)
 }
 
 function saveState(state) {
@@ -479,7 +492,7 @@ const CANCEL_SIGKILL_GRACE_MS = 3000
 
 // Returns { promise, cancel } instead of a plain Promise so a caller can kill the run
 // early (e.g. a Telegram "Cancel" button) without waiting for it to finish on its own.
-function runClaude(prompt, sessionId, onEvent, authMode) {
+function runClaude(prompt, sessionId, onEvent, authMode, modelConfig) {
   const args = [
     '-p',
     prompt,
@@ -501,6 +514,7 @@ function runClaude(prompt, sessionId, onEvent, authMode) {
       appendSystemPrompt
     )
   )
+  args.push(...buildModelConfigArgs(modelConfig))
   if (Array.isArray(claudeArgs)) args.push(...claudeArgs)
 
   // detached so `child.pid` is its own process-group leader: killing -child.pid kills
@@ -780,7 +794,13 @@ async function runCheckin(key) {
   }
 
   try {
-    const { promise: checkinPromise } = runClaude(buildCheckinFollowupPrompt(pending.instruction), sessionId, undefined, currentAuthMode())
+    const { promise: checkinPromise } = runClaude(
+      buildCheckinFollowupPrompt(pending.instruction),
+      sessionId,
+      undefined,
+      currentAuthMode(),
+      currentModelConfig(key)
+    )
     const result = await checkinPromise
     const priorSession = normalizeSession(state.sessions[key])
     let newSession = priorSession
@@ -1068,6 +1088,7 @@ async function runClaudeTurn(
     prompt,
     sessionId,
     authMode,
+    modelConfig,
     priorSession,
     workingStatus,
     botMessageIds,
@@ -1140,7 +1161,7 @@ async function runClaudeTurn(
   let getSessionId = () => null
   try {
     if (run.finished) throw new Error('cancelled before the run could start')
-    const claude = runClaude(prompt, sessionId, event => routeEvent(event), authMode)
+    const claude = runClaude(prompt, sessionId, event => routeEvent(event), authMode, modelConfig)
     getSessionId = claude.getSessionId
     run.cancel = () => {
       if (cancelled) return
@@ -1328,6 +1349,11 @@ async function handleMessage(msg) {
     return
   }
 
+  if (command === 'config') {
+    await tg('sendMessage', buildConfigMessageParams(chatId, currentModelConfig(key), threadId)).catch(() => {})
+    return
+  }
+
   const session = normalizeSession(state.sessions[key])
   const sessionId = session?.id
 
@@ -1463,6 +1489,7 @@ async function handleMessage(msg) {
       prompt,
       sessionId,
       authMode: currentAuthMode(),
+      modelConfig: currentModelConfig(key),
       priorSession: session,
       workingStatus,
       botMessageIds,
@@ -1505,6 +1532,7 @@ async function handleContinue(chatId, key, threadId, pending) {
       prompt: buildContinuePrompt(),
       sessionId: pending.sessionId,
       authMode: currentAuthMode(),
+      modelConfig: currentModelConfig(key),
       priorSession,
       workingStatus,
       botMessageIds,
@@ -1607,8 +1635,31 @@ function runQueuedMessage(key, msg) {
   return handleMessage(msg)
 }
 
+// mirrors cancel/continue/join: chatId is re-derived from the button's own message, not trusted from callback_data
+async function handleConfigCallbackQuery(cq, { field, value }) {
+  const chatId = String(cq.message?.chat?.id ?? '')
+  const key = threadKey(chatId, cq.message)
+  if (!isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig)) {
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'not authorized', show_alert: true }).catch(() => {})
+    return
+  }
+  state.modelConfig = field === 'reset' ? resetModelConfig(state.modelConfig, key) : setModelConfigField(state.modelConfig, key, field, value)
+  saveState(state)
+  const messageId = cq.message?.message_id
+  if (messageId != null) {
+    await tg('editMessageText', buildConfigEditParams(chatId, messageId, currentModelConfig(key))).catch(() => {})
+  }
+  await tg('answerCallbackQuery', { callback_query_id: cq.id, text: field === 'reset' ? 'reset to default' : 'updated' }).catch(() => {})
+}
+
 // cancel/join interrupt the run at chatQueue's head directly; continue starts a new run, so it's queued like any other message
 async function handleCallbackQuery(cq) {
+  const configParsed = parseConfigCallbackData(cq.data)
+  if (configParsed) {
+    await handleConfigCallbackQuery(cq, configParsed)
+    return
+  }
+
   const parsed = parseCallbackData(cq.data)
   if (!parsed) {
     const chatId = String(cq.message?.chat?.id ?? '')
