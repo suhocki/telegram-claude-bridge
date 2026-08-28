@@ -78,6 +78,7 @@ import {
   getModelConfig,
   setModelConfigField,
   resetModelConfig,
+  isValidModelConfigValue,
   buildModelConfigArgs,
   buildConfigMessageParams,
   buildConfigEditParams,
@@ -514,8 +515,9 @@ function runClaude(prompt, sessionId, onEvent, authMode, modelConfig) {
       appendSystemPrompt
     )
   )
-  args.push(...buildModelConfigArgs(modelConfig))
   if (Array.isArray(claudeArgs)) args.push(...claudeArgs)
+  // pushed last so a chat's own /config choice always wins over a --model/--effort baked into claudeArgs (claude CLI takes the last occurrence of a repeated flag)
+  args.push(...buildModelConfigArgs(modelConfig))
 
   // detached so `child.pid` is its own process-group leader: killing -child.pid kills
   // the whole tree (claude itself plus any Bash-spawned OS subprocesses), not just claude
@@ -1641,6 +1643,10 @@ async function handleConfigCallbackQuery(cq, { field, value }) {
   const key = threadKey(chatId, cq.message)
   if (!isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig)) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'not authorized', show_alert: true }).catch(() => {})
+    return
+  }
+  if (!isValidModelConfigValue(field, value)) {
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'unknown option' }).catch(() => {})
     return
   }
   state.modelConfig = field === 'reset' ? resetModelConfig(state.modelConfig, key) : setModelConfigField(state.modelConfig, key, field, value)

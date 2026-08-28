@@ -76,6 +76,7 @@ import {
   getModelConfig,
   setModelConfigField,
   resetModelConfig,
+  isValidModelConfigValue,
   buildModelConfigArgs,
   buildConfigText,
   buildConfigKeyboard,
@@ -1455,6 +1456,15 @@ test('resetModelConfig: drops the key without mutating the input, leaves other k
 
 test('resetModelConfig: resetting an already-unset key is a no-op', () => {
   assert.deepEqual(resetModelConfig({ b: { effort: 'low' } }, 'a'), { b: { effort: 'low' } })
+})
+
+test('isValidModelConfigValue: accepts only the known model/effort values, and any value for reset', () => {
+  for (const m of CONFIG_MODELS) assert.equal(isValidModelConfigValue('model', m), true)
+  for (const e of CONFIG_EFFORTS) assert.equal(isValidModelConfigValue('effort', e), true)
+  assert.equal(isValidModelConfigValue('model', 'zzzzz'), false)
+  assert.equal(isValidModelConfigValue('effort', 'zzzzz'), false)
+  assert.equal(isValidModelConfigValue('reset', 'x'), true)
+  assert.equal(isValidModelConfigValue('bogus', 'x'), false)
 })
 
 test('buildModelConfigArgs: no entry means no flags at all (inherits the CLI default)', () => {

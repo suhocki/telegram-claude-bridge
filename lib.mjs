@@ -631,9 +631,7 @@ export const CONFIG_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 
 const CONFIG_MODEL_LABELS = { fable: 'Fable', sonnet: 'Sonnet', opus: 'Opus' }
 
-// per chat key, not global like auth-mode: model/effort is a per-project quality/cost
-// choice, not a machine-wide credential switch, so it belongs next to voiceReply-style
-// per-key state rather than a shared file every bot reads.
+// per chat key, not global like auth-mode: a per-project quality/cost choice, not a machine-wide credential switch.
 export function getModelConfig(modelConfigState, key) {
   return modelConfigState?.[key] ?? {}
 }
@@ -654,6 +652,13 @@ export function resetModelConfig(modelConfigState, key) {
   const next = { ...modelConfigState }
   delete next[key]
   return next
+}
+
+export function isValidModelConfigValue(field, value) {
+  if (field === 'reset') return true
+  if (field === 'model') return CONFIG_MODELS.includes(value)
+  if (field === 'effort') return CONFIG_EFFORTS.includes(value)
+  return false
 }
 
 export function buildModelConfigArgs(entry) {
