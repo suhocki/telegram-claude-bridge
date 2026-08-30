@@ -135,7 +135,9 @@ import { sweepOldFiles } from './retention.mjs'
 import {
   DEFAULT_MAX_CONCURRENT_JOBS,
   DEFAULT_JOB_TIMEOUT_MINUTES,
+  DEFAULT_JOB_NOTIFY_THREAD_RECENCY_MS,
   JOB_HEARTBEAT_STALE_MS,
+  isRecentTimestamp,
   resolveJobsDir,
   buildJobSpecPath,
   buildJobLogPath,
@@ -236,6 +238,12 @@ const RETENTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
 const JOB_SWEEP_INTERVAL_MS = config.jobSweepIntervalMs ?? 15 * 1000
 const JOB_MAX_CONCURRENT_PER_BOT = config.maxConcurrentJobs ?? DEFAULT_MAX_CONCURRENT_JOBS
 const JOB_DEFAULT_TIMEOUT_MINUTES = config.jobDefaultTimeoutMinutes ?? DEFAULT_JOB_TIMEOUT_MINUTES
+// Floored to the turn's own max lifetime (disabled via 0 means "no cap", so floor to the largest delay Node allows instead), plus two sweep intervals of slack so the sweep that finally reads the spec isn't racing the same instant the turn's own timeout would have fired.
+const JOB_NOTIFY_THREAD_RECENCY_FLOOR_MS = (CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS > 0 ? CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS : MAX_TIMEOUT_MS) + JOB_SWEEP_INTERVAL_MS * 2
+const JOB_NOTIFY_THREAD_RECENCY_MS = Math.max(config.jobNotifyThreadRecencyMs ?? DEFAULT_JOB_NOTIFY_THREAD_RECENCY_MS, JOB_NOTIFY_THREAD_RECENCY_FLOOR_MS)
+if (config.jobNotifyThreadRecencyMs != null && config.jobNotifyThreadRecencyMs < JOB_NOTIFY_THREAD_RECENCY_MS) {
+  log('jobNotifyThreadRecencyMs raised from', config.jobNotifyThreadRecencyMs, 'to', JOB_NOTIFY_THREAD_RECENCY_MS, 'to cover claudeTurnAbsoluteTimeoutMs')
+}
 
 const voiceTranscriptionConfig = {
   whisperBin: DEFAULT_WHISPER_BIN,
@@ -269,6 +277,7 @@ function emptyState() {
     modelConfig: {},
     jobs: {},
     jobStatusMessages: {},
+    threadActivity: {},
   }
 }
 
@@ -285,6 +294,7 @@ function loadState() {
     state.modelConfig ??= {}
     state.jobs ??= {}
     state.jobStatusMessages ??= {}
+    state.threadActivity ??= {}
     return state
   } catch {
     return emptyState()
@@ -529,6 +539,11 @@ const CANCEL_SIGKILL_GRACE_MS = 3000
 // Returns { promise, cancel } instead of a plain Promise so a caller can kill the run
 // early (e.g. a Telegram "Cancel" button) without waiting for it to finish on its own.
 function runClaude(prompt, sessionId, onEvent, authMode, modelConfig, notifyThreadKey) {
+  // Saved immediately, not deferred to a later completion-path saveState: a restart between this stamp and that later save would otherwise make isThreadRecentlyActive wrongly reject this very turn's own still-fresh job spec.
+  if (notifyThreadKey) {
+    state.threadActivity[notifyThreadKey] = Date.now()
+    saveState(state)
+  }
   const args = [
     '-p',
     prompt,
@@ -894,6 +909,10 @@ function isThreadKeyAuthorized(key) {
   return allowedUserIds.includes(chatId) || Object.hasOwn(groupsConfig, chatId)
 }
 
+function isThreadRecentlyActive(key) {
+  return isRecentTimestamp(state.threadActivity[key], Date.now(), JOB_NOTIFY_THREAD_RECENCY_MS)
+}
+
 function isPidAlive(pid) {
   if (pid == null) return false
   try {
@@ -1055,6 +1074,7 @@ async function pickUpNewJobSpecs() {
       activeCount: countActiveJobs(state.jobs),
       maxConcurrentJobs: JOB_MAX_CONCURRENT_PER_BOT,
       isThreadKeyAuthorized,
+      isThreadRecentlyActive,
     })
     if (!validation.ok) {
       log('rejected job spec', specPath, validation.error)

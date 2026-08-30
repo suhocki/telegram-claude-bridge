@@ -138,6 +138,15 @@ test('validateBridgeConfig: jobSweepIntervalMs must be a positive number within 
   assert.equal(validateBridgeConfig({ ...VALID, jobSweepIntervalMs: undefined }), null)
 })
 
+test('validateBridgeConfig: jobNotifyThreadRecencyMs must be a positive number within setTimeout range when given', () => {
+  assert.match(validateBridgeConfig({ ...VALID, jobNotifyThreadRecencyMs: 0 }), /jobNotifyThreadRecencyMs/)
+  assert.match(validateBridgeConfig({ ...VALID, jobNotifyThreadRecencyMs: -1 }), /jobNotifyThreadRecencyMs/)
+  assert.match(validateBridgeConfig({ ...VALID, jobNotifyThreadRecencyMs: 2 ** 31 }), /jobNotifyThreadRecencyMs/)
+  assert.match(validateBridgeConfig({ ...VALID, jobNotifyThreadRecencyMs: 'often' }), /jobNotifyThreadRecencyMs/)
+  assert.equal(validateBridgeConfig({ ...VALID, jobNotifyThreadRecencyMs: 900000 }), null)
+  assert.equal(validateBridgeConfig({ ...VALID, jobNotifyThreadRecencyMs: undefined }), null)
+})
+
 test('validateBridgeConfig: apiBaseUrl must be a non-empty string when given', () => {
   assert.match(validateBridgeConfig({ ...VALID, apiBaseUrl: '' }), /apiBaseUrl/)
   assert.match(validateBridgeConfig({ ...VALID, apiBaseUrl: '   ' }), /apiBaseUrl/)

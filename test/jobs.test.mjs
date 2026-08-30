@@ -23,6 +23,7 @@ import {
   groupJobsByThread,
   buildJobCompletionCheckinInstruction,
   buildJobCompletionCheckin,
+  isRecentTimestamp,
 } from '../jobs.mjs'
 
 const VALID_SPEC = {
@@ -43,6 +44,23 @@ test('isPathInsideDir: accepts a direct child, rejects a path traversal or sibli
   assert.equal(isPathInsideDir('/repo/state/jobs/tldr/../../etc/passwd', '/repo/state/jobs/tldr'), false)
   assert.equal(isPathInsideDir('/repo/state/jobs/other', '/repo/state/jobs/tldr'), false)
   assert.equal(isPathInsideDir('/repo/state/jobs/tldr', '/repo/state/jobs/tldr'), true)
+})
+
+test('isRecentTimestamp: within the window (including exactly at the boundary) is recent, just past it is not', () => {
+  assert.equal(isRecentTimestamp(1000, 1000, 500), true)
+  assert.equal(isRecentTimestamp(500, 1000, 500), true)
+  assert.equal(isRecentTimestamp(499, 1000, 500), false)
+  assert.equal(isRecentTimestamp(0, 1000, 500), false)
+})
+
+test('isRecentTimestamp: a timestamp in the future (e.g. a backward clock step) fails closed, not open', () => {
+  assert.equal(isRecentTimestamp(1500, 1000, 500), false)
+})
+
+test('isRecentTimestamp: a missing/non-numeric timestamp is never recent', () => {
+  assert.equal(isRecentTimestamp(undefined, 1000, 500), false)
+  assert.equal(isRecentTimestamp(null, 1000, 500), false)
+  assert.equal(isRecentTimestamp('1000', 1000, 500), false)
 })
 
 test('isJobActive: pending/running are active, done/failed/timed-out are not', () => {
@@ -161,6 +179,20 @@ test('validateJobSpec: rejects a notifyThreadKey the caller\'s isThreadKeyAuthor
 })
 
 test('validateJobSpec: without an isThreadKeyAuthorized predicate, any non-empty notifyThreadKey passes (backward compatible)', () => {
+  assert.equal(validateJobSpec({ ...VALID_SPEC, notifyThreadKey: 'anything' }, { jobId: 'a' }).ok, true)
+})
+
+test('validateJobSpec: rejects a notifyThreadKey the caller\'s isThreadRecentlyActive predicate says is stale', () => {
+  const isThreadRecentlyActive = key => key === '58639685:395533'
+  const rejected = validateJobSpec({ ...VALID_SPEC, notifyThreadKey: '58639685' }, { jobId: 'a', isThreadRecentlyActive })
+  assert.equal(rejected.ok, false)
+  assert.match(rejected.error, /notifyThreadKey/)
+  assert.match(rejected.error, /stale|wrong thread/)
+  const accepted = validateJobSpec({ ...VALID_SPEC, notifyThreadKey: '58639685:395533' }, { jobId: 'a', isThreadRecentlyActive })
+  assert.equal(accepted.ok, true)
+})
+
+test('validateJobSpec: without an isThreadRecentlyActive predicate, any notifyThreadKey passes (backward compatible)', () => {
   assert.equal(validateJobSpec({ ...VALID_SPEC, notifyThreadKey: 'anything' }, { jobId: 'a' }).ok, true)
 })
 

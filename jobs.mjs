@@ -6,6 +6,7 @@ import { CHECKIN_MAX_MINUTES } from './lib.mjs'
 export const DEFAULT_MAX_CONCURRENT_JOBS = 5
 export const DEFAULT_JOB_TIMEOUT_MINUTES = 60
 export const JOB_HEARTBEAT_STALE_MS = 5 * 60 * 1000
+export const DEFAULT_JOB_NOTIFY_THREAD_RECENCY_MS = 15 * 60 * 1000
 export const JOB_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/
 // __proto__ would reassign state.jobs's own prototype via state.jobs[jobId] = ...; the other two are blocked too, just in case.
 const RESERVED_JOB_IDS = new Set(['__proto__', 'constructor', 'prototype'])
@@ -28,6 +29,13 @@ export function isPathInsideDir(filePath, dir) {
   return resolved === resolvedDir || resolved.startsWith(resolvedDir + path.sep)
 }
 
+// age >= 0 rejects a future timestamp (a backward clock step) as not-recent instead of failing open on a negative subtraction.
+export function isRecentTimestamp(timestamp, now, maxAgeMs) {
+  if (typeof timestamp !== 'number') return false
+  const age = now - timestamp
+  return age >= 0 && age <= maxAgeMs
+}
+
 export function isJobActive(record) {
   return record?.status === 'pending' || record?.status === 'running'
 }
@@ -45,6 +53,7 @@ export function validateJobSpec(
     activeCount = 0,
     maxConcurrentJobs = DEFAULT_MAX_CONCURRENT_JOBS,
     isThreadKeyAuthorized = () => true,
+    isThreadRecentlyActive = () => true,
   } = {}
 ) {
   if (!JOB_ID_RE.test(String(jobId ?? '')) || RESERVED_JOB_IDS.has(jobId)) return { ok: false, error: `invalid job id: ${jobId}` }
@@ -61,6 +70,12 @@ export function validateJobSpec(
   }
   if (!isThreadKeyAuthorized(spec.notifyThreadKey)) {
     return { ok: false, error: `"notifyThreadKey" (${spec.notifyThreadKey}) is not an authorized chat/thread for this bot` }
+  }
+  if (!isThreadRecentlyActive(spec.notifyThreadKey)) {
+    return {
+      ok: false,
+      error: `"notifyThreadKey" (${spec.notifyThreadKey}) hasn't had any recent turn activity — refusing to notify what looks like a stale or wrong thread`,
+    }
   }
   if (spec.cwd != null && (typeof spec.cwd !== 'string' || !spec.cwd.trim())) {
     return { ok: false, error: '"cwd" must be a non-empty string when given' }
