@@ -78,7 +78,7 @@ persistent session per Telegram chat.
    | `maxConcurrentJobs` | Cap on background jobs running at once per bot (see "Background jobs" under [Other behavior](#other-behavior)), default 5 |
    | `jobDefaultTimeoutMinutes` | Default per-job timeout before the bridge kills it, default 60 |
    | `jobSweepIntervalMs` | How often the bridge scans for new job specs and re-checks running jobs, default 15000 |
-   | `jobNotifyThreadRecencyMs` | A job spec's `notifyThreadKey` is rejected if that thread hasn't had a turn within this long, default 900000 (15 min); always raised to at least `claudeTurnAbsoluteTimeoutMs` so a slow-but-legitimate turn's own job never gets rejected as stale |
+   | `jobNotifyThreadRecencyMs` | A job spec's `notifyThreadKey` is rejected if that thread hasn't had a turn within this long, default 900000 (15 min); always raised to at least `claudeTurnAbsoluteTimeoutMs` (or, if that's disabled via `0`, to the max delay Node allows) so a slow-but-legitimate turn's own job never gets rejected as stale — the effective default is therefore `claudeTurnAbsoluteTimeoutMs`'s own default of 4h, not 15 min |
 
    `.gitignore` already excludes `*.config.json` (except `*.config.example.json`) and `state/`, so real tokens never get committed.
 

@@ -137,6 +137,7 @@ import {
   DEFAULT_JOB_TIMEOUT_MINUTES,
   DEFAULT_JOB_NOTIFY_THREAD_RECENCY_MS,
   JOB_HEARTBEAT_STALE_MS,
+  isRecentTimestamp,
   resolveJobsDir,
   buildJobSpecPath,
   buildJobLogPath,
@@ -237,8 +238,14 @@ const RETENTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
 const JOB_SWEEP_INTERVAL_MS = config.jobSweepIntervalMs ?? 15 * 1000
 const JOB_MAX_CONCURRENT_PER_BOT = config.maxConcurrentJobs ?? DEFAULT_MAX_CONCURRENT_JOBS
 const JOB_DEFAULT_TIMEOUT_MINUTES = config.jobDefaultTimeoutMinutes ?? DEFAULT_JOB_TIMEOUT_MINUTES
-// Floored to the turn's own absolute timeout: a turn is allowed to run that long, so the window must cover it or a slow-but-legitimate turn's own job spec gets rejected as "stale" the moment it's picked up.
-const JOB_NOTIFY_THREAD_RECENCY_MS = Math.max(config.jobNotifyThreadRecencyMs ?? DEFAULT_JOB_NOTIFY_THREAD_RECENCY_MS, CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS)
+// Floored to the turn's own absolute timeout (or, if that backstop is disabled via 0, to the largest delay Node allows) —
+// a turn is allowed to run that long, so the window must cover it or a slow-but-legitimate turn's own job spec gets
+// rejected as "stale" the moment it's picked up.
+const JOB_NOTIFY_THREAD_RECENCY_FLOOR_MS = CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS > 0 ? CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS : MAX_TIMEOUT_MS
+const JOB_NOTIFY_THREAD_RECENCY_MS = Math.max(config.jobNotifyThreadRecencyMs ?? DEFAULT_JOB_NOTIFY_THREAD_RECENCY_MS, JOB_NOTIFY_THREAD_RECENCY_FLOOR_MS)
+if (config.jobNotifyThreadRecencyMs != null && config.jobNotifyThreadRecencyMs < JOB_NOTIFY_THREAD_RECENCY_MS) {
+  log('jobNotifyThreadRecencyMs raised from', config.jobNotifyThreadRecencyMs, 'to', JOB_NOTIFY_THREAD_RECENCY_MS, 'to cover claudeTurnAbsoluteTimeoutMs')
+}
 
 const voiceTranscriptionConfig = {
   whisperBin: DEFAULT_WHISPER_BIN,
@@ -534,8 +541,11 @@ const CANCEL_SIGKILL_GRACE_MS = 3000
 // Returns { promise, cancel } instead of a plain Promise so a caller can kill the run
 // early (e.g. a Telegram "Cancel" button) without waiting for it to finish on its own.
 function runClaude(prompt, sessionId, onEvent, authMode, modelConfig, notifyThreadKey) {
-  // Not saved immediately: one of the several saveState calls already on every turn's completion path picks it up within seconds, and this stamp only needs to be readable by the next job sweep (>=15s away), not durable against an immediate crash.
-  if (notifyThreadKey) state.threadActivity[notifyThreadKey] = Date.now()
+  // Saved immediately, not deferred to a later completion-path saveState: a restart between this stamp and that later save would otherwise make isThreadRecentlyActive wrongly reject this very turn's own still-fresh job spec.
+  if (notifyThreadKey) {
+    state.threadActivity[notifyThreadKey] = Date.now()
+    saveState(state)
+  }
   const args = [
     '-p',
     prompt,
@@ -902,8 +912,7 @@ function isThreadKeyAuthorized(key) {
 }
 
 function isThreadRecentlyActive(key) {
-  const lastActiveAt = state.threadActivity[key]
-  return typeof lastActiveAt === 'number' && Date.now() - lastActiveAt <= JOB_NOTIFY_THREAD_RECENCY_MS
+  return isRecentTimestamp(state.threadActivity[key], Date.now(), JOB_NOTIFY_THREAD_RECENCY_MS)
 }
 
 function isPidAlive(pid) {
@@ -1071,8 +1080,7 @@ async function pickUpNewJobSpecs() {
     })
     if (!validation.ok) {
       log('rejected job spec', specPath, validation.error)
-      // A stale-thread rejection means notifyThreadKey itself is the untrustworthy part of the spec, so notifying it would repeat the exact misrouting this check exists to prevent.
-      if (validation.reason !== 'stale_thread') await notifyJobRejected(spec, validation.error)
+      await notifyJobRejected(spec, validation.error)
       rmSync(specPath, { force: true })
       continue
     }

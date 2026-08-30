@@ -29,6 +29,13 @@ export function isPathInsideDir(filePath, dir) {
   return resolved === resolvedDir || resolved.startsWith(resolvedDir + path.sep)
 }
 
+// age >= 0 rejects a future timestamp (a backward clock step) as not-recent instead of failing open on a negative subtraction.
+export function isRecentTimestamp(timestamp, now, maxAgeMs) {
+  if (typeof timestamp !== 'number') return false
+  const age = now - timestamp
+  return age >= 0 && age <= maxAgeMs
+}
+
 export function isJobActive(record) {
   return record?.status === 'pending' || record?.status === 'running'
 }
@@ -67,7 +74,6 @@ export function validateJobSpec(
   if (!isThreadRecentlyActive(spec.notifyThreadKey)) {
     return {
       ok: false,
-      reason: 'stale_thread',
       error: `"notifyThreadKey" (${spec.notifyThreadKey}) hasn't had any recent turn activity — refusing to notify what looks like a stale or wrong thread`,
     }
   }
