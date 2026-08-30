@@ -164,6 +164,20 @@ test('validateJobSpec: without an isThreadKeyAuthorized predicate, any non-empty
   assert.equal(validateJobSpec({ ...VALID_SPEC, notifyThreadKey: 'anything' }, { jobId: 'a' }).ok, true)
 })
 
+test('validateJobSpec: rejects a notifyThreadKey the caller\'s isThreadRecentlyActive predicate says is stale', () => {
+  const isThreadRecentlyActive = key => key === '58639685:395533'
+  const rejected = validateJobSpec({ ...VALID_SPEC, notifyThreadKey: '58639685' }, { jobId: 'a', isThreadRecentlyActive })
+  assert.equal(rejected.ok, false)
+  assert.match(rejected.error, /notifyThreadKey/)
+  assert.match(rejected.error, /stale|wrong thread/)
+  const accepted = validateJobSpec({ ...VALID_SPEC, notifyThreadKey: '58639685:395533' }, { jobId: 'a', isThreadRecentlyActive })
+  assert.equal(accepted.ok, true)
+})
+
+test('validateJobSpec: without an isThreadRecentlyActive predicate, any notifyThreadKey passes (backward compatible)', () => {
+  assert.equal(validateJobSpec({ ...VALID_SPEC, notifyThreadKey: 'anything' }, { jobId: 'a' }).ok, true)
+})
+
 test('validateJobSpec: rejects when at or over the concurrent-jobs cap, accepts just under it', () => {
   const atCap = validateJobSpec(VALID_SPEC, { jobId: 'abc123', activeCount: 5, maxConcurrentJobs: 5 })
   assert.equal(atCap.ok, false)

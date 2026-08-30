@@ -135,6 +135,7 @@ import { sweepOldFiles } from './retention.mjs'
 import {
   DEFAULT_MAX_CONCURRENT_JOBS,
   DEFAULT_JOB_TIMEOUT_MINUTES,
+  DEFAULT_JOB_NOTIFY_THREAD_RECENCY_MS,
   JOB_HEARTBEAT_STALE_MS,
   resolveJobsDir,
   buildJobSpecPath,
@@ -236,6 +237,7 @@ const RETENTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
 const JOB_SWEEP_INTERVAL_MS = config.jobSweepIntervalMs ?? 15 * 1000
 const JOB_MAX_CONCURRENT_PER_BOT = config.maxConcurrentJobs ?? DEFAULT_MAX_CONCURRENT_JOBS
 const JOB_DEFAULT_TIMEOUT_MINUTES = config.jobDefaultTimeoutMinutes ?? DEFAULT_JOB_TIMEOUT_MINUTES
+const JOB_NOTIFY_THREAD_RECENCY_MS = config.jobNotifyThreadRecencyMs ?? DEFAULT_JOB_NOTIFY_THREAD_RECENCY_MS
 
 const voiceTranscriptionConfig = {
   whisperBin: DEFAULT_WHISPER_BIN,
@@ -269,6 +271,7 @@ function emptyState() {
     modelConfig: {},
     jobs: {},
     jobStatusMessages: {},
+    threadActivity: {},
   }
 }
 
@@ -285,6 +288,7 @@ function loadState() {
     state.modelConfig ??= {}
     state.jobs ??= {}
     state.jobStatusMessages ??= {}
+    state.threadActivity ??= {}
     return state
   } catch {
     return emptyState()
@@ -529,6 +533,10 @@ const CANCEL_SIGKILL_GRACE_MS = 3000
 // Returns { promise, cancel } instead of a plain Promise so a caller can kill the run
 // early (e.g. a Telegram "Cancel" button) without waiting for it to finish on its own.
 function runClaude(prompt, sessionId, onEvent, authMode, modelConfig, notifyThreadKey) {
+  if (notifyThreadKey) {
+    state.threadActivity[notifyThreadKey] = Date.now()
+    saveState(state)
+  }
   const args = [
     '-p',
     prompt,
@@ -894,6 +902,11 @@ function isThreadKeyAuthorized(key) {
   return allowedUserIds.includes(chatId) || Object.hasOwn(groupsConfig, chatId)
 }
 
+function isThreadRecentlyActive(key) {
+  const lastActiveAt = Object.hasOwn(state.threadActivity, key) ? state.threadActivity[key] : null
+  return typeof lastActiveAt === 'number' && Date.now() - lastActiveAt <= JOB_NOTIFY_THREAD_RECENCY_MS
+}
+
 function isPidAlive(pid) {
   if (pid == null) return false
   try {
@@ -1055,6 +1068,7 @@ async function pickUpNewJobSpecs() {
       activeCount: countActiveJobs(state.jobs),
       maxConcurrentJobs: JOB_MAX_CONCURRENT_PER_BOT,
       isThreadKeyAuthorized,
+      isThreadRecentlyActive,
     })
     if (!validation.ok) {
       log('rejected job spec', specPath, validation.error)
