@@ -965,20 +965,23 @@ function startJob(jobId, spec, specPath) {
   const logPath = buildJobLogPath(jobsDir, jobId)
   const record = createJobRecord({ id: jobId, spec, now, logPath, defaultTimeoutMinutes: JOB_DEFAULT_TIMEOUT_MINUTES })
   let child
+  let fd
   try {
-    const fd = openSync(logPath, 'a')
+    fd = openSync(logPath, 'a')
     // detached so child.pid is its own process-group leader, immune to the claude turn's own process-group kill on cancel/timeout.
     child = spawn('/bin/sh', ['-c', spec.command], {
       cwd: spec.cwd ? expandHome(spec.cwd, homedir()) : cwd,
       detached: true,
       stdio: ['ignore', fd, fd],
     })
-    closeSync(fd)
   } catch (e) {
     log('failed to start background job', jobId, e.message)
     rmSync(specPath, { force: true })
     finalizeJob(jobId, markJobFinished(record, { status: 'failed', now: Date.now() }))
     return
+  } finally {
+    // Closed here (not just on the success path) so a spawn() that throws after openSync succeeded doesn't leak the fd.
+    if (fd != null) closeSync(fd)
   }
   // Everything below only runs once spawn has actually succeeded, so a failure here (e.g. rmSync/saveState) can never mis-report an actually-running job as failed.
   child.unref()

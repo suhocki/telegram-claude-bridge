@@ -1082,6 +1082,9 @@ export function validateNotifyConfig(config) {
   if (!config || typeof config.botToken !== 'string' || !config.botToken.trim()) {
     return 'config is missing "botToken"'
   }
+  if (config.apiBaseUrl != null && (typeof config.apiBaseUrl !== 'string' || !config.apiBaseUrl.trim())) {
+    return '"apiBaseUrl" must be a non-empty string when given'
+  }
   return null
 }
 
