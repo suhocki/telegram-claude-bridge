@@ -466,6 +466,17 @@ export function checkinChainExceeded(hopCount) {
   return hopCount > CHECKIN_MAX_CHAINED_HOPS
 }
 
+// Folds a new check-in request into whatever's already pending for the same thread instead of clobbering it: the earlier dueAt wins, instructions concatenate, and hopCount takes the deeper of the two chains (a fresh marker's default hopCount must never reset an already-escalated chain back down).
+export function mergePendingCheckin(existing, { sessionId, checkin, hopCount, now }) {
+  const dueAt = now + checkin.minutes * 60_000
+  return {
+    dueAt: existing ? Math.min(existing.dueAt, dueAt) : dueAt,
+    instruction: existing ? `${existing.instruction}\n\n${checkin.instruction}` : checkin.instruction,
+    sessionId,
+    hopCount: existing ? Math.max(existing.hopCount ?? 0, hopCount) : hopCount,
+  }
+}
+
 const CHECKIN_LINE_RE = /^CHECKIN:\s*(\d+)\s+(.+?)\s*$/
 
 export function extractCheckinMarker(text) {
@@ -495,6 +506,30 @@ export function buildCheckinMarkerInstructions() {
     'This marker line is stripped from what the user sees. After the delay, the bridge starts a fresh turn (resuming this same session) using your instruction as the prompt — use that turn to check on/nudge the background work and report progress to the user. Include another CHECKIN: line in that follow-up if more waiting is still needed; omit it once the work is done.',
     `A safety cap limits any chain to ${CHECKIN_MAX_CHAINED_HOPS} automated check-ins in a row; past that the bridge stops rescheduling and tells the user to check manually, so don't count on unlimited retries.`,
     "Don't use this for anything that finishes within your own current turn.",
+  ].join('\n')
+}
+
+// notifyThreadKey is baked in per-call, not left for the model to derive — it's never told the threadKey/parseThreadKey format.
+export function buildJobMarkerInstructions(jobsDir, notifyThreadKey) {
+  return [
+    'The process running this turn exits as soon as your reply is sent. Nothing you start survives that on its own — not run_in_background, not a detached/nohup\'d process — and even something you got to survive the turn can still be killed later by a turn timeout, a manual cancel, or a bridge restart.',
+    'For any task that must keep running after this turn ends (more than a couple of minutes, or anything that should survive a restart), do NOT use run_in_background and do NOT try to detach a process yourself. Instead write a job spec file and end your turn — a separate, immortal bridge process starts, owns, and monitors the job for you, and reports back automatically.',
+    `To do so, write a JSON file to exactly this path: ${jobsDir}/<jobId>.json — pick <jobId> yourself, letters/digits/"_"/"-" only, e.g. a short slug or a timestamp.`,
+    'The file must contain a JSON object like this:',
+    '{',
+    '  "command": "sleep 30 && date > /tmp/marker.txt",',
+    '  "description": "short human-readable summary of what this job does",',
+    `  "notifyThreadKey": "${notifyThreadKey}",`,
+    '  "cwd": "/optional/absolute/working/directory",',
+    '  "etaMinutes": 5,',
+    '  "timeoutMinutes": 60,',
+    '  "onDoneCheckin": { "minutes": 0, "instruction": "optional extra instruction for the follow-up turn once this job finishes" }',
+    '}',
+    `Only "command", "description", and "notifyThreadKey" are required — always use exactly "${notifyThreadKey}" for "notifyThreadKey", copied verbatim, never invented or derived. "cwd" defaults to this session's own working directory when omitted. "timeoutMinutes" defaults to 60 and, on expiry, the bridge kills the job and reports it as timed out.`,
+    'The bridge runs "command" through a shell, redirects its output to a log file next to the spec, and posts (then keeps live-editing) a status message in this chat until the job finishes.',
+    'Do not background or detach anything inside "command" itself (no trailing &, no nohup, no disown) — the bridge already runs the whole command detached; backgrounding inside it too just makes the bridge think the job is done the moment the wrapper shell returns, while the real work keeps going unwatched.',
+    'If you set "onDoneCheckin", the bridge automatically resumes this same session once the job finishes (immediately by default, or after "minutes" if given) with an instruction to read the job\'s log and report the result — you do not need your own CHECKIN: marker for that.',
+    'Reply to the user now saying the job has started; do not wait for it to finish.',
   ].join('\n')
 }
 
@@ -1047,6 +1082,9 @@ export function validateNotifyConfig(config) {
   if (!config || typeof config.botToken !== 'string' || !config.botToken.trim()) {
     return 'config is missing "botToken"'
   }
+  if (config.apiBaseUrl != null && (typeof config.apiBaseUrl !== 'string' || !config.apiBaseUrl.trim())) {
+    return '"apiBaseUrl" must be a non-empty string when given'
+  }
   return null
 }
 
@@ -1097,6 +1135,18 @@ export function validateBridgeConfig(config, { stateFilePath, existingStateFileP
   // If the backstop is shorter than the idle timeout it's meant to back up, it fires first and defeats the point of having an idle timeout at all.
   if (config.claudeTurnTimeoutMs > 0 && config.claudeTurnAbsoluteTimeoutMs > 0 && config.claudeTurnAbsoluteTimeoutMs < config.claudeTurnTimeoutMs) {
     return '"claudeTurnAbsoluteTimeoutMs" must be at least "claudeTurnTimeoutMs" when both are given'
+  }
+  if (config.maxConcurrentJobs != null && (typeof config.maxConcurrentJobs !== 'number' || !(config.maxConcurrentJobs > 0))) {
+    return '"maxConcurrentJobs" must be a positive number when given'
+  }
+  if (config.jobDefaultTimeoutMinutes != null && (typeof config.jobDefaultTimeoutMinutes !== 'number' || !(config.jobDefaultTimeoutMinutes > 0))) {
+    return '"jobDefaultTimeoutMinutes" must be a positive number when given'
+  }
+  if (config.jobSweepIntervalMs != null && (typeof config.jobSweepIntervalMs !== 'number' || !(config.jobSweepIntervalMs > 0) || config.jobSweepIntervalMs > MAX_TIMEOUT_MS)) {
+    return `"jobSweepIntervalMs" must be a number between 0 (exclusive) and ${MAX_TIMEOUT_MS} when given`
+  }
+  if (config.apiBaseUrl != null && (typeof config.apiBaseUrl !== 'string' || !config.apiBaseUrl.trim())) {
+    return '"apiBaseUrl" must be a non-empty string when given'
   }
   return null
 }

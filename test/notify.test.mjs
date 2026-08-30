@@ -13,6 +13,14 @@ test('validateNotifyConfig: a non-empty botToken passes', () => {
   assert.equal(validateNotifyConfig({ botToken: '123:abc' }), null)
 })
 
+test('validateNotifyConfig: apiBaseUrl must be a non-empty string when given, matching validateBridgeConfig', () => {
+  assert.match(validateNotifyConfig({ botToken: '123:abc', apiBaseUrl: '' }), /apiBaseUrl/)
+  assert.match(validateNotifyConfig({ botToken: '123:abc', apiBaseUrl: '   ' }), /apiBaseUrl/)
+  assert.match(validateNotifyConfig({ botToken: '123:abc', apiBaseUrl: 123 }), /apiBaseUrl/)
+  assert.equal(validateNotifyConfig({ botToken: '123:abc', apiBaseUrl: 'http://127.0.0.1:5000' }), null)
+  assert.equal(validateNotifyConfig({ botToken: '123:abc', apiBaseUrl: undefined }), null)
+})
+
 test('resolveNotifyChatId: an explicit chat id wins over everything else', () => {
   const config = { notifyChatId: '111', allowedUserIds: ['222'] }
   assert.equal(resolveNotifyChatId(config, '333'), '333')

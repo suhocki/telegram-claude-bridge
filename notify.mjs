@@ -49,7 +49,7 @@ if (!chatId) {
   process.exit(1)
 }
 
-const API = `https://api.telegram.org/bot${config.botToken}`
+const API = `${config.apiBaseUrl || 'https://api.telegram.org'}/bot${config.botToken}`
 
 const tg = createTelegramClient(API)
 

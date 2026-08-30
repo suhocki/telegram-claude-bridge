@@ -75,6 +75,9 @@ persistent session per Telegram chat.
    | `claudeArgs` | Extra args appended to every `claude -p` invocation |
    | `appendSystemPrompt` | Extra system prompt appended for every message (the example file's default explains the channel-tag format, attachments, and the `ATTACH`/`REACT`/`CHECKIN` reply markers to Claude) |
    | `buttonsModule` | Path (absolute, or relative to `cwd`) to a `.mjs` file exporting `buildKeyboard(context)` and `async handleCallback(callbackData, context)`, for a project's own inline-keyboard buttons. Loaded once and cached. Any tap whose `callback_data` isn't the bridge's own `cancel`/`join`/`continue`/`cfg:*` (the `/config` model/effort picker) is delegated to `handleCallback`; if it returns `{ handled: false }`, the tap is queued as a synthetic text message instead of being silently dropped. If `buttonsModule` isn't configured at all, unrecognized taps are ignored exactly as before (no import attempted) |
+   | `maxConcurrentJobs` | Cap on background jobs running at once per bot (see "Background jobs" under [Other behavior](#other-behavior)), default 5 |
+   | `jobDefaultTimeoutMinutes` | Default per-job timeout before the bridge kills it, default 60 |
+   | `jobSweepIntervalMs` | How often the bridge scans for new job specs and re-checks running jobs, default 15000 |
 
    `.gitignore` already excludes `*.config.json` (except `*.config.example.json`) and `state/`, so real tokens never get committed.
 
@@ -181,6 +184,7 @@ This defaults to 06:00 local time and logs to
 - **Outbound files**: Claude can send files back by writing `ATTACH: /absolute/path` lines in its reply.
 - **Reactions**: Claude can react to the triggering message with `REACT: <emoji>`.
 - **Check-ins**: Claude can schedule a follow-up turn with `CHECKIN: <minutes> <what to check>` for work that keeps running after the reply is sent.
+- **Background jobs**: `run_in_background` (Bash) and background Agents die the instant the turn that started them exits — Claude Code only tracks tasks it thinks it owns, and the bridge's own turn-timeout kill (`process.kill(-pid, ...)`) takes down even a `nohup`'d process, since `nohup` doesn't change the process group. Anything that must outlive the turn instead goes through a bridge-owned job runner: Claude drops a `<jobId>.json` spec file into `state/jobs/<bot>/` (the system prompt tells it the exact path and JSON shape every turn) and ends the turn; the bridge spawns the command detached in its own process group, redirects its output to a log file, and posts a status message in the chat that it keeps live-editing (elapsed time, heartbeat, ETA) until the job finishes. This makes the job independent of the `claude` process tree entirely, so it survives the turn ending, a turn timeout/cancel, and even a bridge restart (jobs still "running" in `state.json` are re-adopted by pid on boot). An optional `onDoneCheckin` on the spec resumes the session automatically once the job finishes, reusing the same check-in machinery as `CHECKIN:`, with an instruction to read the job's log and report the result.
 - **Risky command guard**: messages that look like they'd trigger something destructive (`rm -rf`, `git push --force`, `DROP TABLE`, etc.) require an explicit `CONFIRM` reply before running.
 - **Cost warnings**: once a session's cumulative cost crosses `costWarnUsd`, the bot warns in-chat and suggests `/new`.
 - **Groups**: group chats are ignored unless configured under `groups`; `requireMention` restricts replies to messages that @-mention the bot.

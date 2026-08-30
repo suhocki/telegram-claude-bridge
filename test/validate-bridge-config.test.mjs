@@ -113,6 +113,39 @@ test('validateBridgeConfig: the ordering check does not apply when either side i
   assert.equal(validateBridgeConfig({ ...VALID, claudeTurnTimeoutMs: 1200000 }), null)
 })
 
+test('validateBridgeConfig: maxConcurrentJobs must be a positive number when given', () => {
+  assert.match(validateBridgeConfig({ ...VALID, maxConcurrentJobs: 0 }), /maxConcurrentJobs/)
+  assert.match(validateBridgeConfig({ ...VALID, maxConcurrentJobs: -1 }), /maxConcurrentJobs/)
+  assert.match(validateBridgeConfig({ ...VALID, maxConcurrentJobs: 'five' }), /maxConcurrentJobs/)
+  assert.equal(validateBridgeConfig({ ...VALID, maxConcurrentJobs: 5 }), null)
+  assert.equal(validateBridgeConfig({ ...VALID, maxConcurrentJobs: undefined }), null)
+})
+
+test('validateBridgeConfig: jobDefaultTimeoutMinutes must be a positive number when given', () => {
+  assert.match(validateBridgeConfig({ ...VALID, jobDefaultTimeoutMinutes: 0 }), /jobDefaultTimeoutMinutes/)
+  assert.match(validateBridgeConfig({ ...VALID, jobDefaultTimeoutMinutes: -1 }), /jobDefaultTimeoutMinutes/)
+  assert.match(validateBridgeConfig({ ...VALID, jobDefaultTimeoutMinutes: 'an hour' }), /jobDefaultTimeoutMinutes/)
+  assert.equal(validateBridgeConfig({ ...VALID, jobDefaultTimeoutMinutes: 60 }), null)
+  assert.equal(validateBridgeConfig({ ...VALID, jobDefaultTimeoutMinutes: undefined }), null)
+})
+
+test('validateBridgeConfig: jobSweepIntervalMs must be a positive number within setTimeout range when given', () => {
+  assert.match(validateBridgeConfig({ ...VALID, jobSweepIntervalMs: 0 }), /jobSweepIntervalMs/)
+  assert.match(validateBridgeConfig({ ...VALID, jobSweepIntervalMs: -1 }), /jobSweepIntervalMs/)
+  assert.match(validateBridgeConfig({ ...VALID, jobSweepIntervalMs: 2 ** 31 }), /jobSweepIntervalMs/)
+  assert.match(validateBridgeConfig({ ...VALID, jobSweepIntervalMs: 'often' }), /jobSweepIntervalMs/)
+  assert.equal(validateBridgeConfig({ ...VALID, jobSweepIntervalMs: 15000 }), null)
+  assert.equal(validateBridgeConfig({ ...VALID, jobSweepIntervalMs: undefined }), null)
+})
+
+test('validateBridgeConfig: apiBaseUrl must be a non-empty string when given', () => {
+  assert.match(validateBridgeConfig({ ...VALID, apiBaseUrl: '' }), /apiBaseUrl/)
+  assert.match(validateBridgeConfig({ ...VALID, apiBaseUrl: '   ' }), /apiBaseUrl/)
+  assert.match(validateBridgeConfig({ ...VALID, apiBaseUrl: 123 }), /apiBaseUrl/)
+  assert.equal(validateBridgeConfig({ ...VALID, apiBaseUrl: 'http://127.0.0.1:5000' }), null)
+  assert.equal(validateBridgeConfig({ ...VALID, apiBaseUrl: undefined }), null)
+})
+
 test('resolveBotStateFile: resolves a relative stateFile against configDir, defaulting to state.json', () => {
   assert.equal(resolveBotStateFile('/repo', 'state/tldr.json'), '/repo/state/tldr.json')
   assert.equal(resolveBotStateFile('/repo', undefined), '/repo/state.json')
