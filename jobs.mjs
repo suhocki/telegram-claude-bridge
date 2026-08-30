@@ -1,8 +1,4 @@
-// Pure, testable helpers for the bridge-owned background job runner (see
-// docs/background-jobs-plan.md). The bridge spawns/owns/watches jobs itself, in their own
-// process group, so a job survives the claude turn that started it, that turn's timeout, a
-// manual cancel, and a bridge restart. bridge.mjs holds all the fs/spawn side effects; this
-// module only computes decisions from plain data so they're testable without a real process.
+// Pure, testable helpers for the bridge-owned background job runner (see docs/background-jobs-plan.md).
 
 import path from 'node:path'
 import { CHECKIN_MAX_MINUTES } from './lib.mjs'
@@ -11,6 +7,8 @@ export const DEFAULT_MAX_CONCURRENT_JOBS = 5
 export const DEFAULT_JOB_TIMEOUT_MINUTES = 60
 export const JOB_HEARTBEAT_STALE_MS = 5 * 60 * 1000
 export const JOB_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/
+// __proto__ would reassign state.jobs's own prototype via state.jobs[jobId] = ...; the other two are blocked too, just in case.
+const RESERVED_JOB_IDS = new Set(['__proto__', 'constructor', 'prototype'])
 
 export function resolveJobsDir(stateDir, botSlug) {
   return path.join(stateDir, 'jobs', botSlug)
@@ -24,9 +22,6 @@ export function buildJobLogPath(jobsDir, jobId) {
   return path.join(jobsDir, `${jobId}.log`)
 }
 
-// Same containment idiom as lib.mjs's assertSendablePath, applied in the opposite direction:
-// here we require the path to be *inside* the jobs dir, since it's a spec the bridge is about
-// to execute a shell command from, not an outbound file it's about to send.
 export function isPathInsideDir(filePath, dir) {
   const resolved = path.resolve(filePath)
   const resolvedDir = path.resolve(dir)
@@ -52,7 +47,7 @@ export function validateJobSpec(
     isThreadKeyAuthorized = () => true,
   } = {}
 ) {
-  if (!JOB_ID_RE.test(String(jobId ?? ''))) return { ok: false, error: `invalid job id: ${jobId}` }
+  if (!JOB_ID_RE.test(String(jobId ?? '')) || RESERVED_JOB_IDS.has(jobId)) return { ok: false, error: `invalid job id: ${jobId}` }
   if (filePath != null && jobsDir != null && !isPathInsideDir(filePath, jobsDir)) {
     return { ok: false, error: `job spec path is outside the jobs directory: ${filePath}` }
   }
@@ -122,12 +117,7 @@ export function markJobFinished(record, { status, exitCode = null, signal = null
   return { ...record, status, exitCode, signal, finishedAt: now }
 }
 
-// A job's process group outlives the bridge process that spawned it (that's the whole
-// point), so on boot a job left "running" in state.json might still genuinely be alive —
-// resume watching it via pid polling (no child handle survives a restart). If its pid is
-// gone, the bridge died in between and can never learn the real exit code, so it's marked
-// "done" (or "timed-out" if it was already flagged for a timeout kill before the restart)
-// rather than guessed as a failure.
+// A dead pid on boot could mean the job actually finished, or the machine itself restarted mid-job; either way the real exit code is unrecoverable, so it's marked "done" (or "timed-out" if already flagged) rather than guessed as a failure.
 export function reconcileJobsOnBoot(jobsMap, isAlivePid, now) {
   const jobs = { ...jobsMap }
   const deadJobIds = []
@@ -174,9 +164,6 @@ export function renderJobLine(job, now, staleMs = JOB_HEARTBEAT_STALE_MS) {
   return `❌ ${job.description} — failed after ${elapsed}${job.exitCode != null ? ` (exit ${job.exitCode})` : ''}`
 }
 
-// A finished job keeps showing up here until it's been rendered once with no active
-// sibling left in its thread (see bridge.mjs's updateJobStatusMessages, which then flips
-// `reported` so the thread's status message goes quiet instead of re-editing forever).
 export function selectStatusRenderJobs(jobsForThread) {
   return jobsForThread.filter(j => isJobActive(j) || !j.reported)
 }
@@ -188,7 +175,8 @@ export function renderJobsStatusMessage(jobs, now, { staleMs = JOB_HEARTBEAT_STA
 }
 
 export function groupJobsByThread(jobsMap) {
-  const grouped = {}
+  // null-prototype so an attacker-chosen notifyThreadKey (e.g. "__proto__", "toString") can never resolve to an inherited value instead of a real bucket.
+  const grouped = Object.create(null)
   for (const record of Object.values(jobsMap ?? {})) {
     ;(grouped[record.notifyThreadKey] ??= []).push(record)
   }

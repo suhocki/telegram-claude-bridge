@@ -498,9 +498,7 @@ export function buildCheckinMarkerInstructions() {
   ].join('\n')
 }
 
-// jobsDir/notifyThreadKey are baked in per-call (not left for the model to derive) since the
-// model is never told the thread-key format (see threadKey/parseThreadKey) and getting it wrong
-// would silently misroute the job's status message and completion check-in.
+// notifyThreadKey is baked in per-call, not left for the model to derive — it's never told the threadKey/parseThreadKey format.
 export function buildJobMarkerInstructions(jobsDir, notifyThreadKey) {
   return [
     'The process running this turn exits as soon as your reply is sent. Nothing you start survives that on its own — not run_in_background, not a detached/nohup\'d process — and even something you got to survive the turn can still be killed later by a turn timeout, a manual cancel, or a bridge restart.',

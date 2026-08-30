@@ -106,6 +106,14 @@ test('validateJobSpec: rejects an invalid job id (from an untrusted spec filenam
   }
 })
 
+test('validateJobSpec: rejects "__proto__"/"constructor"/"prototype" as a job id even though they match the id pattern', () => {
+  for (const jobId of ['__proto__', 'constructor', 'prototype']) {
+    const result = validateJobSpec(VALID_SPEC, { jobId })
+    assert.equal(result.ok, false)
+    assert.match(result.error, /job id/)
+  }
+})
+
 test('validateJobSpec: rejects a spec file path outside the jobs dir', () => {
   const result = validateJobSpec(VALID_SPEC, {
     jobId: 'abc123',
@@ -367,8 +375,21 @@ test('groupJobsByThread: groups job records by their notifyThreadKey', () => {
 })
 
 test('groupJobsByThread: an empty/missing map groups to nothing', () => {
-  assert.deepEqual(groupJobsByThread({}), {})
-  assert.deepEqual(groupJobsByThread(undefined), {})
+  assert.deepEqual(Object.keys(groupJobsByThread({})), [])
+  assert.deepEqual(Object.keys(groupJobsByThread(undefined)), [])
+})
+
+test('groupJobsByThread: is immune to a notifyThreadKey that collides with an inherited Object property name', () => {
+  const jobs = { a: { id: 'a', notifyThreadKey: '__proto__' }, b: { id: 'b', notifyThreadKey: 'constructor' } }
+  const grouped = groupJobsByThread(jobs)
+  assert.deepEqual(
+    grouped['__proto__'].map(j => j.id),
+    ['a']
+  )
+  assert.deepEqual(
+    grouped['constructor'].map(j => j.id),
+    ['b']
+  )
 })
 
 test('buildJobCompletionCheckinInstruction: a successful job reports its exit code and log path', () => {
