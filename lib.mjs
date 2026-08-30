@@ -466,6 +466,17 @@ export function checkinChainExceeded(hopCount) {
   return hopCount > CHECKIN_MAX_CHAINED_HOPS
 }
 
+// Folds a new check-in request into whatever's already pending for the same thread instead of clobbering it: the earlier dueAt wins, instructions concatenate, and hopCount takes the deeper of the two chains (a fresh marker's default hopCount must never reset an already-escalated chain back down).
+export function mergePendingCheckin(existing, { sessionId, checkin, hopCount, now }) {
+  const dueAt = now + checkin.minutes * 60_000
+  return {
+    dueAt: existing ? Math.min(existing.dueAt, dueAt) : dueAt,
+    instruction: existing ? `${existing.instruction}\n\n${checkin.instruction}` : checkin.instruction,
+    sessionId,
+    hopCount: existing ? Math.max(existing.hopCount ?? 0, hopCount) : hopCount,
+  }
+}
+
 const CHECKIN_LINE_RE = /^CHECKIN:\s*(\d+)\s+(.+?)\s*$/
 
 export function extractCheckinMarker(text) {

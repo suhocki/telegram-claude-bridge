@@ -61,6 +61,7 @@ import {
   extractResponseMarkers,
   checkinChainExceeded,
   CHECKIN_MAX_CHAINED_HOPS,
+  mergePendingCheckin,
   buildSetMessageReactionParams,
   RECEIPT_REACTION,
   ERROR_REACTION,
@@ -806,14 +807,7 @@ function armCheckinTimer(key) {
 
 // Folds into an already-pending check-in for this thread (earliest dueAt wins, instructions concatenate) instead of silently clobbering it — a job finishing must never erase a model's own still-pending CHECKIN: marker, or vice versa.
 function scheduleCheckin(key, sessionId, checkin, hopCount = 1) {
-  const existing = state.pendingCheckins[key]
-  const dueAt = Date.now() + checkin.minutes * 60_000
-  state.pendingCheckins[key] = {
-    dueAt: existing ? Math.min(existing.dueAt, dueAt) : dueAt,
-    instruction: existing ? `${existing.instruction}\n\n${checkin.instruction}` : checkin.instruction,
-    sessionId,
-    hopCount,
-  }
+  state.pendingCheckins[key] = mergePendingCheckin(state.pendingCheckins[key], { sessionId, checkin, hopCount, now: Date.now() })
   saveState(state)
   armCheckinTimer(key)
 }

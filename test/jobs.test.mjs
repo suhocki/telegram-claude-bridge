@@ -420,6 +420,14 @@ test('buildJobCompletionCheckinInstruction: an "unknown" job (bridge-restart sur
   assert.match(instruction, /outcome is unknown/)
 })
 
+test('buildJobCompletionCheckinInstruction: a job that never started (spawn itself failed) says so instead of pointing at a log that was never produced', () => {
+  const job = markJobFinished(createJobRecord({ id: 'j1', spec: VALID_SPEC, now: 0, logPath: '/x.log' }), { status: 'failed', now: 10 })
+  const instruction = buildJobCompletionCheckinInstruction(job)
+  assert.match(instruction, /failed to start and never ran/)
+  assert.match(instruction, /no log was produced/)
+  assert.doesNotMatch(instruction, /\/x\.log/)
+})
+
 test('buildJobCompletionCheckinInstruction: appends the spec\'s own onDoneCheckin.instruction when given', () => {
   let job = markJobRunning(
     createJobRecord({ id: 'j1', spec: { ...VALID_SPEC, onDoneCheckin: { instruction: 'convert the output to a PDF' } }, now: 0, logPath: '/x.log' }),

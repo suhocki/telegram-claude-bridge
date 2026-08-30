@@ -60,6 +60,7 @@ import {
   CHECKIN_MAX_MINUTES,
   CHECKIN_MAX_CHAINED_HOPS,
   checkinChainExceeded,
+  mergePendingCheckin,
   expandHome,
   buildFfmpegConvertArgs,
   buildWhisperArgs,
@@ -1217,6 +1218,48 @@ test('checkinChainExceeded: false at and below the hop cap, true above it', () =
   assert.equal(checkinChainExceeded(1), false)
   assert.equal(checkinChainExceeded(CHECKIN_MAX_CHAINED_HOPS), false)
   assert.equal(checkinChainExceeded(CHECKIN_MAX_CHAINED_HOPS + 1), true)
+})
+
+test('mergePendingCheckin: with nothing already pending, just builds a fresh entry from the given values', () => {
+  const result = mergePendingCheckin(null, { sessionId: 's1', checkin: { minutes: 5, instruction: 'do the thing' }, hopCount: 1, now: 1000 })
+  assert.deepEqual(result, { dueAt: 1000 + 5 * 60_000, instruction: 'do the thing', sessionId: 's1', hopCount: 1 })
+})
+
+test('mergePendingCheckin: keeps the earlier dueAt of the two (a job\'s own later delay must not push out an already-sooner pending check-in)', () => {
+  const existing = { dueAt: 5000, instruction: 'ORIGINAL', sessionId: 's1', hopCount: 3 }
+  const result = mergePendingCheckin(existing, { sessionId: 's1', checkin: { minutes: 5, instruction: 'NEW' }, hopCount: 4, now: 1000 })
+  assert.equal(result.dueAt, 5000)
+})
+
+test('mergePendingCheckin: pushes the due time earlier when the new one is sooner than what was already pending', () => {
+  const existing = { dueAt: 999_999, instruction: 'ORIGINAL', sessionId: 's1', hopCount: 3 }
+  const result = mergePendingCheckin(existing, { sessionId: 's1', checkin: { minutes: 0, instruction: 'NEW' }, hopCount: 1, now: 1000 })
+  assert.equal(result.dueAt, 1000)
+})
+
+test('mergePendingCheckin: concatenates both instructions instead of dropping either', () => {
+  const existing = { dueAt: 5000, instruction: 'ORIGINAL MARKER', sessionId: 's1', hopCount: 1 }
+  const result = mergePendingCheckin(existing, { sessionId: 's1', checkin: { minutes: 0, instruction: 'JOB COMPLETION' }, hopCount: 2, now: 1000 })
+  assert.equal(result.instruction, 'ORIGINAL MARKER\n\nJOB COMPLETION')
+})
+
+test('mergePendingCheckin: keeps the deeper hop count of the two — a fresh marker\'s default hopCount must not reset an already-escalated chain', () => {
+  const existing = { dueAt: 5000, instruction: 'ORIGINAL', sessionId: 's1', hopCount: 15 }
+  // Simulates an ordinary CHECKIN: marker call, which always passes the default hopCount (1).
+  const result = mergePendingCheckin(existing, { sessionId: 's1', checkin: { minutes: 0, instruction: 'NEW' }, hopCount: 1, now: 1000 })
+  assert.equal(result.hopCount, 15)
+})
+
+test('mergePendingCheckin: still advances the hop count when the new call\'s is actually deeper than what was pending', () => {
+  const existing = { dueAt: 5000, instruction: 'ORIGINAL', sessionId: 's1', hopCount: 2 }
+  const result = mergePendingCheckin(existing, { sessionId: 's1', checkin: { minutes: 0, instruction: 'NEW' }, hopCount: 7, now: 1000 })
+  assert.equal(result.hopCount, 7)
+})
+
+test('mergePendingCheckin: always takes the newest sessionId', () => {
+  const existing = { dueAt: 5000, instruction: 'ORIGINAL', sessionId: 'old-session', hopCount: 1 }
+  const result = mergePendingCheckin(existing, { sessionId: 'new-session', checkin: { minutes: 0, instruction: 'NEW' }, hopCount: 1, now: 1000 })
+  assert.equal(result.sessionId, 'new-session')
 })
 
 test('buildCheckinFollowupPrompt: wraps the instruction and marks it as an automated, non-user prompt', () => {

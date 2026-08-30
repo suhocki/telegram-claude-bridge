@@ -182,6 +182,13 @@ export function groupJobsByThread(jobsMap) {
 }
 
 export function buildJobCompletionCheckinInstruction(job) {
+  // A job that never made it past startJob's own spawn attempt (createJobRecord's startedAt stays null) has no log to point at.
+  if (job.startedAt == null) {
+    const base = `Background job "${job.description}" (id ${job.id}) failed to start and never ran — no log was produced. Report this to the user.`
+    return job.onDoneCheckin?.instruction
+      ? `${base}\n\nAdditional instruction given when the job was started: ${job.onDoneCheckin.instruction}`
+      : base
+  }
   const outcome =
     job.status === 'done'
       ? `finished with exit code ${job.exitCode}`
