@@ -168,6 +168,7 @@ test('validateJobSpec: rejects a notifyThreadKey the caller\'s isThreadRecentlyA
   const isThreadRecentlyActive = key => key === '58639685:395533'
   const rejected = validateJobSpec({ ...VALID_SPEC, notifyThreadKey: '58639685' }, { jobId: 'a', isThreadRecentlyActive })
   assert.equal(rejected.ok, false)
+  assert.equal(rejected.reason, 'stale_thread')
   assert.match(rejected.error, /notifyThreadKey/)
   assert.match(rejected.error, /stale|wrong thread/)
   const accepted = validateJobSpec({ ...VALID_SPEC, notifyThreadKey: '58639685:395533' }, { jobId: 'a', isThreadRecentlyActive })

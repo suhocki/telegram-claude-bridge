@@ -64,10 +64,10 @@ export function validateJobSpec(
   if (!isThreadKeyAuthorized(spec.notifyThreadKey)) {
     return { ok: false, error: `"notifyThreadKey" (${spec.notifyThreadKey}) is not an authorized chat/thread for this bot` }
   }
-  // isThreadKeyAuthorized alone can't tell a stale-but-valid thread apart from the one that actually started this job.
   if (!isThreadRecentlyActive(spec.notifyThreadKey)) {
     return {
       ok: false,
+      reason: 'stale_thread',
       error: `"notifyThreadKey" (${spec.notifyThreadKey}) hasn't had any recent turn activity — refusing to notify what looks like a stale or wrong thread`,
     }
   }
