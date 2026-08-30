@@ -516,6 +516,7 @@ export function buildJobMarkerInstructions(jobsDir, notifyThreadKey) {
     '}',
     `Only "command", "description", and "notifyThreadKey" are required — always use exactly "${notifyThreadKey}" for "notifyThreadKey", copied verbatim, never invented or derived. "cwd" defaults to this session's own working directory when omitted. "timeoutMinutes" defaults to 60 and, on expiry, the bridge kills the job and reports it as timed out.`,
     'The bridge runs "command" through a shell, redirects its output to a log file next to the spec, and posts (then keeps live-editing) a status message in this chat until the job finishes.',
+    'Do not background or detach anything inside "command" itself (no trailing &, no nohup, no disown) — the bridge already runs the whole command detached; backgrounding inside it too just makes the bridge think the job is done the moment the wrapper shell returns, while the real work keeps going unwatched.',
     'If you set "onDoneCheckin", the bridge automatically resumes this same session once the job finishes (immediately by default, or after "minutes" if given) with an instruction to read the job\'s log and report the result — you do not need your own CHECKIN: marker for that.',
     'Reply to the user now saying the job has started; do not wait for it to finish.',
   ].join('\n')

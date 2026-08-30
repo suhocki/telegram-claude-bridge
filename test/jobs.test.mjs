@@ -239,10 +239,10 @@ test('reconcileJobsOnBoot: a running job whose pid is still alive is left runnin
   assert.deepEqual(deadJobIds, [])
 })
 
-test('reconcileJobsOnBoot: a running job whose pid is gone is marked done and reported as dead', () => {
+test('reconcileJobsOnBoot: a running job whose pid is gone is marked "unknown" (never guessed as done or failed) and reported as dead', () => {
   const jobs = { a: markJobRunning(createJobRecord({ id: 'a', spec: VALID_SPEC, now: 0, logPath: '/x.log' }), 999, 0) }
   const { jobs: next, deadJobIds } = reconcileJobsOnBoot(jobs, () => false, 100)
-  assert.equal(next.a.status, 'done')
+  assert.equal(next.a.status, 'unknown')
   assert.equal(next.a.finishedAt, 100)
   assert.deepEqual(deadJobIds, ['a'])
 })
@@ -306,10 +306,11 @@ test('renderJobLine: a done job reports its exit code', () => {
   assert.match(line, /exit 0/)
 })
 
-test('renderJobLine: a done job with an unknown exit code (bridge-restart survivor) says so instead of guessing', () => {
+test('renderJobLine: an "unknown" job (bridge-restart survivor with no verifiable exit code) says so instead of guessing done or failed', () => {
   let job = markJobRunning(createJobRecord({ id: 'a', spec: VALID_SPEC, now: 0, logPath: '/x.log' }), 1, 0)
-  job = markJobFinished(job, { status: 'done', now: 30_000 })
+  job = markJobFinished(job, { status: 'unknown', now: 30_000 })
   const line = renderJobLine(job, 30_000)
+  assert.match(line, /❓/)
   assert.match(line, /exact result unknown/)
 })
 
@@ -409,6 +410,14 @@ test('buildJobCompletionCheckinInstruction: a failed job says so, a timed-out jo
   let timedOut = markJobRunning(createJobRecord({ id: 'j2', spec: { ...VALID_SPEC, timeoutMinutes: 10 }, now: 0, logPath: '/x.log' }), 1, 0)
   timedOut = markJobFinished(timedOut, { status: 'timed-out', now: 1000 })
   assert.match(buildJobCompletionCheckinInstruction(timedOut), /timed out after 10 minute/)
+})
+
+test('buildJobCompletionCheckinInstruction: an "unknown" job (bridge-restart survivor) says its outcome is unknown, not that it succeeded or failed', () => {
+  let job = markJobRunning(createJobRecord({ id: 'j1', spec: VALID_SPEC, now: 0, logPath: '/x.log' }), 1, 0)
+  job = markJobFinished(job, { status: 'unknown', now: 1000 })
+  const instruction = buildJobCompletionCheckinInstruction(job)
+  assert.match(instruction, /was lost track of/)
+  assert.match(instruction, /outcome is unknown/)
 })
 
 test('buildJobCompletionCheckinInstruction: appends the spec\'s own onDoneCheckin.instruction when given', () => {

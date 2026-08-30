@@ -1,9 +1,11 @@
 # Background jobs that survive the turn — investigation + fix plan
 
-Status: investigated and reproduced 2026-08-30 (Telegram session). Not implemented yet.
-This doc is self-contained: an executor agent should be able to implement, test, and ship
-from this file alone, following the dev workflow in `CLAUDE.md` (branch → tests → PR →
-fresh-agent review → self-merge).
+Status: implemented and shipped 2026-08-30 (`jobs.mjs` + job-runner wiring in `bridge.mjs`,
+`buildJobMarkerInstructions` in `lib.mjs`). Unit tests (`test/jobs.test.mjs` and friends) and all
+5 scripted e2e scenarios from the Test Plan below are green; the final human-in-Telegram
+validation step is still owed to the operator. This doc is kept as the investigation record and
+design reference — see the PR history on the `feature/background-job-runner` branch for the
+implementation itself.
 
 ## Problem
 

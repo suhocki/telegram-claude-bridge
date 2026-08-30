@@ -117,14 +117,14 @@ export function markJobFinished(record, { status, exitCode = null, signal = null
   return { ...record, status, exitCode, signal, finishedAt: now }
 }
 
-// A dead pid on boot could mean the job actually finished, or the machine itself restarted mid-job; either way the real exit code is unrecoverable, so it's marked "done" (or "timed-out" if already flagged) rather than guessed as a failure.
+// A dead pid on boot could mean the job actually finished or actually failed — the real exit code is unrecoverable across a restart, so it's "unknown" rather than guessed as either (unless it was already flagged for a timeout kill, which is a known reason).
 export function reconcileJobsOnBoot(jobsMap, isAlivePid, now) {
   const jobs = { ...jobsMap }
   const deadJobIds = []
   for (const [jobId, record] of Object.entries(jobs)) {
     if (!isJobActive(record)) continue
     if (record.pid != null && isAlivePid(record.pid)) continue
-    jobs[jobId] = markJobFinished(record, { status: record.killedForTimeout ? 'timed-out' : 'done', now })
+    jobs[jobId] = markJobFinished(record, { status: record.killedForTimeout ? 'timed-out' : 'unknown', now })
     deadJobIds.push(jobId)
   }
   return { jobs, deadJobIds }
@@ -156,11 +156,9 @@ export function renderJobLine(job, now, staleMs = JOB_HEARTBEAT_STALE_MS) {
       computeHeartbeatState(job, now, staleMs) === 'stale' ? `⚠️ no output for ${since}` : `alive, last output ${since} ago`
     return `⏳ ${job.description} — ${elapsed} elapsed${eta} — ${heartbeatText}`
   }
-  if (job.status === 'done') {
-    const exitText = job.exitCode != null ? ` (exit ${job.exitCode})` : ' (bridge restarted while it was running — exact result unknown)'
-    return `✅ ${job.description} — finished after ${elapsed}${exitText}`
-  }
+  if (job.status === 'done') return `✅ ${job.description} — finished after ${elapsed} (exit ${job.exitCode})`
   if (job.status === 'timed-out') return `⏱️ ${job.description} — timed out after ${elapsed} and was stopped`
+  if (job.status === 'unknown') return `❓ ${job.description} — lost track of it after ${elapsed} (bridge restarted while it was running — exact result unknown)`
   return `❌ ${job.description} — failed after ${elapsed}${job.exitCode != null ? ` (exit ${job.exitCode})` : ''}`
 }
 
@@ -186,12 +184,12 @@ export function groupJobsByThread(jobsMap) {
 export function buildJobCompletionCheckinInstruction(job) {
   const outcome =
     job.status === 'done'
-      ? job.exitCode != null
-        ? `finished with exit code ${job.exitCode}`
-        : 'finished (the bridge restarted while it was running, so the exact exit code is unknown)'
+      ? `finished with exit code ${job.exitCode}`
       : job.status === 'timed-out'
         ? `timed out after ${job.timeoutMinutes} minute(s) and was stopped`
-        : `failed${job.exitCode != null ? ` with exit code ${job.exitCode}` : ''}`
+        : job.status === 'unknown'
+          ? 'was lost track of (the bridge restarted while it was running and it was gone by the time a new instance checked) — the actual outcome is unknown'
+          : `failed${job.exitCode != null ? ` with exit code ${job.exitCode}` : ''}`
   const base = `Background job "${job.description}" (id ${job.id}) ${outcome}. Its full output log is at ${job.logPath} — read it and report the result to the user.`
   return job.onDoneCheckin?.instruction
     ? `${base}\n\nAdditional instruction given when the job was started: ${job.onDoneCheckin.instruction}`

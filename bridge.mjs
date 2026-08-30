@@ -232,7 +232,6 @@ const CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS = config.claudeTurnAbsoluteTimeoutMs ?? Ma
 const SUBPROCESS_TIMEOUT_MS = config.subprocessTimeoutMs ?? 5 * 60 * 1000
 const RETENTION_SWEEP_MAX_AGE_MS = (config.retentionDays ?? 14) * 24 * 60 * 60 * 1000
 const RETENTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
-// How often the job runner scans jobsDir for new specs and re-checks liveness/timeouts of running jobs.
 const JOB_SWEEP_INTERVAL_MS = config.jobSweepIntervalMs ?? 15 * 1000
 const JOB_MAX_CONCURRENT_PER_BOT = config.maxConcurrentJobs ?? DEFAULT_MAX_CONCURRENT_JOBS
 const JOB_DEFAULT_TIMEOUT_MINUTES = config.jobDefaultTimeoutMinutes ?? DEFAULT_JOB_TIMEOUT_MINUTES
@@ -269,7 +268,6 @@ function emptyState() {
     modelConfig: {},
     jobs: {},
     jobStatusMessages: {},
-    jobCheckinHopCounts: {},
   }
 }
 
@@ -286,7 +284,6 @@ function loadState() {
     state.modelConfig ??= {}
     state.jobs ??= {}
     state.jobStatusMessages ??= {}
-    state.jobCheckinHopCounts ??= {}
     return state
   } catch {
     return emptyState()
@@ -775,7 +772,10 @@ async function handleEditedMessage(msg) {
 
   await deleteBotMessages(chatId, collectBotMessageIdsFrom(turnList, turnIndex))
   state.turns[key] = turnList.slice(0, turnIndex)
-  if (!rewind.sessionUsable) delete state.sessions[key]
+  if (!rewind.sessionUsable) {
+    delete state.sessions[key]
+    clearJobOnDoneCheckinsForThread(key)
+  }
   delete state.pendingRisky[key]
   cancelCheckin(key)
   await clearPendingContinue(chatId, key)
@@ -804,10 +804,13 @@ function armCheckinTimer(key) {
   checkinTimers.set(key, handle)
 }
 
+// Folds into an already-pending check-in for this thread (earliest dueAt wins, instructions concatenate) instead of silently clobbering it — a job finishing must never erase a model's own still-pending CHECKIN: marker, or vice versa.
 function scheduleCheckin(key, sessionId, checkin, hopCount = 1) {
+  const existing = state.pendingCheckins[key]
+  const dueAt = Date.now() + checkin.minutes * 60_000
   state.pendingCheckins[key] = {
-    dueAt: Date.now() + checkin.minutes * 60_000,
-    instruction: checkin.instruction,
+    dueAt: existing ? Math.min(existing.dueAt, dueAt) : dueAt,
+    instruction: existing ? `${existing.instruction}\n\n${checkin.instruction}` : checkin.instruction,
     sessionId,
     hopCount,
   }
@@ -908,14 +911,16 @@ function isPidAlive(pid) {
 }
 
 // Mirrors runClaude's own cancel(): SIGTERM the job's whole process group, SIGKILL after a grace period if it ignored that.
-function killJobProcessGroup(pid) {
+function killJobProcessGroup(pid, child) {
   try {
     process.kill(-pid, 'SIGTERM')
   } catch (e) {
     log('job timeout SIGTERM failed', pid, e.message)
   }
   setTimeout(() => {
-    if (isPidAlive(pid)) {
+    // The child handle (when we have one) is immune to pid reuse, unlike isPidAlive's process.kill(pid, 0) probe.
+    const alive = child ? child.exitCode == null && child.signalCode == null : isPidAlive(pid)
+    if (alive) {
       try {
         process.kill(-pid, 'SIGKILL')
       } catch (e) {
@@ -923,6 +928,13 @@ function killJobProcessGroup(pid) {
       }
     }
   }, CANCEL_SIGKILL_GRACE_MS)
+}
+
+// Called whenever a thread's session gets invalidated (a /new, or a rewind that drops the session) so a job finishing later doesn't talk its result into whatever unrelated session occupies that thread next.
+function clearJobOnDoneCheckinsForThread(key) {
+  for (const record of Object.values(state.jobs)) {
+    if (record.notifyThreadKey === key && record.onDoneCheckin) record.onDoneCheckin = null
+  }
 }
 
 // Shared terminal-transition path for a job (own exit, liveness-poll miss, or boot reconciliation): persists the record, fires onDoneCheckin, refreshes the status message.
@@ -935,18 +947,12 @@ function finalizeJob(jobId, record) {
     if (!sessionId) {
       log('skipping job completion check-in, no session for thread', record.notifyThreadKey)
     } else {
-      const hopCount = (state.jobCheckinHopCounts[record.notifyThreadKey] ?? 0) + 1
+      // Single source of truth for the hop count: whatever's already pending for this thread, not a separate counter that could fall out of sync with it.
+      const hopCount = (state.pendingCheckins[record.notifyThreadKey]?.hopCount ?? 0) + 1
       if (checkinChainExceeded(hopCount)) {
         log('job completion check-in chain hit its safety cap', record.notifyThreadKey)
       } else {
-        state.jobCheckinHopCounts[record.notifyThreadKey] = hopCount
-        // A checkin already pending for this thread (e.g. another job finishing around the
-        // same time) would otherwise be silently clobbered by scheduleCheckin's single slot
-        // per thread — fold both instructions into one turn instead of losing either.
-        const existingPending = state.pendingCheckins[record.notifyThreadKey]
-        const completion = buildJobCompletionCheckin(record)
-        const instruction = existingPending ? `${existingPending.instruction}\n\n${completion.instruction}` : completion.instruction
-        scheduleCheckin(record.notifyThreadKey, sessionId, { minutes: completion.minutes, instruction }, hopCount)
+        scheduleCheckin(record.notifyThreadKey, sessionId, buildJobCompletionCheckin(record), hopCount)
       }
     }
   }
@@ -1021,7 +1027,7 @@ async function pickUpNewJobSpecs() {
   for (const file of files) {
     if (!file.endsWith('.json')) continue
     const jobId = path.basename(file, '.json')
-    const specPath = path.join(jobsDir, file)
+    const specPath = buildJobSpecPath(jobsDir, jobId)
     let rawText
     let spec
     try {
@@ -1071,7 +1077,9 @@ function checkRunningJobs() {
     const child = jobChildren.get(jobId)
     const alive = child ? child.exitCode == null && child.signalCode == null : isPidAlive(record.pid)
     if (!alive) {
-      finalizeJob(jobId, markJobFinished(record, { status: record.killedForTimeout ? 'timed-out' : 'done', now }))
+      // No live child handle means this is a restart-adopted job whose real exit code was never observed — "unknown", not a guessed "done", so a real failure is never silently reported as a success.
+      const status = record.killedForTimeout ? 'timed-out' : child ? 'failed' : 'unknown'
+      finalizeJob(jobId, markJobFinished(record, { status, now }))
       continue
     }
     try {
@@ -1082,7 +1090,7 @@ function checkRunningJobs() {
     if (!record.killedForTimeout && now >= record.startedAt + record.timeoutMinutes * 60_000) {
       log('background job timed out, killing its process group', jobId, record.description)
       record.killedForTimeout = true
-      killJobProcessGroup(record.pid)
+      killJobProcessGroup(record.pid, child)
     }
   }
 }
@@ -1105,8 +1113,13 @@ async function updateThreadJobStatusMessage(key, jobsForThread, now) {
       lastRenderedJobsText.set(key, text)
       delivered = true
     } catch (e) {
-      if (/message is not modified/i.test(e.message)) delivered = true
-      else log('failed to update job status message', key, e.message)
+      if (/message is not modified/i.test(e.message)) {
+        delivered = true
+      } else {
+        log('failed to update job status message', key, e.message)
+        // Stop retrying a message id that may no longer be editable (deleted, expired edit window, ...) — fall back to a fresh sendMessage next sweep instead of retrying the same dead id forever.
+        if (messageId != null) delete state.jobStatusMessages[key]
+      }
     }
   }
   // Only stop tracking a fully-finished thread once its final summary was actually delivered — a failed edit/send must keep retrying on the next sweep instead of being silently lost.
@@ -1120,19 +1133,25 @@ async function updateThreadJobStatusMessage(key, jobsForThread, now) {
 // One bot message per thread with jobs to report on, live-edited in place.
 async function updateJobStatusMessages() {
   const now = Date.now()
-  const grouped = groupJobsByThread(state.jobs)
-  await Promise.all(
-    Object.entries(grouped).map(([key, jobsForThread]) =>
-      jobStatusQueue.enqueue(key, () => updateThreadJobStatusMessage(key, jobsForThread, now))
-    )
-  )
+  const entries = Object.entries(groupJobsByThread(state.jobs))
+  if (!entries.length) return
+  await Promise.all(entries.map(([key, jobsForThread]) => jobStatusQueue.enqueue(key, () => updateThreadJobStatusMessage(key, jobsForThread, now))))
   saveState(state)
 }
 
+let sweepJobsInFlight = false
+
+// Guards against an overlapping setInterval tick re-reading a spec file a slow await (e.g. a rejection notice) hasn't gotten around to deleting yet.
 async function sweepJobs() {
-  await pickUpNewJobSpecs()
-  checkRunningJobs()
-  await updateJobStatusMessages()
+  if (sweepJobsInFlight) return
+  sweepJobsInFlight = true
+  try {
+    await pickUpNewJobSpecs()
+    checkRunningJobs()
+    await updateJobStatusMessages()
+  } finally {
+    sweepJobsInFlight = false
+  }
 }
 
 // A job left "running" in state.json on boot might still be alive (its process group outlives the bridge) or might not.
@@ -1600,11 +1619,6 @@ async function handleMessage(msg) {
   if (!isAuthorizedMessage(msg)) return
   // every authorized message supersedes whatever interrupted turn a Continue button was still offering, regardless of which branch below handles it
   await clearPendingContinue(chatId, key)
-  // the user is back in control — a job-completion check-in chain here no longer shares its hop count with whatever this message starts
-  if (state.jobCheckinHopCounts[key] != null) {
-    delete state.jobCheckinHopCounts[key]
-    saveState(state)
-  }
   const attachment = extractAttachment(msg)
   const content = msg.text ?? msg.caption ?? null
   if (content == null && !attachment) {
@@ -1637,10 +1651,7 @@ async function handleMessage(msg) {
     delete state.pendingRisky[key]
     delete state.turns[key]
     cancelCheckin(key)
-    // the job itself keeps running and reporting either way, it just won't talk into whatever unrelated session starts next
-    for (const record of Object.values(state.jobs)) {
-      if (record.notifyThreadKey === key && record.onDoneCheckin) record.onDoneCheckin = null
-    }
+    clearJobOnDoneCheckinsForThread(key)
     saveState(state)
     await sendReply(chatId, '🔄 session reset — the next message starts a brand new conversation.', msg.message_id, null, threadId).catch(() => {})
     return
