@@ -55,6 +55,7 @@ import {
   extractResponseMarkers,
   extractNoReplyMarker,
   buildNoReplyMarkerInstructions,
+  buildJobMarkerInstructions,
   CHECKIN_MIN_MINUTES,
   CHECKIN_MAX_MINUTES,
   CHECKIN_MAX_CHAINED_HOPS,
@@ -1199,6 +1200,17 @@ test('buildCheckinMarkerInstructions: documents the CHECKIN marker protocol and 
   assert.match(text, new RegExp(String(CHECKIN_MIN_MINUTES)))
   assert.match(text, new RegExp(String(CHECKIN_MAX_MINUTES)))
   assert.match(text, new RegExp(String(CHECKIN_MAX_CHAINED_HOPS)))
+})
+
+test('buildJobMarkerInstructions: documents the exact jobs dir path, the notifyThreadKey to copy verbatim, and warns off run_in_background', () => {
+  const text = buildJobMarkerInstructions('/state/jobs/tldr', '520378507')
+  assert.match(text, /run_in_background/)
+  assert.match(text, /\/state\/jobs\/tldr\/<jobId>\.json/)
+  assert.match(text, /"notifyThreadKey": "520378507"/)
+  assert.match(text, /always use exactly "520378507"/)
+  assert.match(text, /"command"/)
+  assert.match(text, /"onDoneCheckin"/)
+  assert.match(text, /"timeoutMinutes"/)
 })
 
 test('checkinChainExceeded: false at and below the hop cap, true above it', () => {

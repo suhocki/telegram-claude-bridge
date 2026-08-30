@@ -13,6 +13,8 @@ import {
   readdirSync,
   copyFileSync,
   realpathSync,
+  openSync,
+  closeSync,
 } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
@@ -54,6 +56,7 @@ import {
   buildReactionMarkerInstructions,
   buildCheckinMarkerInstructions,
   buildNoReplyMarkerInstructions,
+  buildJobMarkerInstructions,
   buildCheckinFollowupPrompt,
   extractResponseMarkers,
   checkinChainExceeded,
@@ -128,6 +131,25 @@ import {
   MAX_TIMEOUT_MS,
 } from './lib.mjs'
 import { sweepOldFiles } from './retention.mjs'
+import {
+  DEFAULT_MAX_CONCURRENT_JOBS,
+  DEFAULT_JOB_TIMEOUT_MINUTES,
+  JOB_HEARTBEAT_STALE_MS,
+  resolveJobsDir,
+  buildJobSpecPath,
+  buildJobLogPath,
+  isJobActive,
+  countActiveJobs,
+  validateJobSpec,
+  createJobRecord,
+  markJobRunning,
+  markJobFinished,
+  reconcileJobsOnBoot,
+  renderJobsStatusMessage,
+  selectStatusRenderJobs,
+  groupJobsByThread,
+  buildJobCompletionCheckin,
+} from './jobs.mjs'
 import { loadGlobalAuthMode, saveGlobalAuthMode, seedGlobalAuthModeIfMissing, collectLegacyAuthModeValues } from './auth-mode.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml } from './markdown-html.mjs'
 import {
@@ -181,11 +203,19 @@ const inboxDir = path.join(stateDir, 'inbox', botSlug)
 const tmpDir = path.join(stateDir, 'tmp', botSlug)
 const outboxDir = path.join(stateDir, 'outbox', botSlug)
 const rewindBackupDir = path.join(stateDir, 'rewind-backups', botSlug)
+const jobsDir = resolveJobsDir(stateDir, botSlug)
+// Created eagerly (unlike inbox/tmp/outbox above, which are created lazily on first use):
+// the job sweep needs it to exist from the very first tick, and the model is told this exact
+// path in its system prompt from turn one.
+mkdirSync(jobsDir, { recursive: true })
 // Deliberately NOT namespaced by botSlug: switching auth mode anywhere should apply to every bot sharing this stateDir.
 const authModeFile = path.join(stateDir, 'auth-mode.txt')
 // Resolved against the bridge module's own directory, not cwd/configPath, so every config shares one file.
 const workingPhrasesFile = path.join(path.dirname(fileURLToPath(import.meta.url)), 'working-phrases.json')
-const API = `https://api.telegram.org/bot${botToken}`
+// Not documented as a normal per-bot setting: exists so the test suite can point a scratch
+// bridge instance at a local fake Telegram server instead of the real API.
+const TELEGRAM_API_ROOT = config.apiBaseUrl || 'https://api.telegram.org'
+const API = `${TELEGRAM_API_ROOT}/bot${botToken}`
 const GET_UPDATES_POLL_TIMEOUT_S = 30
 const GET_UPDATES_FETCH_TIMEOUT_MS = 50000
 const FILE_TRANSFER_TIMEOUT_MS = 60000
@@ -205,6 +235,10 @@ const CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS = config.claudeTurnAbsoluteTimeoutMs ?? Ma
 const SUBPROCESS_TIMEOUT_MS = config.subprocessTimeoutMs ?? 5 * 60 * 1000
 const RETENTION_SWEEP_MAX_AGE_MS = (config.retentionDays ?? 14) * 24 * 60 * 60 * 1000
 const RETENTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
+// How often the job runner scans jobsDir for new specs and re-checks liveness/timeouts of running jobs.
+const JOB_SWEEP_INTERVAL_MS = config.jobSweepIntervalMs ?? 15 * 1000
+const JOB_MAX_CONCURRENT_PER_BOT = config.maxConcurrentJobs ?? DEFAULT_MAX_CONCURRENT_JOBS
+const JOB_DEFAULT_TIMEOUT_MINUTES = config.jobDefaultTimeoutMinutes ?? DEFAULT_JOB_TIMEOUT_MINUTES
 
 const voiceTranscriptionConfig = {
   whisperBin: DEFAULT_WHISPER_BIN,
@@ -236,6 +270,8 @@ function emptyState() {
     workingPhraseQueue: null,
     pendingContinue: {},
     modelConfig: {},
+    jobs: {},
+    jobStatusMessages: {},
   }
 }
 
@@ -250,6 +286,8 @@ function loadState() {
     state.workingPhraseQueue ??= null
     state.pendingContinue ??= {}
     state.modelConfig ??= {}
+    state.jobs ??= {}
+    state.jobStatusMessages ??= {}
     return state
   } catch {
     return emptyState()
@@ -493,7 +531,7 @@ const CANCEL_SIGKILL_GRACE_MS = 3000
 
 // Returns { promise, cancel } instead of a plain Promise so a caller can kill the run
 // early (e.g. a Telegram "Cancel" button) without waiting for it to finish on its own.
-function runClaude(prompt, sessionId, onEvent, authMode, modelConfig) {
+function runClaude(prompt, sessionId, onEvent, authMode, modelConfig, notifyThreadKey) {
   const args = [
     '-p',
     prompt,
@@ -512,6 +550,7 @@ function runClaude(prompt, sessionId, onEvent, authMode, modelConfig) {
       buildReactionMarkerInstructions(),
       buildCheckinMarkerInstructions(),
       buildNoReplyMarkerInstructions(),
+      buildJobMarkerInstructions(jobsDir, notifyThreadKey),
       appendSystemPrompt
     )
   )
@@ -801,7 +840,8 @@ async function runCheckin(key) {
       sessionId,
       undefined,
       currentAuthMode(),
-      currentModelConfig(key)
+      currentModelConfig(key),
+      key
     )
     const result = await checkinPromise
     const priorSession = normalizeSession(state.sessions[key])
@@ -845,6 +885,227 @@ async function runCheckin(key) {
   }
 }
 
+// jobId -> live child handle, only for jobs this exact process instance spawned. A job
+// re-adopted from state.json after a restart has no entry here — checkRunningJobs falls
+// back to polling its pid instead, since Node can never emit an 'exit' event for a process
+// it isn't the actual OS parent of.
+const jobChildren = new Map()
+// threadKey -> last status text sent/edited, purely to skip a no-op editMessageText call;
+// never persisted, so it's naturally empty (and forces one fresh render) right after a restart.
+const lastRenderedJobsText = new Map()
+
+function isPidAlive(pid) {
+  if (pid == null) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (e) {
+    return e.code === 'EPERM' // exists but owned by someone else — still alive
+  }
+}
+
+// Mirrors runClaude's own cancel(): SIGTERM the job's whole process group (it's its own
+// group leader, spawned with detached: true), SIGKILL after a grace period if it ignored that.
+function killJobProcessGroup(pid) {
+  try {
+    process.kill(-pid, 'SIGTERM')
+  } catch (e) {
+    log('job timeout SIGTERM failed', pid, e.message)
+  }
+  setTimeout(() => {
+    if (isPidAlive(pid)) {
+      try {
+        process.kill(-pid, 'SIGKILL')
+      } catch (e) {
+        log('job timeout SIGKILL failed', pid, e.message)
+      }
+    }
+  }, CANCEL_SIGKILL_GRACE_MS)
+}
+
+// Shared terminal-transition path for a job, whether it exited on its own (handleJobExit),
+// was found gone during a liveness poll, or never made it past boot reconciliation: persists
+// the final record, fires the onDoneCheckin (if any) through the same check-in machinery a
+// model's own CHECKIN: marker uses, and refreshes that thread's status message.
+function finalizeJob(jobId, record) {
+  state.jobs[jobId] = record
+  saveState(state)
+  if (record.onDoneCheckin) {
+    const sessionId = normalizeSession(state.sessions[record.notifyThreadKey])?.id
+    if (sessionId) scheduleCheckin(record.notifyThreadKey, sessionId, buildJobCompletionCheckin(record))
+    else log('skipping job completion check-in, no session for thread', record.notifyThreadKey)
+  }
+  updateJobStatusMessages().catch(e => log('updateJobStatusMessages failed', e.message))
+}
+
+function handleJobExit(jobId, code, signal) {
+  jobChildren.delete(jobId)
+  const record = state.jobs[jobId]
+  if (!record || !isJobActive(record)) return
+  const status = record.killedForTimeout ? 'timed-out' : code === 0 ? 'done' : 'failed'
+  finalizeJob(jobId, markJobFinished(record, { status, exitCode: code, signal, now: Date.now() }))
+}
+
+function startJob(jobId, spec, specPath) {
+  const now = Date.now()
+  const logPath = buildJobLogPath(jobsDir, jobId)
+  let record = createJobRecord({ id: jobId, spec, now, logPath, defaultTimeoutMinutes: JOB_DEFAULT_TIMEOUT_MINUTES })
+  try {
+    const fd = openSync(logPath, 'a')
+    // detached so child.pid is its own process-group leader — the whole reason it survives
+    // the claude turn's own process-group kill on cancel/timeout (see runClaude's cancel()).
+    const child = spawn('/bin/sh', ['-c', spec.command], {
+      cwd: spec.cwd ? expandHome(spec.cwd, homedir()) : cwd,
+      detached: true,
+      stdio: ['ignore', fd, fd],
+    })
+    closeSync(fd)
+    child.unref()
+    record = markJobRunning(record, child.pid, now)
+    jobChildren.set(jobId, child)
+    child.on('exit', (code, signal) => handleJobExit(jobId, code, signal))
+    child.on('error', e => log('background job process error', jobId, e.message))
+    log('started background job', jobId, spec.description, 'pid=', child.pid)
+  } catch (e) {
+    log('failed to start background job', jobId, e.message)
+    record = markJobFinished(record, { status: 'failed', now: Date.now() })
+  }
+  state.jobs[jobId] = record
+  rmSync(specPath, { force: true })
+  saveState(state)
+}
+
+async function notifyJobRejected(spec, error) {
+  const key = typeof spec?.notifyThreadKey === 'string' && spec.notifyThreadKey.trim() ? spec.notifyThreadKey : null
+  if (!key) return
+  const { chatId, threadId } = parseThreadKey(key)
+  await tg('sendMessage', {
+    chat_id: chatId,
+    text: `⚠️ background job spec rejected: ${error}`,
+    ...threadIdParam(threadId),
+  }).catch(e => log('failed to notify job spec rejection', e.message))
+}
+
+// Polls jobsDir like the retention sweep polls inbox/tmp/outbox — same low-tech fs-scan
+// style, no inotify/fswatch dependency. Any *.json file there not yet in state.jobs is a
+// brand new spec the model dropped this turn (or a previous one that hasn't been picked up
+// yet); it's consumed (deleted) exactly once, whether accepted or rejected.
+async function pickUpNewJobSpecs() {
+  let files
+  try {
+    files = readdirSync(jobsDir)
+  } catch (e) {
+    log('failed to read jobs dir', jobsDir, e.message)
+    return
+  }
+  for (const file of files) {
+    if (!file.endsWith('.json')) continue
+    const jobId = path.basename(file, '.json')
+    if (state.jobs[jobId]) continue
+    const specPath = path.join(jobsDir, file)
+    let spec
+    try {
+      spec = JSON.parse(readFileSync(specPath, 'utf8'))
+    } catch (e) {
+      log('failed to parse job spec, discarding', specPath, e.message)
+      rmSync(specPath, { force: true })
+      continue
+    }
+    const validation = validateJobSpec(spec, {
+      jobId,
+      jobsDir,
+      filePath: specPath,
+      activeCount: countActiveJobs(state.jobs),
+      maxConcurrentJobs: JOB_MAX_CONCURRENT_PER_BOT,
+    })
+    if (!validation.ok) {
+      log('rejected job spec', specPath, validation.error)
+      await notifyJobRejected(spec, validation.error)
+      rmSync(specPath, { force: true })
+      continue
+    }
+    startJob(jobId, spec, specPath)
+  }
+}
+
+// Liveness/timeout pass over every job still marked active. A job with a live child handle
+// (spawned by this exact process instance) is checked via that handle; one re-adopted from
+// state.json after a restart has no handle, so its pid is polled directly instead — the only
+// option left once the OS has reparented it away from this process.
+function checkRunningJobs() {
+  const now = Date.now()
+  for (const [jobId, record] of Object.entries(state.jobs)) {
+    if (!isJobActive(record)) continue
+    const child = jobChildren.get(jobId)
+    const alive = child ? child.exitCode == null && child.signalCode == null : isPidAlive(record.pid)
+    if (!alive) {
+      finalizeJob(jobId, markJobFinished(record, { status: record.killedForTimeout ? 'timed-out' : 'done', now }))
+      continue
+    }
+    try {
+      record.lastHeartbeatAt = statSync(record.logPath).mtimeMs
+    } catch {
+      // log file not created yet (or briefly missing) — leave the previous heartbeat timestamp
+    }
+    if (!record.killedForTimeout && now >= record.startedAt + record.timeoutMinutes * 60_000) {
+      log('background job timed out, killing its process group', jobId, record.description)
+      record.killedForTimeout = true
+      killJobProcessGroup(record.pid)
+    }
+  }
+}
+
+// One bot message per thread with jobs to report on, live-edited in place — same
+// editMessageText/rate-limit-swallow idiom as createPlaceholderController's editPlaceholder.
+async function updateJobStatusMessages() {
+  const now = Date.now()
+  const grouped = groupJobsByThread(state.jobs)
+  for (const [key, jobsForThread] of Object.entries(grouped)) {
+    const toShow = selectStatusRenderJobs(jobsForThread)
+    if (!toShow.length) continue
+    const text = renderJobsStatusMessage(toShow, now, { staleMs: JOB_HEARTBEAT_STALE_MS })
+    if (lastRenderedJobsText.get(key) !== text) {
+      const { chatId, threadId } = parseThreadKey(key)
+      const messageId = state.jobStatusMessages[key]
+      try {
+        if (messageId != null) {
+          await tg('editMessageText', { chat_id: chatId, message_id: messageId, text })
+        } else {
+          const sent = await tg('sendMessage', { chat_id: chatId, text, ...threadIdParam(threadId) })
+          state.jobStatusMessages[key] = sent.message_id
+        }
+        lastRenderedJobsText.set(key, text)
+      } catch (e) {
+        if (!/message is not modified/i.test(e.message)) log('failed to update job status message', key, e.message)
+      }
+    }
+    if (!toShow.some(isJobActive)) {
+      for (const job of toShow) job.reported = true
+      delete state.jobStatusMessages[key]
+      lastRenderedJobsText.delete(key)
+    }
+  }
+  saveState(state)
+}
+
+async function sweepJobs() {
+  await pickUpNewJobSpecs()
+  checkRunningJobs()
+  saveState(state)
+  await updateJobStatusMessages()
+}
+
+// On boot, a job left "running" in state.json is either still alive (its process group
+// outlives the bridge that spawned it, by design) or it isn't, if the machine itself
+// restarted. Either way this must run before the sweep timer starts, so a since-died job is
+// reported exactly once instead of silently sitting there forever.
+function reconcileJobsOnBootAndReport() {
+  const { jobs, deadJobIds } = reconcileJobsOnBoot(state.jobs, isPidAlive, Date.now())
+  state.jobs = jobs
+  saveState(state)
+  for (const jobId of deadJobIds) finalizeJob(jobId, state.jobs[jobId])
+}
+
 async function downloadAttachment(attachment) {
   if (exceedsAttachmentLimit(attachment.size)) {
     return { error: `attachment is ${attachment.size} bytes, over Telegram's ${MAX_ATTACHMENT_BYTES} byte bot-download cap` }
@@ -854,7 +1115,7 @@ async function downloadAttachment(attachment) {
     if (!file.file_path) return { error: 'Telegram returned no file_path for this attachment' }
     const res = await fetchWithTimeout(
       fetch,
-      `https://api.telegram.org/file/bot${botToken}/${file.file_path}`,
+      `${TELEGRAM_API_ROOT}/file/bot${botToken}/${file.file_path}`,
       {},
       FILE_TRANSFER_TIMEOUT_MS
     )
@@ -1163,7 +1424,7 @@ async function runClaudeTurn(
   let getSessionId = () => null
   try {
     if (run.finished) throw new Error('cancelled before the run could start')
-    const claude = runClaude(prompt, sessionId, event => routeEvent(event), authMode, modelConfig)
+    const claude = runClaude(prompt, sessionId, event => routeEvent(event), authMode, modelConfig, key)
     getSessionId = claude.getSessionId
     run.cancel = () => {
       if (cancelled) return
@@ -1779,9 +2040,24 @@ async function poll() {
   }
 }
 
+// A finished, already-reported job's record (and its spec/log files, via the sweep below)
+// only needs to survive long enough for a human to have read the status message/log —
+// same retention window as everything else this bridge writes to disk.
+function pruneOldJobRecords() {
+  const cutoff = Date.now() - RETENTION_SWEEP_MAX_AGE_MS
+  let changed = false
+  for (const [jobId, record] of Object.entries(state.jobs)) {
+    if (!isJobActive(record) && record.reported && record.finishedAt != null && record.finishedAt < cutoff) {
+      delete state.jobs[jobId]
+      changed = true
+    }
+  }
+  if (changed) saveState(state)
+}
+
 function sweepStateDirectories() {
   const retentionDays = config.retentionDays ?? 14
-  const namespacedDirs = [inboxDir, tmpDir, outboxDir, rewindBackupDir]
+  const namespacedDirs = [inboxDir, tmpDir, outboxDir, rewindBackupDir, jobsDir]
   for (const dir of namespacedDirs) {
     const { removed } = sweepOldFiles(dir, RETENTION_SWEEP_MAX_AGE_MS)
     if (removed.length) log('retention sweep removed', removed.length, `file(s) older than ${retentionDays}d from`, dir)
@@ -1791,6 +2067,7 @@ function sweepStateDirectories() {
     const { removed } = sweepOldFiles(dir, RETENTION_SWEEP_MAX_AGE_MS, undefined, { recurse: false })
     if (removed.length) log('retention sweep removed', removed.length, `legacy flat file(s) older than ${retentionDays}d from`, dir)
   }
+  pruneOldJobRecords()
 }
 
 // One-time: seeds the new global file from old per-chat state.authMode data (existsSync is just a fast-path skip, not the race guard).
@@ -1804,4 +2081,7 @@ process.on('unhandledRejection', e => log('unhandled rejection', e))
 migrateLegacyAuthModeIfNeeded()
 sweepStateDirectories()
 setInterval(sweepStateDirectories, RETENTION_SWEEP_INTERVAL_MS)
+reconcileJobsOnBootAndReport()
+sweepJobs().catch(e => log('sweepJobs failed', e.message))
+setInterval(() => sweepJobs().catch(e => log('sweepJobs failed', e.message)), JOB_SWEEP_INTERVAL_MS)
 poll()

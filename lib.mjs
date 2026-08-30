@@ -498,6 +498,31 @@ export function buildCheckinMarkerInstructions() {
   ].join('\n')
 }
 
+// jobsDir/notifyThreadKey are baked in per-call (not left for the model to derive) since the
+// model is never told the thread-key format (see threadKey/parseThreadKey) and getting it wrong
+// would silently misroute the job's status message and completion check-in.
+export function buildJobMarkerInstructions(jobsDir, notifyThreadKey) {
+  return [
+    'The process running this turn exits as soon as your reply is sent. Nothing you start survives that on its own — not run_in_background, not a detached/nohup\'d process — and even something you got to survive the turn can still be killed later by a turn timeout, a manual cancel, or a bridge restart.',
+    'For any task that must keep running after this turn ends (more than a couple of minutes, or anything that should survive a restart), do NOT use run_in_background and do NOT try to detach a process yourself. Instead write a job spec file and end your turn — a separate, immortal bridge process starts, owns, and monitors the job for you, and reports back automatically.',
+    `To do so, write a JSON file to exactly this path: ${jobsDir}/<jobId>.json — pick <jobId> yourself, letters/digits/"_"/"-" only, e.g. a short slug or a timestamp.`,
+    'The file must contain a JSON object like this:',
+    '{',
+    '  "command": "sleep 30 && date > /tmp/marker.txt",',
+    '  "description": "short human-readable summary of what this job does",',
+    `  "notifyThreadKey": "${notifyThreadKey}",`,
+    '  "cwd": "/optional/absolute/working/directory",',
+    '  "etaMinutes": 5,',
+    '  "timeoutMinutes": 60,',
+    '  "onDoneCheckin": { "minutes": 0, "instruction": "optional extra instruction for the follow-up turn once this job finishes" }',
+    '}',
+    `Only "command", "description", and "notifyThreadKey" are required — always use exactly "${notifyThreadKey}" for "notifyThreadKey", copied verbatim, never invented or derived. "cwd" defaults to this session's own working directory when omitted. "timeoutMinutes" defaults to 60 and, on expiry, the bridge kills the job and reports it as timed out.`,
+    'The bridge runs "command" through a shell, redirects its output to a log file next to the spec, and posts (then keeps live-editing) a status message in this chat until the job finishes.',
+    'If you set "onDoneCheckin", the bridge automatically resumes this same session once the job finishes (immediately by default, or after "minutes" if given) with an instruction to read the job\'s log and report the result — you do not need your own CHECKIN: marker for that.',
+    'Reply to the user now saying the job has started; do not wait for it to finish.',
+  ].join('\n')
+}
+
 export function buildCheckinFollowupPrompt(instruction) {
   return `[AUTOMATED CHECK-IN — not a message from the user, scheduled by your own earlier CHECKIN: marker] ${instruction}`
 }
@@ -1097,6 +1122,15 @@ export function validateBridgeConfig(config, { stateFilePath, existingStateFileP
   // If the backstop is shorter than the idle timeout it's meant to back up, it fires first and defeats the point of having an idle timeout at all.
   if (config.claudeTurnTimeoutMs > 0 && config.claudeTurnAbsoluteTimeoutMs > 0 && config.claudeTurnAbsoluteTimeoutMs < config.claudeTurnTimeoutMs) {
     return '"claudeTurnAbsoluteTimeoutMs" must be at least "claudeTurnTimeoutMs" when both are given'
+  }
+  if (config.maxConcurrentJobs != null && (typeof config.maxConcurrentJobs !== 'number' || !(config.maxConcurrentJobs > 0))) {
+    return '"maxConcurrentJobs" must be a positive number when given'
+  }
+  if (config.jobDefaultTimeoutMinutes != null && (typeof config.jobDefaultTimeoutMinutes !== 'number' || !(config.jobDefaultTimeoutMinutes > 0))) {
+    return '"jobDefaultTimeoutMinutes" must be a positive number when given'
+  }
+  if (config.jobSweepIntervalMs != null && (typeof config.jobSweepIntervalMs !== 'number' || !(config.jobSweepIntervalMs > 0) || config.jobSweepIntervalMs > MAX_TIMEOUT_MS)) {
+    return `"jobSweepIntervalMs" must be a number between 0 (exclusive) and ${MAX_TIMEOUT_MS} when given`
   }
   return null
 }
