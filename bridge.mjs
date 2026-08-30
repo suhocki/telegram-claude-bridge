@@ -1077,9 +1077,9 @@ function checkRunningJobs() {
     const child = jobChildren.get(jobId)
     const alive = child ? child.exitCode == null && child.signalCode == null : isPidAlive(record.pid)
     if (!alive) {
-      // No live child handle means this is a restart-adopted job whose real exit code was never observed — "unknown", not a guessed "done", so a real failure is never silently reported as a success.
-      const status = record.killedForTimeout ? 'timed-out' : child ? 'failed' : 'unknown'
-      finalizeJob(jobId, markJobFinished(record, { status, now }))
+      // No live child handle means this is a restart-adopted job whose real exit code was never observed — "unknown", not a guessed "done", so a real failure is never silently reported as a success. A live handle that's already dead (defensive: handleJobExit's own 'exit' listener normally beats this poll to it) still has its real exit code/signal available.
+      const status = record.killedForTimeout ? 'timed-out' : child ? (child.exitCode === 0 ? 'done' : 'failed') : 'unknown'
+      finalizeJob(jobId, markJobFinished(record, { status, exitCode: child?.exitCode ?? null, signal: child?.signalCode ?? null, now }))
       continue
     }
     try {
