@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { CHECKIN_MAX_MINUTES } from '../lib.mjs'
 import {
   DEFAULT_MAX_CONCURRENT_JOBS,
   DEFAULT_JOB_TIMEOUT_MINUTES,
@@ -133,6 +134,26 @@ test('validateJobSpec: rejects malformed optional fields (cwd/etaMinutes/timeout
   assert.equal(validateJobSpec({ ...VALID_SPEC, onDoneCheckin: { minutes: -1 } }, { jobId: 'a' }).ok, false)
   assert.equal(validateJobSpec({ ...VALID_SPEC, onDoneCheckin: { instruction: 5 } }, { jobId: 'a' }).ok, false)
   assert.equal(validateJobSpec({ ...VALID_SPEC, onDoneCheckin: { minutes: 0, instruction: 'ok' } }, { jobId: 'a' }).ok, true)
+})
+
+test('validateJobSpec: onDoneCheckin.minutes is capped at CHECKIN_MAX_MINUTES, same bound as a model\'s own CHECKIN: marker', () => {
+  assert.equal(validateJobSpec({ ...VALID_SPEC, onDoneCheckin: { minutes: CHECKIN_MAX_MINUTES } }, { jobId: 'a' }).ok, true)
+  const result = validateJobSpec({ ...VALID_SPEC, onDoneCheckin: { minutes: CHECKIN_MAX_MINUTES + 1 } }, { jobId: 'a' })
+  assert.equal(result.ok, false)
+  assert.match(result.error, /onDoneCheckin\.minutes/)
+})
+
+test('validateJobSpec: rejects a notifyThreadKey the caller\'s isThreadKeyAuthorized predicate does not recognize', () => {
+  const isThreadKeyAuthorized = key => key === '58639685'
+  const rejected = validateJobSpec({ ...VALID_SPEC, notifyThreadKey: '999999' }, { jobId: 'a', isThreadKeyAuthorized })
+  assert.equal(rejected.ok, false)
+  assert.match(rejected.error, /notifyThreadKey/)
+  const accepted = validateJobSpec({ ...VALID_SPEC, notifyThreadKey: '58639685' }, { jobId: 'a', isThreadKeyAuthorized })
+  assert.equal(accepted.ok, true)
+})
+
+test('validateJobSpec: without an isThreadKeyAuthorized predicate, any non-empty notifyThreadKey passes (backward compatible)', () => {
+  assert.equal(validateJobSpec({ ...VALID_SPEC, notifyThreadKey: 'anything' }, { jobId: 'a' }).ok, true)
 })
 
 test('validateJobSpec: rejects when at or over the concurrent-jobs cap, accepts just under it', () => {

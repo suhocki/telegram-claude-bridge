@@ -138,6 +138,14 @@ test('validateBridgeConfig: jobSweepIntervalMs must be a positive number within 
   assert.equal(validateBridgeConfig({ ...VALID, jobSweepIntervalMs: undefined }), null)
 })
 
+test('validateBridgeConfig: apiBaseUrl must be a non-empty string when given', () => {
+  assert.match(validateBridgeConfig({ ...VALID, apiBaseUrl: '' }), /apiBaseUrl/)
+  assert.match(validateBridgeConfig({ ...VALID, apiBaseUrl: '   ' }), /apiBaseUrl/)
+  assert.match(validateBridgeConfig({ ...VALID, apiBaseUrl: 123 }), /apiBaseUrl/)
+  assert.equal(validateBridgeConfig({ ...VALID, apiBaseUrl: 'http://127.0.0.1:5000' }), null)
+  assert.equal(validateBridgeConfig({ ...VALID, apiBaseUrl: undefined }), null)
+})
+
 test('resolveBotStateFile: resolves a relative stateFile against configDir, defaulting to state.json', () => {
   assert.equal(resolveBotStateFile('/repo', 'state/tldr.json'), '/repo/state/tldr.json')
   assert.equal(resolveBotStateFile('/repo', undefined), '/repo/state.json')

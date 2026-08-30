@@ -1132,6 +1132,9 @@ export function validateBridgeConfig(config, { stateFilePath, existingStateFileP
   if (config.jobSweepIntervalMs != null && (typeof config.jobSweepIntervalMs !== 'number' || !(config.jobSweepIntervalMs > 0) || config.jobSweepIntervalMs > MAX_TIMEOUT_MS)) {
     return `"jobSweepIntervalMs" must be a number between 0 (exclusive) and ${MAX_TIMEOUT_MS} when given`
   }
+  if (config.apiBaseUrl != null && (typeof config.apiBaseUrl !== 'string' || !config.apiBaseUrl.trim())) {
+    return '"apiBaseUrl" must be a non-empty string when given'
+  }
   return null
 }
 

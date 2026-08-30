@@ -5,6 +5,7 @@
 // module only computes decisions from plain data so they're testable without a real process.
 
 import path from 'node:path'
+import { CHECKIN_MAX_MINUTES } from './lib.mjs'
 
 export const DEFAULT_MAX_CONCURRENT_JOBS = 5
 export const DEFAULT_JOB_TIMEOUT_MINUTES = 60
@@ -42,7 +43,14 @@ export function countActiveJobs(jobsMap) {
 
 export function validateJobSpec(
   spec,
-  { jobId, jobsDir, filePath, activeCount = 0, maxConcurrentJobs = DEFAULT_MAX_CONCURRENT_JOBS } = {}
+  {
+    jobId,
+    jobsDir,
+    filePath,
+    activeCount = 0,
+    maxConcurrentJobs = DEFAULT_MAX_CONCURRENT_JOBS,
+    isThreadKeyAuthorized = () => true,
+  } = {}
 ) {
   if (!JOB_ID_RE.test(String(jobId ?? ''))) return { ok: false, error: `invalid job id: ${jobId}` }
   if (filePath != null && jobsDir != null && !isPathInsideDir(filePath, jobsDir)) {
@@ -56,6 +64,9 @@ export function validateJobSpec(
   if (typeof spec.notifyThreadKey !== 'string' || !spec.notifyThreadKey.trim()) {
     return { ok: false, error: 'job spec is missing "notifyThreadKey"' }
   }
+  if (!isThreadKeyAuthorized(spec.notifyThreadKey)) {
+    return { ok: false, error: `"notifyThreadKey" (${spec.notifyThreadKey}) is not an authorized chat/thread for this bot` }
+  }
   if (spec.cwd != null && (typeof spec.cwd !== 'string' || !spec.cwd.trim())) {
     return { ok: false, error: '"cwd" must be a non-empty string when given' }
   }
@@ -68,8 +79,8 @@ export function validateJobSpec(
   if (spec.onDoneCheckin != null) {
     const c = spec.onDoneCheckin
     if (typeof c !== 'object') return { ok: false, error: '"onDoneCheckin" must be an object when given' }
-    if (c.minutes != null && !(typeof c.minutes === 'number' && c.minutes >= 0)) {
-      return { ok: false, error: '"onDoneCheckin.minutes" must be a non-negative number when given' }
+    if (c.minutes != null && !(typeof c.minutes === 'number' && c.minutes >= 0 && c.minutes <= CHECKIN_MAX_MINUTES)) {
+      return { ok: false, error: `"onDoneCheckin.minutes" must be a number between 0 and ${CHECKIN_MAX_MINUTES} when given` }
     }
     if (c.instruction != null && typeof c.instruction !== 'string') {
       return { ok: false, error: '"onDoneCheckin.instruction" must be a string when given' }
