@@ -238,10 +238,8 @@ const RETENTION_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000
 const JOB_SWEEP_INTERVAL_MS = config.jobSweepIntervalMs ?? 15 * 1000
 const JOB_MAX_CONCURRENT_PER_BOT = config.maxConcurrentJobs ?? DEFAULT_MAX_CONCURRENT_JOBS
 const JOB_DEFAULT_TIMEOUT_MINUTES = config.jobDefaultTimeoutMinutes ?? DEFAULT_JOB_TIMEOUT_MINUTES
-// Floored to the turn's own absolute timeout (or, if that backstop is disabled via 0, to the largest delay Node allows) —
-// a turn is allowed to run that long, so the window must cover it or a slow-but-legitimate turn's own job spec gets
-// rejected as "stale" the moment it's picked up.
-const JOB_NOTIFY_THREAD_RECENCY_FLOOR_MS = CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS > 0 ? CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS : MAX_TIMEOUT_MS
+// Floored to the turn's own max lifetime (disabled via 0 means "no cap", so floor to the largest delay Node allows instead), plus two sweep intervals of slack so the sweep that finally reads the spec isn't racing the same instant the turn's own timeout would have fired.
+const JOB_NOTIFY_THREAD_RECENCY_FLOOR_MS = (CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS > 0 ? CLAUDE_TURN_ABSOLUTE_TIMEOUT_MS : MAX_TIMEOUT_MS) + JOB_SWEEP_INTERVAL_MS * 2
 const JOB_NOTIFY_THREAD_RECENCY_MS = Math.max(config.jobNotifyThreadRecencyMs ?? DEFAULT_JOB_NOTIFY_THREAD_RECENCY_MS, JOB_NOTIFY_THREAD_RECENCY_FLOOR_MS)
 if (config.jobNotifyThreadRecencyMs != null && config.jobNotifyThreadRecencyMs < JOB_NOTIFY_THREAD_RECENCY_MS) {
   log('jobNotifyThreadRecencyMs raised from', config.jobNotifyThreadRecencyMs, 'to', JOB_NOTIFY_THREAD_RECENCY_MS, 'to cover claudeTurnAbsoluteTimeoutMs')
