@@ -963,34 +963,37 @@ function handleJobExit(jobId, { code, signal, spawnFailed = false }) {
 function startJob(jobId, spec, specPath) {
   const now = Date.now()
   const logPath = buildJobLogPath(jobsDir, jobId)
-  let record = createJobRecord({ id: jobId, spec, now, logPath, defaultTimeoutMinutes: JOB_DEFAULT_TIMEOUT_MINUTES })
+  const record = createJobRecord({ id: jobId, spec, now, logPath, defaultTimeoutMinutes: JOB_DEFAULT_TIMEOUT_MINUTES })
+  let child
   try {
     const fd = openSync(logPath, 'a')
     // detached so child.pid is its own process-group leader, immune to the claude turn's own process-group kill on cancel/timeout.
-    const child = spawn('/bin/sh', ['-c', spec.command], {
+    child = spawn('/bin/sh', ['-c', spec.command], {
       cwd: spec.cwd ? expandHome(spec.cwd, homedir()) : cwd,
       detached: true,
       stdio: ['ignore', fd, fd],
     })
     closeSync(fd)
-    child.unref()
-    record = markJobRunning(record, child.pid, now)
-    jobChildren.set(jobId, child)
-    // A command that fails to spawn at all never gets an 'exit' event, only 'error' — handled the same way so it can't be reported as a false "done".
-    child.on('exit', (code, signal) => handleJobExit(jobId, { code, signal }))
-    child.on('error', e => {
-      log('background job process error', jobId, e.message)
-      handleJobExit(jobId, { code: null, signal: null, spawnFailed: true })
-    })
-    log('started background job', jobId, spec.description, 'pid=', child.pid)
-    state.jobs[jobId] = record
-    rmSync(specPath, { force: true })
-    saveState(state)
   } catch (e) {
     log('failed to start background job', jobId, e.message)
     rmSync(specPath, { force: true })
     finalizeJob(jobId, markJobFinished(record, { status: 'failed', now: Date.now() }))
+    return
   }
+  // Everything below only runs once spawn has actually succeeded, so a failure here (e.g. rmSync/saveState) can never mis-report an actually-running job as failed.
+  child.unref()
+  const running = markJobRunning(record, child.pid, now)
+  jobChildren.set(jobId, child)
+  // A command that fails to spawn at all never gets an 'exit' event, only 'error' — handled the same way so it can't be reported as a false "done".
+  child.on('exit', (code, signal) => handleJobExit(jobId, { code, signal }))
+  child.on('error', e => {
+    log('background job process error', jobId, e.message)
+    handleJobExit(jobId, { code: null, signal: null, spawnFailed: true })
+  })
+  log('started background job', jobId, spec.description, 'pid=', child.pid)
+  state.jobs[jobId] = running
+  rmSync(specPath, { force: true })
+  saveState(state)
 }
 
 async function notifyJobRejected(spec, error) {
