@@ -158,9 +158,11 @@ thread's pin refreshes, not just the one the command was typed in), a `/new`/`/r
 a completed turn or check-in that moved the session's accumulated cost, and a
 cancelled/timed-out turn that still produced a resumable, cost-bearing session. Each
 thread tracks its own pinned message id, so this never touches another thread's pin.
-Deleting the pinned message outright makes the next update re-send and re-pin a fresh
-one; a bare *unpin* (leaving the message itself in place) is not detected — the message
-keeps getting edited in place, just without being re-pinned.
+If pinning fails the first time (e.g. the bot briefly lacks "can pin messages" rights),
+later updates keep retrying until it succeeds. Deleting the message outright is detected
+and makes the next update re-send and re-pin a fresh one. A bare *unpin* by a human
+(leaving the message itself in place) isn't detectable over the Bot API, so it keeps
+getting edited in place without being automatically re-pinned.
 
 ## Live progress in chat
 

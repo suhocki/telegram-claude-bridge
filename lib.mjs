@@ -105,6 +105,10 @@ export function deriveLegacyAuthMode(authModeValues) {
   return authModeValues.includes('subscription') ? 'subscription' : 'apikey'
 }
 
+function authModeLabel(authMode) {
+  return normalizeAuthMode(authMode) === 'subscription' ? 'subscription (OAuth)' : 'API key'
+}
+
 export function buildChildEnv(baseEnv, authMode) {
   if (normalizeAuthMode(authMode) !== 'subscription') return baseEnv
   const next = { ...baseEnv }
@@ -137,8 +141,7 @@ export function formatStatusText(session, authMode) {
   const base = session
     ? `session: ${session.id}\ncost so far: $${(session.costUsd ?? 0).toFixed(4)}`
     : 'ℹ️ no active session yet — send a message to start one.'
-  const modeLabel = normalizeAuthMode(authMode) === 'subscription' ? 'subscription (OAuth)' : 'API key'
-  return `${base}\nauth mode: ${modeLabel}`
+  return `${base}\nauth mode: ${authModeLabel(authMode)}`
 }
 
 export function buildChannelPrompt(chatId, messageId, user, ts, text, attrs = {}) {
@@ -703,33 +706,31 @@ export function buildModelConfigArgs(entry) {
   return args
 }
 
-export function buildConfigText(entry) {
+function modelAndEffortLabels(entry) {
   const model = entry?.model ? CONFIG_MODEL_LABELS[entry.model] ?? entry.model : 'default'
   const effort = entry?.effort ?? 'default'
+  return { model, effort }
+}
+
+export function buildConfigText(entry) {
+  const { model, effort } = modelAndEffortLabels(entry)
   return `⚙️ model: ${model}\nreasoning effort: ${effort}\n\ntap to change, tap the same choice again to clear it, or reset both to default.`
 }
 
-// Rendered into the per-thread pinned status message kept in sync by the bridge (send once,
-// then edit in place) — deliberately plain text, no buttons, since /config already owns the
-// interactive picker; this is just a always-visible readout of the same state.
 export function buildConfigPinText(session, authMode, entry) {
-  const model = entry?.model ? CONFIG_MODEL_LABELS[entry.model] ?? entry.model : 'default'
-  const effort = entry?.effort ?? 'default'
-  const modeLabel = normalizeAuthMode(authMode) === 'subscription' ? 'subscription (OAuth)' : 'API key'
+  const { model, effort } = modelAndEffortLabels(entry)
   const cost = (session?.costUsd ?? 0).toFixed(4)
-  return `📌 config\nmodel: ${model}\nreasoning effort: ${effort}\nconnection: ${modeLabel}\nsession cost: $${cost}`
+  return `📌 config\nmodel: ${model}\nreasoning effort: ${effort}\nconnection: ${authModeLabel(authMode)}\nsession cost: $${cost}`
 }
 
-// syncConfigPin's error triage: 'unmodified' means the edit was a no-op (treat as success);
-// 'rate-limited' means Telegram is just throttling this call — the tracked message id is still
-// perfectly good, so keep it and let the next call retry the same edit; anything else falls back
-// to 'gone', meaning the tracked id is presumed dead (e.g. the message was deleted) and should be
-// dropped so the next call sends a fresh one instead of retrying a dead id forever.
+// Only an explicit, recognized "the message itself is gone" error clears the tracked pin id — everything else (rate limits, timeouts, unrecognized errors) is treated as transiently retryable so a network blip can't orphan a perfectly good pinned message.
+const CONFIG_PIN_GONE_RE = /message to edit not found|message to delete not found|message can.t be edited|chat not found/i
+
 export function classifyConfigPinSyncError(message) {
   const text = String(message ?? '')
   if (/message is not modified/i.test(text)) return 'unmodified'
-  if (/retry after \d+/i.test(text)) return 'rate-limited'
-  return 'gone'
+  if (CONFIG_PIN_GONE_RE.test(text)) return 'gone'
+  return 'retry'
 }
 
 export function buildConfigKeyboard(chatId, entry) {

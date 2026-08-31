@@ -1566,14 +1566,17 @@ test('classifyConfigPinSyncError: "message is not modified" is treated as a no-o
   assert.equal(classifyConfigPinSyncError('Bad Request: message is not modified: specified new message content...'), 'unmodified')
 })
 
-test('classifyConfigPinSyncError: a rate limit keeps the tracked message id, not "gone"', () => {
-  assert.equal(classifyConfigPinSyncError('Too Many Requests: retry after 5'), 'rate-limited')
+test('classifyConfigPinSyncError: a recognized "message is gone" error clears the tracked id', () => {
+  assert.equal(classifyConfigPinSyncError('Bad Request: message to edit not found'), 'gone')
+  assert.equal(classifyConfigPinSyncError('Bad Request: message to delete not found'), 'gone')
+  assert.equal(classifyConfigPinSyncError("Bad Request: message can't be edited"), 'gone')
+  assert.equal(classifyConfigPinSyncError('Bad Request: chat not found'), 'gone')
 })
 
-test('classifyConfigPinSyncError: anything else (deleted message, bad chat, ...) is "gone"', () => {
-  assert.equal(classifyConfigPinSyncError('Bad Request: message to edit not found'), 'gone')
-  assert.equal(classifyConfigPinSyncError('Bad Request: chat not found'), 'gone')
-  assert.equal(classifyConfigPinSyncError(undefined), 'gone')
+test('classifyConfigPinSyncError: a rate limit, a timeout, or anything unrecognized is retried, not treated as "gone"', () => {
+  assert.equal(classifyConfigPinSyncError('Too Many Requests: retry after 5'), 'retry')
+  assert.equal(classifyConfigPinSyncError('fetch https://api.telegram.org/... timed out after 10000ms'), 'retry')
+  assert.equal(classifyConfigPinSyncError(undefined), 'retry')
 })
 
 test('buildConfigKeyboard: lists every model and effort as a button, checkmarking the current selection', () => {
