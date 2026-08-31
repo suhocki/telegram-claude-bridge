@@ -323,6 +323,12 @@ const lastRenderedConfigPinText = new Map()
 // Own queue, not chatQueue: chatQueue is already holding the in-flight handleMessage/handleConfigCallbackQuery task that triggers a sync, so reusing it here would enqueue a key behind itself and deadlock (mirrors jobStatusQueue's separation from chatQueue).
 const configPinQueue = createKeyedQueue()
 
+function forgetConfigPin(key) {
+  delete state.configPinMessages[key]
+  lastRenderedConfigPinText.delete(key)
+  saveState(state)
+}
+
 async function syncConfigPinNow(key) {
   const text = buildConfigPinText(normalizeSession(state.sessions[key]), currentAuthMode(), currentModelConfig(key))
   const entry = state.configPinMessages[key]
@@ -345,9 +351,7 @@ async function syncConfigPinNow(key) {
       if (outcome !== 'unmodified') {
         log('failed to update config status message', key, e.message)
         if (outcome === 'gone' && messageId != null) {
-          delete state.configPinMessages[key]
-          lastRenderedConfigPinText.delete(key)
-          saveState(state)
+          forgetConfigPin(key)
           await tg('unpinChatMessage', { chat_id: chatId, message_id: messageId }).catch(() => {})
         }
         return
@@ -363,12 +367,8 @@ async function syncConfigPinNow(key) {
       saveState(state)
     } catch (e) {
       log('failed to pin config status message', key, e.message)
-      // the message itself is gone (not just unpinnable) — drop it so the next call recreates it, since a static pin text would otherwise never trigger the editMessageText call that'd normally catch this
-      if (classifyConfigPinSyncError(e.message) === 'gone') {
-        delete state.configPinMessages[key]
-        lastRenderedConfigPinText.delete(key)
-        saveState(state)
-      }
+      // gone, not just unpinnable — a static pin text never reaches the editMessageText call that'd normally catch this, so this is the only place it can be
+      if (classifyConfigPinSyncError(e.message) === 'gone') forgetConfigPin(key)
     }
   }
 }
@@ -1705,16 +1705,16 @@ async function handleMessage(msg) {
   const threadId = resolveThreadId(msg)
   const userId = String(msg.from?.id ?? '')
   if (!isAuthorizedMessage(msg)) return
+  const attachment = extractAttachment(msg)
+  const content = msg.text ?? msg.caption ?? null
+  if (content == null && !attachment && isServiceMessage(msg)) {
+    log('ignoring service message', key, msg.message_id)
+    return
+  }
   syncConfigPin(key)
   // every authorized message supersedes whatever interrupted turn a Continue button was still offering, regardless of which branch below handles it
   await clearPendingContinue(chatId, key)
-  const attachment = extractAttachment(msg)
-  const content = msg.text ?? msg.caption ?? null
   if (content == null && !attachment) {
-    if (isServiceMessage(msg)) {
-      log('ignoring service message', key, msg.message_id)
-      return
-    }
     await sendReply(
       chatId,
       '(bridge v1 only handles text messages, photos, documents, voice, audio, and video — this message type is not supported yet)',

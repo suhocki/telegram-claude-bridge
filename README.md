@@ -159,9 +159,11 @@ a completed turn or check-in that moved the session's accumulated cost, and a
 cancelled/timed-out turn that still produced a resumable, cost-bearing session. Each
 thread tracks its own pinned message id, so this never touches another thread's pin.
 If pinning fails the first time (e.g. the bot briefly lacks "can pin messages" rights),
-later updates keep retrying until it succeeds. Deleting the message outright is detected
-and makes the next update re-send and re-pin a fresh one. A bare *unpin* by a human
-(leaving the message itself in place) isn't detectable over the Bot API, so it keeps
+the next sync retries it. Deleting the message outright is only noticed the next time a
+sync actually has to touch Telegram (the text changed, or pinning is still being
+retried) — an idle thread whose deleted pin's text hasn't changed stays without a pin
+until that thread's next real update. A bare *unpin* by a human (leaving the message
+itself in place) isn't detectable over the Bot API at all, so it keeps
 getting edited in place without being automatically re-pinned.
 
 ## Live progress in chat
