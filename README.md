@@ -137,6 +137,35 @@ In a group, Telegram appends `@yourbotname` when a command is picked from the
 group's command-menu suggestion (e.g. `/new@yourbotname`) — that form and the
 plain typed form both work.
 
+## Pinned config status message
+
+Every chat/thread gets its own pinned status message, sent and pinned automatically on
+its first message and then edited in place (never re-sent) whenever anything it reports
+changes:
+
+```
+📌 config
+model: Sonnet
+reasoning effort: high
+connection: subscription (OAuth)
+session cost: $0.1234
+```
+
+It's checked on every incoming message for that thread (a no-op unless the rendered text
+actually changed) and explicitly refreshed right after anything that can change it: a
+`/config` change (model/effort), a `/subscription`/`/apikey` switch (global, so every
+thread's pin refreshes, not just the one the command was typed in), a `/new`/`/reset`,
+a completed turn or check-in that moved the session's accumulated cost, and a
+cancelled/timed-out turn that still produced a resumable, cost-bearing session. Each
+thread tracks its own pinned message id, so this never touches another thread's pin.
+If pinning fails the first time (e.g. the bot briefly lacks "can pin messages" rights),
+the next sync retries it. Deleting the message outright is only noticed the next time a
+sync actually has to touch Telegram (the text changed, or pinning is still being
+retried) — an idle thread whose deleted pin's text hasn't changed stays without a pin
+until that thread's next real update. A bare *unpin* by a human (leaving the message
+itself in place) isn't detectable over the Bot API at all, so it keeps
+getting edited in place without being automatically re-pinned.
+
 ## Live progress in chat
 
 This isn't "send message, wait, get one reply back" — you watch the agent work in real time, the same way you'd watch it in a terminal:

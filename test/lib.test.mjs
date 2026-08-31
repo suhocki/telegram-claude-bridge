@@ -81,6 +81,8 @@ import {
   isValidModelConfigValue,
   buildModelConfigArgs,
   buildConfigText,
+  buildConfigPinText,
+  classifyConfigPinSyncError,
   buildConfigKeyboard,
   buildConfigMessageParams,
   buildConfigEditParams,
@@ -1542,6 +1544,47 @@ test('buildConfigText: reports the chosen model label and effort level', () => {
   const text = buildConfigText({ model: 'opus', effort: 'xhigh' })
   assert.match(text, /model: Opus/)
   assert.match(text, /reasoning effort: xhigh/)
+})
+
+test('buildConfigPinText: defaults for an unconfigured, session-less, API-key thread', () => {
+  const text = buildConfigPinText(null, undefined, {})
+  assert.match(text, /model: default/)
+  assert.match(text, /reasoning effort: default/)
+  assert.match(text, /connection: API key/)
+  assert.match(text, /session cost: \$0\.0000/)
+})
+
+test('buildConfigPinText: reports the chosen model, effort, connection mode and accumulated cost', () => {
+  const text = buildConfigPinText({ id: 'sess-1', costUsd: 0.1234 }, 'subscription', { model: 'opus', effort: 'xhigh' })
+  assert.match(text, /model: Opus/)
+  assert.match(text, /reasoning effort: xhigh/)
+  assert.match(text, /connection: subscription \(OAuth\)/)
+  assert.match(text, /session cost: \$0\.1234/)
+})
+
+test('buildConfigPinText: a corrupted non-numeric costUsd renders as $0.0000 instead of throwing', () => {
+  assert.match(buildConfigPinText({ id: 'sess-1', costUsd: 'oops' }, undefined, {}), /session cost: \$0\.0000/)
+  assert.match(buildConfigPinText({ id: 'sess-1', costUsd: NaN }, undefined, {}), /session cost: \$0\.0000/)
+})
+
+test('classifyConfigPinSyncError: "message is not modified" is treated as a no-op success', () => {
+  assert.equal(classifyConfigPinSyncError('Bad Request: message is not modified: specified new message content...'), 'unmodified')
+})
+
+test('classifyConfigPinSyncError: a recognized "message is gone" error clears the tracked id', () => {
+  assert.equal(classifyConfigPinSyncError('Bad Request: message to edit not found'), 'gone')
+  assert.equal(classifyConfigPinSyncError('Bad Request: message to pin not found'), 'gone')
+  assert.equal(classifyConfigPinSyncError('Bad Request: chat not found'), 'gone')
+  assert.equal(classifyConfigPinSyncError('Forbidden: bot was blocked by the user'), 'gone')
+  assert.equal(classifyConfigPinSyncError('Forbidden: bot was kicked from the group chat'), 'gone')
+  assert.equal(classifyConfigPinSyncError('Forbidden: bot is not a member of the supergroup chat'), 'gone')
+})
+
+test('classifyConfigPinSyncError: a rate limit, an ambiguous "can\'t be edited", a timeout, or anything unrecognized is retried, not treated as "gone"', () => {
+  assert.equal(classifyConfigPinSyncError('Too Many Requests: retry after 5'), 'retry')
+  assert.equal(classifyConfigPinSyncError("Bad Request: message can't be edited"), 'retry')
+  assert.equal(classifyConfigPinSyncError('fetch https://api.telegram.org/... timed out after 10000ms'), 'retry')
+  assert.equal(classifyConfigPinSyncError(undefined), 'retry')
 })
 
 test('buildConfigKeyboard: lists every model and effort as a button, checkmarking the current selection', () => {

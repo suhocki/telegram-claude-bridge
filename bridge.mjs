@@ -86,6 +86,8 @@ import {
   buildModelConfigArgs,
   buildConfigMessageParams,
   buildConfigEditParams,
+  buildConfigPinText,
+  classifyConfigPinSyncError,
   parseConfigCallbackData,
   buildContinuePrompt,
   buildJoinedPromptText,
@@ -278,6 +280,7 @@ function emptyState() {
     jobs: {},
     jobStatusMessages: {},
     threadActivity: {},
+    configPinMessages: {},
   }
 }
 
@@ -295,6 +298,7 @@ function loadState() {
     state.jobs ??= {}
     state.jobStatusMessages ??= {}
     state.threadActivity ??= {}
+    state.configPinMessages ??= {}
     return state
   } catch {
     return emptyState()
@@ -312,6 +316,70 @@ function currentModelConfig(key) {
 
 function saveState(state) {
   atomicWriteFileSync(stateFile, JSON.stringify(state, null, 2))
+}
+
+// threadKey -> last text written to that thread's pinned config message, purely to skip a no-op editMessageText call.
+const lastRenderedConfigPinText = new Map()
+// Own queue, not chatQueue: chatQueue is already holding the in-flight handleMessage/handleConfigCallbackQuery task that triggers a sync, so reusing it here would enqueue a key behind itself and deadlock (mirrors jobStatusQueue's separation from chatQueue).
+const configPinQueue = createKeyedQueue()
+
+function forgetConfigPin(key) {
+  delete state.configPinMessages[key]
+  lastRenderedConfigPinText.delete(key)
+  saveState(state)
+}
+
+async function syncConfigPinNow(key) {
+  const text = buildConfigPinText(normalizeSession(state.sessions[key]), currentAuthMode(), currentModelConfig(key))
+  const entry = state.configPinMessages[key]
+  let messageId = entry?.id ?? null
+  const { chatId, threadId } = parseThreadKey(key)
+
+  if (lastRenderedConfigPinText.get(key) !== text) {
+    try {
+      if (messageId != null) {
+        await tg('editMessageText', { chat_id: chatId, message_id: messageId, text })
+      } else {
+        const sent = await tg('sendMessage', { chat_id: chatId, text, ...threadIdParam(threadId) })
+        messageId = sent.message_id
+        state.configPinMessages[key] = { id: messageId, pinned: false }
+        saveState(state)
+      }
+      lastRenderedConfigPinText.set(key, text)
+    } catch (e) {
+      const outcome = classifyConfigPinSyncError(e.message)
+      if (outcome !== 'unmodified') {
+        log('failed to update config status message', key, e.message)
+        if (outcome === 'gone' && messageId != null) {
+          forgetConfigPin(key)
+          await tg('unpinChatMessage', { chat_id: chatId, message_id: messageId }).catch(() => {})
+        }
+        return
+      }
+      lastRenderedConfigPinText.set(key, text)
+    }
+  }
+
+  if (messageId != null && !state.configPinMessages[key]?.pinned) {
+    try {
+      await tg('pinChatMessage', { chat_id: chatId, message_id: messageId, disable_notification: true })
+      state.configPinMessages[key].pinned = true
+      saveState(state)
+    } catch (e) {
+      log('failed to pin config status message', key, e.message)
+      // gone, not just unpinnable — a static pin text never reaches the editMessageText call that'd normally catch this, so this is the only place it can be
+      if (classifyConfigPinSyncError(e.message) === 'gone') forgetConfigPin(key)
+    }
+  }
+}
+
+// Fire-and-forget: no caller (a reply, a callback answer, the next queued message) should wait on this.
+function syncConfigPin(key) {
+  configPinQueue.enqueue(key, () => syncConfigPinNow(key)).catch(e => log('config pin sync failed', key, e.message))
+}
+
+function syncAllConfigPins() {
+  for (const key of Object.keys(state.configPinMessages)) syncConfigPin(key)
 }
 
 // Reads working-phrases.json fresh each call; never throws, since it runs before handleMessage's own try/catch.
@@ -861,6 +929,7 @@ async function runCheckin(key) {
       newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
       state.sessions[key] = newSession
       saveState(state)
+      syncConfigPin(key)
     }
     const { text: cleanedResult, attachPaths, checkin: nextCheckin, noReply } = extractResponseMarkers(result.result)
     const costWarningCrossed = newSession && crossedCostThreshold(priorSession?.costUsd ?? 0, newSession.costUsd, costWarnUsd)
@@ -1520,6 +1589,7 @@ async function runClaudeTurn(
       newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
       state.sessions[key] = newSession
       saveState(state)
+      syncConfigPin(key)
     }
     const { text: cleanedResult, attachPaths, reactionEmoji, checkin, noReply } = extractResponseMarkers(result.result)
     const costWarningCrossed = newSession && crossedCostThreshold(priorSession?.costUsd ?? 0, newSession.costUsd, costWarnUsd)
@@ -1596,6 +1666,7 @@ async function runClaudeTurn(
         botMessageIds.push(...(await sendReply(chatId, text, originMessageId, currentPlaceholderId, threadId).catch(() => [])))
       }
       saveState(state)
+      if (resumableSessionId) syncConfigPin(key)
     } else {
       log('handleMessage error', e)
       botMessageIds.push(...(await sendReply(chatId, `⚠️ bridge error: ${e.message}`, originMessageId, currentPlaceholderId, threadId).catch(() => [])))
@@ -1638,11 +1709,12 @@ async function handleMessage(msg) {
   await clearPendingContinue(chatId, key)
   const attachment = extractAttachment(msg)
   const content = msg.text ?? msg.caption ?? null
+  if (content == null && !attachment && isServiceMessage(msg)) {
+    log('ignoring service message', key, msg.message_id)
+    return
+  }
+  syncConfigPin(key)
   if (content == null && !attachment) {
-    if (isServiceMessage(msg)) {
-      log('ignoring service message', key, msg.message_id)
-      return
-    }
     await sendReply(
       chatId,
       '(bridge v1 only handles text messages, photos, documents, voice, audio, and video — this message type is not supported yet)',
@@ -1670,6 +1742,7 @@ async function handleMessage(msg) {
     cancelCheckin(key)
     clearJobOnDoneCheckinsForThread(key)
     saveState(state)
+    syncConfigPin(key)
     await sendReply(chatId, '🔄 session reset — the next message starts a brand new conversation.', msg.message_id, null, threadId).catch(() => {})
     return
   }
@@ -1682,6 +1755,7 @@ async function handleMessage(msg) {
       return
     }
     saveGlobalAuthMode(authModeFile, mode)
+    syncAllConfigPins()
     await setReaction(chatId, msg.message_id, AUTH_SWITCH_REACTION).catch(() => {})
     return
   }
@@ -1990,6 +2064,7 @@ async function handleConfigCallbackQuery(cq, { field, value }) {
   if (messageId != null) {
     await tg('editMessageText', buildConfigEditParams(chatId, messageId, currentModelConfig(key))).catch(() => {})
   }
+  syncConfigPin(key)
   await tg('answerCallbackQuery', { callback_query_id: cq.id, text: field === 'reset' ? 'reset to default' : 'updated' }).catch(() => {})
 }
 

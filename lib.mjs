@@ -105,6 +105,10 @@ export function deriveLegacyAuthMode(authModeValues) {
   return authModeValues.includes('subscription') ? 'subscription' : 'apikey'
 }
 
+function authModeLabel(authMode) {
+  return normalizeAuthMode(authMode) === 'subscription' ? 'subscription (OAuth)' : 'API key'
+}
+
 export function buildChildEnv(baseEnv, authMode) {
   if (normalizeAuthMode(authMode) !== 'subscription') return baseEnv
   const next = { ...baseEnv }
@@ -137,8 +141,7 @@ export function formatStatusText(session, authMode) {
   const base = session
     ? `session: ${session.id}\ncost so far: $${(session.costUsd ?? 0).toFixed(4)}`
     : 'ℹ️ no active session yet — send a message to start one.'
-  const modeLabel = normalizeAuthMode(authMode) === 'subscription' ? 'subscription (OAuth)' : 'API key'
-  return `${base}\nauth mode: ${modeLabel}`
+  return `${base}\nauth mode: ${authModeLabel(authMode)}`
 }
 
 export function buildChannelPrompt(chatId, messageId, user, ts, text, attrs = {}) {
@@ -703,10 +706,31 @@ export function buildModelConfigArgs(entry) {
   return args
 }
 
-export function buildConfigText(entry) {
+function modelAndEffortLabels(entry) {
   const model = entry?.model ? CONFIG_MODEL_LABELS[entry.model] ?? entry.model : 'default'
   const effort = entry?.effort ?? 'default'
+  return { model, effort }
+}
+
+export function buildConfigText(entry) {
+  const { model, effort } = modelAndEffortLabels(entry)
   return `⚙️ model: ${model}\nreasoning effort: ${effort}\n\ntap to change, tap the same choice again to clear it, or reset both to default.`
+}
+
+export function buildConfigPinText(session, authMode, entry) {
+  const { model, effort } = modelAndEffortLabels(entry)
+  const cost = (Number.isFinite(session?.costUsd) ? session.costUsd : 0).toFixed(4)
+  return `📌 config\nmodel: ${model}\nreasoning effort: ${effort}\nconnection: ${authModeLabel(authMode)}\nsession cost: $${cost}`
+}
+
+// Deliberately narrow to unambiguous "this thread is permanently unreachable" signals — "message can't be edited" also covers ambiguous, non-deletion causes (e.g. a lost permission), so it's left to the 'retry' default rather than risk unpinning a message that's still perfectly fine.
+const CONFIG_PIN_GONE_RE = /message to (edit|pin) not found|chat not found|bot was (blocked|kicked)|bot is not a member/i
+
+export function classifyConfigPinSyncError(message) {
+  const text = String(message ?? '')
+  if (/message is not modified/i.test(text)) return 'unmodified'
+  if (CONFIG_PIN_GONE_RE.test(text)) return 'gone'
+  return 'retry'
 }
 
 export function buildConfigKeyboard(chatId, entry) {
