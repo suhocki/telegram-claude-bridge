@@ -1570,6 +1570,9 @@ test('classifyConfigPinSyncError: a recognized "message is gone" error clears th
   assert.equal(classifyConfigPinSyncError('Bad Request: message to edit not found'), 'gone')
   assert.equal(classifyConfigPinSyncError('Bad Request: message to pin not found'), 'gone')
   assert.equal(classifyConfigPinSyncError('Bad Request: chat not found'), 'gone')
+  assert.equal(classifyConfigPinSyncError('Forbidden: bot was blocked by the user'), 'gone')
+  assert.equal(classifyConfigPinSyncError('Forbidden: bot was kicked from the group chat'), 'gone')
+  assert.equal(classifyConfigPinSyncError('Forbidden: bot is not a member of the supergroup chat'), 'gone')
 })
 
 test('classifyConfigPinSyncError: a rate limit, an ambiguous "can\'t be edited", a timeout, or anything unrecognized is retried, not treated as "gone"', () => {

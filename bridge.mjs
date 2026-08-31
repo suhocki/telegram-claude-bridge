@@ -1705,6 +1705,8 @@ async function handleMessage(msg) {
   const threadId = resolveThreadId(msg)
   const userId = String(msg.from?.id ?? '')
   if (!isAuthorizedMessage(msg)) return
+  // every authorized message supersedes whatever interrupted turn a Continue button was still offering, regardless of which branch below handles it
+  await clearPendingContinue(chatId, key)
   const attachment = extractAttachment(msg)
   const content = msg.text ?? msg.caption ?? null
   if (content == null && !attachment && isServiceMessage(msg)) {
@@ -1712,8 +1714,6 @@ async function handleMessage(msg) {
     return
   }
   syncConfigPin(key)
-  // every authorized message supersedes whatever interrupted turn a Continue button was still offering, regardless of which branch below handles it
-  await clearPendingContinue(chatId, key)
   if (content == null && !attachment) {
     await sendReply(
       chatId,
