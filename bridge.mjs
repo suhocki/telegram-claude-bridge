@@ -1531,6 +1531,7 @@ async function runClaudeTurn(
       const messageIdPromise = tg('sendMessage', {
         chat_id: chatId,
         text: DEFAULT_WORKING_STATUS,
+        disable_notification: true,
         ...(currentPlaceholderId != null ? { reply_parameters: { message_id: currentPlaceholderId, allow_sending_without_reply: true } } : {}),
         ...threadIdParam(threadId),
       })
