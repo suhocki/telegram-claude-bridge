@@ -151,10 +151,16 @@ connection: subscription (OAuth)
 session cost: $0.1234
 ```
 
-It updates on a `/config` change (model/effort), a `/subscription`/`/apikey` switch
-(global, so every thread's pin refreshes, not just the one the command was typed in), a
-`/new`/`/reset`, and after every turn that moves the session's accumulated cost. Each
+It's checked on every incoming message for that thread (a no-op unless the rendered text
+actually changed) and explicitly refreshed right after anything that can change it: a
+`/config` change (model/effort), a `/subscription`/`/apikey` switch (global, so every
+thread's pin refreshes, not just the one the command was typed in), a `/new`/`/reset`,
+a completed turn or check-in that moved the session's accumulated cost, and a
+cancelled/timed-out turn that still produced a resumable, cost-bearing session. Each
 thread tracks its own pinned message id, so this never touches another thread's pin.
+Deleting the pinned message outright makes the next update re-send and re-pin a fresh
+one; a bare *unpin* (leaving the message itself in place) is not detected — the message
+keeps getting edited in place, just without being re-pinned.
 
 ## Live progress in chat
 

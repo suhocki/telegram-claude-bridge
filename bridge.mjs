@@ -87,6 +87,7 @@ import {
   buildConfigMessageParams,
   buildConfigEditParams,
   buildConfigPinText,
+  classifyConfigPinSyncError,
   parseConfigCallbackData,
   buildContinuePrompt,
   buildJoinedPromptText,
@@ -342,12 +343,16 @@ async function syncConfigPin(key) {
     }
     lastRenderedConfigPinText.set(key, text)
   } catch (e) {
-    if (/message is not modified/i.test(e.message)) {
+    const outcome = classifyConfigPinSyncError(e.message)
+    if (outcome === 'unmodified') {
       lastRenderedConfigPinText.set(key, text)
       return
     }
     log('failed to update config status message', key, e.message)
-    // the tracked id may be stale (message deleted/unpinned by hand) — drop it so the next call re-sends a fresh one instead of retrying a dead id forever
+    // rate-limited: the tracked id is still good, just throttled — leave it for the next call to retry
+    if (outcome === 'rate-limited') return
+    // gone: the tracked id is presumed stale (message actually deleted) — drop it so the next
+    // call re-sends a fresh one instead of retrying a dead id forever
     if (messageId != null) {
       delete state.configPinMessages[key]
       lastRenderedConfigPinText.delete(key)
@@ -358,9 +363,11 @@ async function syncConfigPin(key) {
 
 // auth mode is global (one token/subscription choice shared by every chat), so switching it
 // invalidates every thread's pinned status message, not just the one the /subscription or
-// /apikey command was typed in.
+// /apikey command was typed in. Routed through chatQueue per key (like every other syncConfigPin
+// trigger) so it can't race a concurrent handleMessage/handleConfigCallbackQuery for the same
+// thread and create a duplicate pin.
 async function syncAllConfigPins() {
-  await Promise.all(Object.keys(state.configPinMessages).map(key => syncConfigPin(key)))
+  await Promise.all(Object.keys(state.configPinMessages).map(key => chatQueue.enqueue(key, () => syncConfigPin(key))))
 }
 
 // Reads working-phrases.json fresh each call; never throws, since it runs before handleMessage's own try/catch.
@@ -1686,7 +1693,10 @@ async function handleMessage(msg) {
   const threadId = resolveThreadId(msg)
   const userId = String(msg.from?.id ?? '')
   if (!isAuthorizedMessage(msg)) return
-  // ensures the pinned status message exists from this thread's very first message, and self-heals it after a restart or a hand-unpin; a no-op cache hit in the common case where nothing changed
+  // ensures the pinned status message exists from this thread's very first message, and
+  // self-heals it after a restart or after it's deleted outright (a bare unpin, leaving the
+  // message itself in place, is not detected — editMessageText keeps succeeding either way);
+  // a no-op cache hit in the common case where nothing changed
   await syncConfigPin(key)
   // every authorized message supersedes whatever interrupted turn a Continue button was still offering, regardless of which branch below handles it
   await clearPendingContinue(chatId, key)
@@ -2046,7 +2056,10 @@ async function handleConfigCallbackQuery(cq, { field, value }) {
   if (messageId != null) {
     await tg('editMessageText', buildConfigEditParams(chatId, messageId, currentModelConfig(key))).catch(() => {})
   }
-  await syncConfigPin(key)
+  // routed through chatQueue, like every other syncConfigPin trigger (handleMessage, runCheckin,
+  // runClaudeTurn) — this callback fires outside that queue, so without it a concurrent turn for
+  // the same thread could race this into creating a duplicate pinned message
+  await chatQueue.enqueue(key, () => syncConfigPin(key))
   await tg('answerCallbackQuery', { callback_query_id: cq.id, text: field === 'reset' ? 'reset to default' : 'updated' }).catch(() => {})
 }
 

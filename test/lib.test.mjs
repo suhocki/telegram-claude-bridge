@@ -82,6 +82,7 @@ import {
   buildModelConfigArgs,
   buildConfigText,
   buildConfigPinText,
+  classifyConfigPinSyncError,
   buildConfigKeyboard,
   buildConfigMessageParams,
   buildConfigEditParams,
@@ -1559,6 +1560,20 @@ test('buildConfigPinText: reports the chosen model, effort, connection mode and 
   assert.match(text, /reasoning effort: xhigh/)
   assert.match(text, /connection: subscription \(OAuth\)/)
   assert.match(text, /session cost: \$0\.1234/)
+})
+
+test('classifyConfigPinSyncError: "message is not modified" is treated as a no-op success', () => {
+  assert.equal(classifyConfigPinSyncError('Bad Request: message is not modified: specified new message content...'), 'unmodified')
+})
+
+test('classifyConfigPinSyncError: a rate limit keeps the tracked message id, not "gone"', () => {
+  assert.equal(classifyConfigPinSyncError('Too Many Requests: retry after 5'), 'rate-limited')
+})
+
+test('classifyConfigPinSyncError: anything else (deleted message, bad chat, ...) is "gone"', () => {
+  assert.equal(classifyConfigPinSyncError('Bad Request: message to edit not found'), 'gone')
+  assert.equal(classifyConfigPinSyncError('Bad Request: chat not found'), 'gone')
+  assert.equal(classifyConfigPinSyncError(undefined), 'gone')
 })
 
 test('buildConfigKeyboard: lists every model and effort as a button, checkmarking the current selection', () => {

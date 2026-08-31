@@ -720,6 +720,18 @@ export function buildConfigPinText(session, authMode, entry) {
   return `📌 config\nmodel: ${model}\nreasoning effort: ${effort}\nconnection: ${modeLabel}\nsession cost: $${cost}`
 }
 
+// syncConfigPin's error triage: 'unmodified' means the edit was a no-op (treat as success);
+// 'rate-limited' means Telegram is just throttling this call — the tracked message id is still
+// perfectly good, so keep it and let the next call retry the same edit; anything else falls back
+// to 'gone', meaning the tracked id is presumed dead (e.g. the message was deleted) and should be
+// dropped so the next call sends a fresh one instead of retrying a dead id forever.
+export function classifyConfigPinSyncError(message) {
+  const text = String(message ?? '')
+  if (/message is not modified/i.test(text)) return 'unmodified'
+  if (/retry after \d+/i.test(text)) return 'rate-limited'
+  return 'gone'
+}
+
 export function buildConfigKeyboard(chatId, entry) {
   const modelRow = CONFIG_MODELS.map(m => ({
     text: entry?.model === m ? `✅ ${CONFIG_MODEL_LABELS[m]}` : CONFIG_MODEL_LABELS[m],
