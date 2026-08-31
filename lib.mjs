@@ -719,7 +719,7 @@ export function buildConfigText(entry) {
 
 export function buildConfigPinText(session, authMode, entry) {
   const { model, effort } = modelAndEffortLabels(entry)
-  const cost = (session?.costUsd ?? 0).toFixed(4)
+  const cost = (Number.isFinite(session?.costUsd) ? session.costUsd : 0).toFixed(4)
   return `📌 config\nmodel: ${model}\nreasoning effort: ${effort}\nconnection: ${authModeLabel(authMode)}\nsession cost: $${cost}`
 }
 

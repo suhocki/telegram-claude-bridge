@@ -1562,6 +1562,11 @@ test('buildConfigPinText: reports the chosen model, effort, connection mode and 
   assert.match(text, /session cost: \$0\.1234/)
 })
 
+test('buildConfigPinText: a corrupted non-numeric costUsd renders as $0.0000 instead of throwing', () => {
+  assert.match(buildConfigPinText({ id: 'sess-1', costUsd: 'oops' }, undefined, {}), /session cost: \$0\.0000/)
+  assert.match(buildConfigPinText({ id: 'sess-1', costUsd: NaN }, undefined, {}), /session cost: \$0\.0000/)
+})
+
 test('classifyConfigPinSyncError: "message is not modified" is treated as a no-op success', () => {
   assert.equal(classifyConfigPinSyncError('Bad Request: message is not modified: specified new message content...'), 'unmodified')
 })
