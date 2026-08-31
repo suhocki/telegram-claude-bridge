@@ -137,6 +137,25 @@ In a group, Telegram appends `@yourbotname` when a command is picked from the
 group's command-menu suggestion (e.g. `/new@yourbotname`) — that form and the
 plain typed form both work.
 
+## Pinned config status message
+
+Every chat/thread gets its own pinned status message, sent and pinned automatically on
+its first message and then edited in place (never re-sent) whenever anything it reports
+changes:
+
+```
+📌 config
+model: Sonnet
+reasoning effort: high
+connection: subscription (OAuth)
+session cost: $0.1234
+```
+
+It updates on a `/config` change (model/effort), a `/subscription`/`/apikey` switch
+(global, so every thread's pin refreshes, not just the one the command was typed in), a
+`/new`/`/reset`, and after every turn that moves the session's accumulated cost. Each
+thread tracks its own pinned message id, so this never touches another thread's pin.
+
 ## Live progress in chat
 
 This isn't "send message, wait, get one reply back" — you watch the agent work in real time, the same way you'd watch it in a terminal:

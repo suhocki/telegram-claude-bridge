@@ -81,6 +81,7 @@ import {
   isValidModelConfigValue,
   buildModelConfigArgs,
   buildConfigText,
+  buildConfigPinText,
   buildConfigKeyboard,
   buildConfigMessageParams,
   buildConfigEditParams,
@@ -1542,6 +1543,22 @@ test('buildConfigText: reports the chosen model label and effort level', () => {
   const text = buildConfigText({ model: 'opus', effort: 'xhigh' })
   assert.match(text, /model: Opus/)
   assert.match(text, /reasoning effort: xhigh/)
+})
+
+test('buildConfigPinText: defaults for an unconfigured, session-less, API-key thread', () => {
+  const text = buildConfigPinText(null, undefined, {})
+  assert.match(text, /model: default/)
+  assert.match(text, /reasoning effort: default/)
+  assert.match(text, /connection: API key/)
+  assert.match(text, /session cost: \$0\.0000/)
+})
+
+test('buildConfigPinText: reports the chosen model, effort, connection mode and accumulated cost', () => {
+  const text = buildConfigPinText({ id: 'sess-1', costUsd: 0.1234 }, 'subscription', { model: 'opus', effort: 'xhigh' })
+  assert.match(text, /model: Opus/)
+  assert.match(text, /reasoning effort: xhigh/)
+  assert.match(text, /connection: subscription \(OAuth\)/)
+  assert.match(text, /session cost: \$0\.1234/)
 })
 
 test('buildConfigKeyboard: lists every model and effort as a button, checkmarking the current selection', () => {

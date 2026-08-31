@@ -86,6 +86,7 @@ import {
   buildModelConfigArgs,
   buildConfigMessageParams,
   buildConfigEditParams,
+  buildConfigPinText,
   parseConfigCallbackData,
   buildContinuePrompt,
   buildJoinedPromptText,
@@ -278,6 +279,7 @@ function emptyState() {
     jobs: {},
     jobStatusMessages: {},
     threadActivity: {},
+    configPinMessages: {},
   }
 }
 
@@ -295,6 +297,7 @@ function loadState() {
     state.jobs ??= {}
     state.jobStatusMessages ??= {}
     state.threadActivity ??= {}
+    state.configPinMessages ??= {}
     return state
   } catch {
     return emptyState()
@@ -312,6 +315,52 @@ function currentModelConfig(key) {
 
 function saveState(state) {
   atomicWriteFileSync(stateFile, JSON.stringify(state, null, 2))
+}
+
+// threadKey -> last text written to that thread's pinned config message, purely to skip a no-op editMessageText call.
+const lastRenderedConfigPinText = new Map()
+
+// Sends+pins the status message the first time a thread is seen, then edits it in place on every
+// later call. Keyed off state.configPinMessages (persisted) so a restart still edits the same
+// pinned message instead of leaving a duplicate; keyed off lastRenderedConfigPinText (in-memory)
+// so a Telegram round-trip only happens when the rendered text actually changed.
+async function syncConfigPin(key) {
+  const text = buildConfigPinText(normalizeSession(state.sessions[key]), currentAuthMode(), currentModelConfig(key))
+  if (lastRenderedConfigPinText.get(key) === text) return
+  const { chatId, threadId } = parseThreadKey(key)
+  const messageId = state.configPinMessages[key]
+  try {
+    if (messageId != null) {
+      await tg('editMessageText', { chat_id: chatId, message_id: messageId, text })
+    } else {
+      const sent = await tg('sendMessage', { chat_id: chatId, text, ...threadIdParam(threadId) })
+      state.configPinMessages[key] = sent.message_id
+      saveState(state)
+      await tg('pinChatMessage', { chat_id: chatId, message_id: sent.message_id, disable_notification: true }).catch(e =>
+        log('failed to pin config status message', key, e.message)
+      )
+    }
+    lastRenderedConfigPinText.set(key, text)
+  } catch (e) {
+    if (/message is not modified/i.test(e.message)) {
+      lastRenderedConfigPinText.set(key, text)
+      return
+    }
+    log('failed to update config status message', key, e.message)
+    // the tracked id may be stale (message deleted/unpinned by hand) — drop it so the next call re-sends a fresh one instead of retrying a dead id forever
+    if (messageId != null) {
+      delete state.configPinMessages[key]
+      lastRenderedConfigPinText.delete(key)
+      saveState(state)
+    }
+  }
+}
+
+// auth mode is global (one token/subscription choice shared by every chat), so switching it
+// invalidates every thread's pinned status message, not just the one the /subscription or
+// /apikey command was typed in.
+async function syncAllConfigPins() {
+  await Promise.all(Object.keys(state.configPinMessages).map(key => syncConfigPin(key)))
 }
 
 // Reads working-phrases.json fresh each call; never throws, since it runs before handleMessage's own try/catch.
@@ -861,6 +910,7 @@ async function runCheckin(key) {
       newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
       state.sessions[key] = newSession
       saveState(state)
+      await syncConfigPin(key)
     }
     const { text: cleanedResult, attachPaths, checkin: nextCheckin, noReply } = extractResponseMarkers(result.result)
     const costWarningCrossed = newSession && crossedCostThreshold(priorSession?.costUsd ?? 0, newSession.costUsd, costWarnUsd)
@@ -1520,6 +1570,7 @@ async function runClaudeTurn(
       newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
       state.sessions[key] = newSession
       saveState(state)
+      await syncConfigPin(key)
     }
     const { text: cleanedResult, attachPaths, reactionEmoji, checkin, noReply } = extractResponseMarkers(result.result)
     const costWarningCrossed = newSession && crossedCostThreshold(priorSession?.costUsd ?? 0, newSession.costUsd, costWarnUsd)
@@ -1596,6 +1647,7 @@ async function runClaudeTurn(
         botMessageIds.push(...(await sendReply(chatId, text, originMessageId, currentPlaceholderId, threadId).catch(() => [])))
       }
       saveState(state)
+      if (resumableSessionId) await syncConfigPin(key)
     } else {
       log('handleMessage error', e)
       botMessageIds.push(...(await sendReply(chatId, `⚠️ bridge error: ${e.message}`, originMessageId, currentPlaceholderId, threadId).catch(() => [])))
@@ -1634,6 +1686,8 @@ async function handleMessage(msg) {
   const threadId = resolveThreadId(msg)
   const userId = String(msg.from?.id ?? '')
   if (!isAuthorizedMessage(msg)) return
+  // ensures the pinned status message exists from this thread's very first message, and self-heals it after a restart or a hand-unpin; a no-op cache hit in the common case where nothing changed
+  await syncConfigPin(key)
   // every authorized message supersedes whatever interrupted turn a Continue button was still offering, regardless of which branch below handles it
   await clearPendingContinue(chatId, key)
   const attachment = extractAttachment(msg)
@@ -1670,6 +1724,7 @@ async function handleMessage(msg) {
     cancelCheckin(key)
     clearJobOnDoneCheckinsForThread(key)
     saveState(state)
+    await syncConfigPin(key)
     await sendReply(chatId, '🔄 session reset — the next message starts a brand new conversation.', msg.message_id, null, threadId).catch(() => {})
     return
   }
@@ -1682,6 +1737,7 @@ async function handleMessage(msg) {
       return
     }
     saveGlobalAuthMode(authModeFile, mode)
+    await syncAllConfigPins()
     await setReaction(chatId, msg.message_id, AUTH_SWITCH_REACTION).catch(() => {})
     return
   }
@@ -1990,6 +2046,7 @@ async function handleConfigCallbackQuery(cq, { field, value }) {
   if (messageId != null) {
     await tg('editMessageText', buildConfigEditParams(chatId, messageId, currentModelConfig(key))).catch(() => {})
   }
+  await syncConfigPin(key)
   await tg('answerCallbackQuery', { callback_query_id: cq.id, text: field === 'reset' ? 'reset to default' : 'updated' }).catch(() => {})
 }
 

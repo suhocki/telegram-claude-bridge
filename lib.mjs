@@ -709,6 +709,17 @@ export function buildConfigText(entry) {
   return `⚙️ model: ${model}\nreasoning effort: ${effort}\n\ntap to change, tap the same choice again to clear it, or reset both to default.`
 }
 
+// Rendered into the per-thread pinned status message kept in sync by the bridge (send once,
+// then edit in place) — deliberately plain text, no buttons, since /config already owns the
+// interactive picker; this is just a always-visible readout of the same state.
+export function buildConfigPinText(session, authMode, entry) {
+  const model = entry?.model ? CONFIG_MODEL_LABELS[entry.model] ?? entry.model : 'default'
+  const effort = entry?.effort ?? 'default'
+  const modeLabel = normalizeAuthMode(authMode) === 'subscription' ? 'subscription (OAuth)' : 'API key'
+  const cost = (session?.costUsd ?? 0).toFixed(4)
+  return `📌 config\nmodel: ${model}\nreasoning effort: ${effort}\nconnection: ${modeLabel}\nsession cost: $${cost}`
+}
+
 export function buildConfigKeyboard(chatId, entry) {
   const modelRow = CONFIG_MODELS.map(m => ({
     text: entry?.model === m ? `✅ ${CONFIG_MODEL_LABELS[m]}` : CONFIG_MODEL_LABELS[m],
