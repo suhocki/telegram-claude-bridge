@@ -1568,13 +1568,13 @@ test('classifyConfigPinSyncError: "message is not modified" is treated as a no-o
 
 test('classifyConfigPinSyncError: a recognized "message is gone" error clears the tracked id', () => {
   assert.equal(classifyConfigPinSyncError('Bad Request: message to edit not found'), 'gone')
-  assert.equal(classifyConfigPinSyncError('Bad Request: message to delete not found'), 'gone')
-  assert.equal(classifyConfigPinSyncError("Bad Request: message can't be edited"), 'gone')
+  assert.equal(classifyConfigPinSyncError('Bad Request: message to pin not found'), 'gone')
   assert.equal(classifyConfigPinSyncError('Bad Request: chat not found'), 'gone')
 })
 
-test('classifyConfigPinSyncError: a rate limit, a timeout, or anything unrecognized is retried, not treated as "gone"', () => {
+test('classifyConfigPinSyncError: a rate limit, an ambiguous "can\'t be edited", a timeout, or anything unrecognized is retried, not treated as "gone"', () => {
   assert.equal(classifyConfigPinSyncError('Too Many Requests: retry after 5'), 'retry')
+  assert.equal(classifyConfigPinSyncError("Bad Request: message can't be edited"), 'retry')
   assert.equal(classifyConfigPinSyncError('fetch https://api.telegram.org/... timed out after 10000ms'), 'retry')
   assert.equal(classifyConfigPinSyncError(undefined), 'retry')
 })

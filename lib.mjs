@@ -723,8 +723,8 @@ export function buildConfigPinText(session, authMode, entry) {
   return `📌 config\nmodel: ${model}\nreasoning effort: ${effort}\nconnection: ${authModeLabel(authMode)}\nsession cost: $${cost}`
 }
 
-// Only an explicit, recognized "the message itself is gone" error clears the tracked pin id — everything else (rate limits, timeouts, unrecognized errors) is treated as transiently retryable so a network blip can't orphan a perfectly good pinned message.
-const CONFIG_PIN_GONE_RE = /message to edit not found|message to delete not found|message can.t be edited|chat not found/i
+// Deliberately narrow to the two calls syncConfigPinNow actually makes (editMessageText, pinChatMessage) failing because the message/chat is truly gone — "message can't be edited" also covers ambiguous, non-deletion causes (e.g. a lost permission), so it's left to the 'retry' default rather than risk unpinning a message that's still perfectly fine.
+const CONFIG_PIN_GONE_RE = /message to (edit|pin) not found|chat not found/i
 
 export function classifyConfigPinSyncError(message) {
   const text = String(message ?? '')

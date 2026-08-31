@@ -342,9 +342,7 @@ async function syncConfigPinNow(key) {
       lastRenderedConfigPinText.set(key, text)
     } catch (e) {
       const outcome = classifyConfigPinSyncError(e.message)
-      if (outcome === 'unmodified') {
-        lastRenderedConfigPinText.set(key, text)
-      } else {
+      if (outcome !== 'unmodified') {
         log('failed to update config status message', key, e.message)
         if (outcome === 'gone' && messageId != null) {
           delete state.configPinMessages[key]
@@ -352,8 +350,9 @@ async function syncConfigPinNow(key) {
           saveState(state)
           await tg('unpinChatMessage', { chat_id: chatId, message_id: messageId }).catch(() => {})
         }
+        return
       }
-      return
+      lastRenderedConfigPinText.set(key, text)
     }
   }
 
@@ -364,6 +363,12 @@ async function syncConfigPinNow(key) {
       saveState(state)
     } catch (e) {
       log('failed to pin config status message', key, e.message)
+      // the message itself is gone (not just unpinnable) — drop it so the next call recreates it, since a static pin text would otherwise never trigger the editMessageText call that'd normally catch this
+      if (classifyConfigPinSyncError(e.message) === 'gone') {
+        delete state.configPinMessages[key]
+        lastRenderedConfigPinText.delete(key)
+        saveState(state)
+      }
     }
   }
 }
