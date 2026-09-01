@@ -155,6 +155,29 @@ test('validateBridgeConfig: apiBaseUrl must be a non-empty string when given', (
   assert.equal(validateBridgeConfig({ ...VALID, apiBaseUrl: undefined }), null)
 })
 
+test('validateBridgeConfig: a voiceReply block with provider-specific fields but no "provider" is rejected as ambiguous', () => {
+  const err = validateBridgeConfig({
+    ...VALID,
+    voiceReply: { apiKeyPath: '~/.config/tts/elevenlabs.key', voiceId: 'txnCCHHGKmYIwrn7HfHQ', modelId: 'eleven_multilingual_v2' },
+  })
+  assert.match(err, /"voiceReply" sets "apiKeyPath" but no "provider"/)
+})
+
+test('validateBridgeConfig: a voiceReply block with an explicit provider is fine even with other fields set', () => {
+  assert.equal(
+    validateBridgeConfig({ ...VALID, voiceReply: { provider: 'elevenlabs', apiKeyPath: '~/.config/tts/elevenlabs.key' } }),
+    null
+  )
+})
+
+test('validateBridgeConfig: a voiceReply block with only maxTtsChars (no provider-specific field) is fine without "provider"', () => {
+  assert.equal(validateBridgeConfig({ ...VALID, voiceReply: { maxTtsChars: 2000 } }), null)
+})
+
+test('validateBridgeConfig: no voiceReply block at all is fine', () => {
+  assert.equal(validateBridgeConfig({ ...VALID, voiceReply: undefined }), null)
+})
+
 test('resolveBotStateFile: resolves a relative stateFile against configDir, defaulting to state.json', () => {
   assert.equal(resolveBotStateFile('/repo', 'state/tldr.json'), '/repo/state/tldr.json')
   assert.equal(resolveBotStateFile('/repo', undefined), '/repo/state.json')

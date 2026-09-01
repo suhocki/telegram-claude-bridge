@@ -878,28 +878,40 @@ export function normalizeTtsProvider(raw) {
   return raw === 'elevenlabs' ? 'elevenlabs' : 'fish'
 }
 
-const VOICE_REPLY_PROVIDER_DEFAULTS = {
+const VOICE_REPLY_PROVIDERS = {
   fish: {
     apiKeyPath: '~/.config/tts/fish.key',
     voiceId: DEFAULT_FISH_TTS_VOICE_ID,
     modelId: DEFAULT_FISH_TTS_MODEL_ID,
+    buildRequestOptions: buildFishTtsRequestOptions,
   },
   elevenlabs: {
     apiKeyPath: '~/.config/tts/elevenlabs.key',
     voiceId: DEFAULT_TTS_VOICE_ID,
     modelId: DEFAULT_TTS_MODEL_ID,
+    buildRequestOptions: buildTtsRequestOptions,
   },
 }
 
-// provider drives its own apiKeyPath/voiceId/modelId defaults so switching provider alone (without hand-copying the other three fields) can't leave a stale cross-provider id/key pairing.
-export function resolveVoiceReplyConfig(overrides = {}) {
-  const provider = normalizeTtsProvider(overrides.provider)
+export function resolveVoiceReplyConfig(overrides) {
+  const safeOverrides = overrides ?? {}
+  const provider = normalizeTtsProvider(safeOverrides.provider)
+  const { buildRequestOptions, ...defaults } = VOICE_REPLY_PROVIDERS[provider]
   return {
     maxTtsChars: 4000,
-    ...VOICE_REPLY_PROVIDER_DEFAULTS[provider],
-    ...overrides,
+    ...defaults,
+    ...safeOverrides,
     provider,
   }
+}
+
+export function buildVoiceReplyRequestOptions(text, voiceReplyConfig, apiKey) {
+  return VOICE_REPLY_PROVIDERS[voiceReplyConfig.provider].buildRequestOptions(text, {
+    voiceId: voiceReplyConfig.voiceId,
+    apiKey,
+    modelId: voiceReplyConfig.modelId,
+    voiceSettings: voiceReplyConfig.voiceSettings,
+  })
 }
 
 export function buildOutboxFilename(timestampMs, chatId) {
@@ -1235,6 +1247,12 @@ export function validateBridgeConfig(config, { stateFilePath, existingStateFileP
   }
   if (config.apiBaseUrl != null && (typeof config.apiBaseUrl !== 'string' || !config.apiBaseUrl.trim())) {
     return '"apiBaseUrl" must be a non-empty string when given'
+  }
+  if (config.voiceReply != null && typeof config.voiceReply === 'object' && config.voiceReply.provider == null) {
+    const ambiguousField = ['apiKeyPath', 'voiceId', 'modelId', 'voiceSettings'].find(field => config.voiceReply[field] != null)
+    if (ambiguousField) {
+      return `"voiceReply" sets "${ambiguousField}" but no "provider" — add "provider": "fish" or "elevenlabs" so it's unambiguous which service the other voiceReply fields belong to`
+    }
   }
   return null
 }

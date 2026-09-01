@@ -103,8 +103,7 @@ import {
   buildSpeechText,
   truncateForSpeech,
   resolveVoiceReplyConfig,
-  buildTtsRequestOptions,
-  buildFishTtsRequestOptions,
+  buildVoiceReplyRequestOptions,
   buildOutboxFilename,
   isGroupChatType,
   resolveGroupPolicy,
@@ -1350,18 +1349,7 @@ async function sendVoiceReply(chatId, text, replyToMessageId, threadId, { alread
     return { ok: false, messageIds: [], error: 'no TTS api key configured' }
   }
   try {
-    const { url, headers, body } = voiceReplyConfig.provider === 'elevenlabs'
-      ? buildTtsRequestOptions(speechText, {
-          voiceId: voiceReplyConfig.voiceId,
-          apiKey,
-          modelId: voiceReplyConfig.modelId,
-          voiceSettings: voiceReplyConfig.voiceSettings,
-        })
-      : buildFishTtsRequestOptions(speechText, {
-          voiceId: voiceReplyConfig.voiceId,
-          apiKey,
-          modelId: voiceReplyConfig.modelId,
-        })
+    const { url, headers, body } = buildVoiceReplyRequestOptions(speechText, voiceReplyConfig, apiKey)
     const res = await fetchWithTimeout(fetch, url, { method: 'POST', headers, body }, TTS_REQUEST_TIMEOUT_MS)
     if (!res.ok) throw new Error(`TTS request failed: HTTP ${res.status}`)
     const buf = Buffer.from(await res.arrayBuffer())
