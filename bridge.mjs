@@ -109,6 +109,7 @@ import {
   parseFishVoiceListResponse,
   hasNextFishVoicePage,
   resolveFishVoiceLabel,
+  resolveActiveFishVoiceId,
   parseFishVoiceCallbackData,
   parseFishVoicesPageCallbackData,
   buildFishVoicesKeyboard,
@@ -398,6 +399,18 @@ function syncConfigPin(key) {
 
 function syncAllConfigPins() {
   for (const key of Object.keys(state.configPinMessages)) syncConfigPin(key)
+}
+
+// Every other thread's pin refreshes fire-and-forget, but the tapping chat's own pin is awaited so its ✅/row lands before the toast does.
+function syncOwnPinThenBroadcastRest(key) {
+  for (const otherKey of Object.keys(state.configPinMessages)) {
+    if (otherKey !== key) syncConfigPin(otherKey)
+  }
+  return syncConfigPin(key)
+}
+
+function isConfigPinMessage(key, messageId) {
+  return state.configPinMessages[key]?.id === messageId
 }
 
 // Reads working-phrases.json fresh each call; never throws, since it runs before handleMessage's own try/catch.
@@ -1437,7 +1450,7 @@ async function sendVoiceReply(chatId, text, replyToMessageId, threadId, { alread
   }
   try {
     const globalFishVoice = voiceReplyConfig.provider === 'fish' ? currentFishVoice() : null
-    const effectiveVoiceReplyConfig = globalFishVoice ? { ...voiceReplyConfig, voiceId: globalFishVoice.id } : voiceReplyConfig
+    const effectiveVoiceReplyConfig = { ...voiceReplyConfig, voiceId: resolveActiveFishVoiceId(globalFishVoice, voiceReplyConfig.voiceId) }
     const { url, headers, body } = buildVoiceReplyRequestOptions(speechText, effectiveVoiceReplyConfig, apiKey)
     const res = await fetchWithTimeout(fetch, url, { method: 'POST', headers, body }, TTS_REQUEST_TIMEOUT_MS)
     if (!res.ok) throw new Error(`TTS request failed: HTTP ${res.status}`)
@@ -2155,11 +2168,7 @@ async function handleConfigCallbackQuery(cq, { field, value }) {
       return
     }
     saveGlobalAuthMode(authModeFile, value)
-    // every other thread's pin refreshes fire-and-forget, but this chat's own tapped keyboard is awaited so its ✅ moves before the toast does
-    for (const otherKey of Object.keys(state.configPinMessages)) {
-      if (otherKey !== key) syncConfigPin(otherKey)
-    }
-    await syncConfigPin(key)
+    await syncOwnPinThenBroadcastRest(key)
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'connection switched' }).catch(() => {})
     return
   }
@@ -2169,10 +2178,19 @@ async function handleConfigCallbackQuery(cq, { field, value }) {
   await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'updated' }).catch(() => {})
 }
 
+// Both handlers below are gated on the pin row never rendering for a non-fish provider, but that's a UI omission, not enforcement.
+function isFishVoicePickerAvailable() {
+  return voiceReplyConfig.provider === 'fish'
+}
+
 // A tap on the pin's own row sends a new message (keeps the pin small); a tap on that message's Prev/Next edits it in place.
 async function handleFishVoicesPageCallbackQuery(cq, { pageNumber }) {
   if (!isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig)) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'not authorized', show_alert: true }).catch(() => {})
+    return
+  }
+  if (!isFishVoicePickerAvailable()) {
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'voice picker unavailable', show_alert: true }).catch(() => {})
     return
   }
   const chatId = String(cq.message?.chat?.id ?? '')
@@ -2186,14 +2204,15 @@ async function handleFishVoicesPageCallbackQuery(cq, { pageNumber }) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'failed to load voices', show_alert: true }).catch(() => {})
     return
   }
-  const activeVoiceId = currentFishVoice()?.id ?? voiceReplyConfig.voiceId
+  const activeVoiceId = resolveActiveFishVoiceId(currentFishVoice(), voiceReplyConfig.voiceId)
   const keyboard = buildFishVoicesKeyboard({ voices, pageNumber, activeVoiceId, hasNext })
-  const isPinTap = state.configPinMessages[key]?.id === cq.message?.message_id
+  const text = voices.length ? 'Choose a voice:' : 'No voices matched on this page — try Prev/Next.'
+  const isPinTap = isConfigPinMessage(key, cq.message?.message_id)
   try {
     if (isPinTap) {
-      await tg('sendMessage', { chat_id: chatId, text: 'Choose a voice:', reply_markup: keyboard, ...threadIdParam(threadId) })
+      await tg('sendMessage', { chat_id: chatId, text, reply_markup: keyboard, ...threadIdParam(threadId) })
     } else {
-      await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: cq.message.message_id, reply_markup: keyboard })
+      await tg('editMessageText', { chat_id: chatId, message_id: cq.message?.message_id, text, reply_markup: keyboard })
     }
   } catch (e) {
     log('failed to render fish voice list', key, e.message)
@@ -2207,19 +2226,19 @@ async function handleFishVoicePickCallbackQuery(cq, { id }) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'not authorized', show_alert: true }).catch(() => {})
     return
   }
+  if (!isFishVoicePickerAvailable()) {
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'voice picker unavailable', show_alert: true }).catch(() => {})
+    return
+  }
   const chatId = String(cq.message?.chat?.id ?? '')
   const key = threadKey(chatId, cq.message)
   const title = extractCallbackButtonTitle(cq.message?.reply_markup, cq.data) ?? id
   saveGlobalFishVoice(fishVoiceFile, { id, title })
   const updatedKeyboard = markSelectedFishVoiceButton(cq.message?.reply_markup, id)
-  await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: cq.message.message_id, reply_markup: updatedKeyboard }).catch(e =>
+  await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: cq.message?.message_id, reply_markup: updatedKeyboard }).catch(e =>
     log('failed to refresh fish voice list selection', key, e.message)
   )
-  // every other thread's pin refreshes fire-and-forget, but this chat's own pin is awaited so its row updates before the toast does
-  for (const otherKey of Object.keys(state.configPinMessages)) {
-    if (otherKey !== key) syncConfigPin(otherKey)
-  }
-  await syncConfigPin(key)
+  await syncOwnPinThenBroadcastRest(key)
   await tg('answerCallbackQuery', { callback_query_id: cq.id, text: title }).catch(() => {})
 }
 

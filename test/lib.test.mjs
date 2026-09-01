@@ -131,6 +131,7 @@ import {
   parseFishVoiceListResponse,
   hasNextFishVoicePage,
   resolveFishVoiceLabel,
+  resolveActiveFishVoiceId,
   parseFishVoiceCallbackData,
   parseFishVoicesPageCallbackData,
   buildFishVoicesKeyboard,
@@ -1798,6 +1799,16 @@ test('resolveFishVoiceLabel: no global override, but the bot config resolved a d
 
 test('resolveFishVoiceLabel: no global override and the bot config default matches the hardcoded id still labels the hardcoded title', () => {
   assert.equal(resolveFishVoiceLabel(null, DEFAULT_FISH_TTS_VOICE_ID), `${DEFAULT_FISH_TTS_VOICE_TITLE} (default)`)
+})
+
+test('resolveActiveFishVoiceId: a global override wins over the bot\'s own configured default', () => {
+  const overrideId = 'd'.repeat(32)
+  assert.equal(resolveActiveFishVoiceId({ id: overrideId, title: 'x' }, DEFAULT_FISH_TTS_VOICE_ID), overrideId)
+})
+
+test('resolveActiveFishVoiceId: no global override falls back to the given default', () => {
+  assert.equal(resolveActiveFishVoiceId(null, DEFAULT_FISH_TTS_VOICE_ID), DEFAULT_FISH_TTS_VOICE_ID)
+  assert.equal(resolveActiveFishVoiceId(undefined, 'custom-default'), 'custom-default')
 })
 
 test('parseFishVoiceCallbackData: parses a 32-char hex voice id', () => {

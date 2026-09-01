@@ -850,6 +850,11 @@ export function hasNextFishVoicePage(pageNumber, pageSize, total) {
   return pageNumber * pageSize < (Number.isFinite(total) ? total : 0)
 }
 
+// Single source of truth for "which voice id is actually in effect", shared by sendVoiceReply and the picker's own checkmark.
+export function resolveActiveFishVoiceId(globalFishVoice, defaultVoiceId) {
+  return globalFishVoice?.id ?? defaultVoiceId
+}
+
 // defaultVoiceId is the bot's own resolved config default (voiceReplyConfig.voiceId), which could differ from DEFAULT_FISH_TTS_VOICE_ID.
 export function resolveFishVoiceLabel(globalFishVoice, defaultVoiceId = DEFAULT_FISH_TTS_VOICE_ID) {
   if (globalFishVoice?.title) return globalFishVoice.title
