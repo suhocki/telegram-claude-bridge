@@ -114,7 +114,6 @@ import {
   buildFishVoicesKeyboard,
   markSelectedFishVoiceButton,
   extractCallbackButtonTitle,
-  DEFAULT_FISH_TTS_VOICE_ID,
   FISH_VOICES_PAGE_SIZE,
   isGroupChatType,
   resolveGroupPolicy,
@@ -348,7 +347,7 @@ function forgetConfigPin(key) {
 async function syncConfigPinNow(key) {
   const { chatId, threadId } = parseThreadKey(key)
   const text = buildConfigPinText(normalizeSession(state.sessions[key]))
-  const fishVoiceLabel = voiceReplyConfig.provider === 'fish' ? resolveFishVoiceLabel(currentFishVoice()) : null
+  const fishVoiceLabel = voiceReplyConfig.provider === 'fish' ? resolveFishVoiceLabel(currentFishVoice(), voiceReplyConfig.voiceId) : null
   const keyboard = buildConfigKeyboard(chatId, currentModelConfig(key), currentAuthMode(), fishVoiceLabel)
   const renderKey = buildConfigPinRenderKey(text, keyboard)
   const entry = state.configPinMessages[key]
@@ -2170,8 +2169,7 @@ async function handleConfigCallbackQuery(cq, { field, value }) {
   await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'updated' }).catch(() => {})
 }
 
-// Fired both from the pin's "🎙️ Voice" row (fishvoices:1, tapped on the pin message itself — sends a
-// new message so the pin stays small) and from that new message's own Prev/Next buttons (edits in place).
+// A tap on the pin's own row sends a new message (keeps the pin small); a tap on that message's Prev/Next edits it in place.
 async function handleFishVoicesPageCallbackQuery(cq, { pageNumber }) {
   if (!isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig)) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'not authorized', show_alert: true }).catch(() => {})
@@ -2188,7 +2186,7 @@ async function handleFishVoicesPageCallbackQuery(cq, { pageNumber }) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'failed to load voices', show_alert: true }).catch(() => {})
     return
   }
-  const activeVoiceId = currentFishVoice()?.id ?? DEFAULT_FISH_TTS_VOICE_ID
+  const activeVoiceId = currentFishVoice()?.id ?? voiceReplyConfig.voiceId
   const keyboard = buildFishVoicesKeyboard({ voices, pageNumber, activeVoiceId, hasNext })
   const isPinTap = state.configPinMessages[key]?.id === cq.message?.message_id
   try {

@@ -723,8 +723,7 @@ export function classifyConfigPinSyncError(message) {
   return 'retry'
 }
 
-// fishVoiceLabel: null skips the row entirely (non-Fish providers); otherwise it's the current
-// global voice's display title, shown so the pin keeps its at-a-glance status for this too.
+// fishVoiceLabel: null skips the row entirely (non-Fish providers); a string shows it as the current global voice's title.
 export function buildConfigKeyboard(chatId, entry, authMode, fishVoiceLabel = null) {
   const effectiveModel = CONFIG_MODELS.includes(entry?.model) ? entry.model : DEFAULT_CONFIG_MODEL
   const effectiveEffort = CONFIG_EFFORTS.includes(entry?.effort) ? entry.effort : DEFAULT_CONFIG_EFFORT
@@ -851,8 +850,10 @@ export function hasNextFishVoicePage(pageNumber, pageSize, total) {
   return pageNumber * pageSize < (Number.isFinite(total) ? total : 0)
 }
 
-export function resolveFishVoiceLabel(globalFishVoice) {
-  return globalFishVoice?.title ? globalFishVoice.title : `${DEFAULT_FISH_TTS_VOICE_TITLE} (default)`
+// defaultVoiceId is the bot's own resolved config default (voiceReplyConfig.voiceId), which could differ from DEFAULT_FISH_TTS_VOICE_ID.
+export function resolveFishVoiceLabel(globalFishVoice, defaultVoiceId = DEFAULT_FISH_TTS_VOICE_ID) {
+  if (globalFishVoice?.title) return globalFishVoice.title
+  return defaultVoiceId === DEFAULT_FISH_TTS_VOICE_ID ? `${DEFAULT_FISH_TTS_VOICE_TITLE} (default)` : `${defaultVoiceId} (default)`
 }
 
 const FISH_VOICE_CALLBACK_RE = /^fishvoice:([0-9a-f]{32})$/
@@ -894,8 +895,7 @@ export function markSelectedFishVoiceButton(keyboard, selectedId) {
   }
 }
 
-// The picked voice's title never rides along in fishvoice:<id> callback_data (would blow the field past what's needed), so
-// recover it from the button text the picker itself rendered moments ago — same trust model as any other callback tap here.
+// callback_data only carries the id, not the title, so recover it from the button text rendered moments ago.
 export function extractCallbackButtonTitle(keyboard, callbackData) {
   for (const row of keyboard?.inline_keyboard ?? []) {
     for (const btn of row) {

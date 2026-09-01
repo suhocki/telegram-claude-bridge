@@ -1791,6 +1791,15 @@ test('resolveFishVoiceLabel: a global override is labeled with its own stored ti
   assert.equal(resolveFishVoiceLabel({ id: 'x'.repeat(32), title: 'Зеленский' }), 'Зеленский')
 })
 
+test('resolveFishVoiceLabel: no global override, but the bot config resolved a different default voiceId, labels that id instead of the hardcoded title', () => {
+  const customId = 'c'.repeat(32)
+  assert.equal(resolveFishVoiceLabel(null, customId), `${customId} (default)`)
+})
+
+test('resolveFishVoiceLabel: no global override and the bot config default matches the hardcoded id still labels the hardcoded title', () => {
+  assert.equal(resolveFishVoiceLabel(null, DEFAULT_FISH_TTS_VOICE_ID), `${DEFAULT_FISH_TTS_VOICE_TITLE} (default)`)
+})
+
 test('parseFishVoiceCallbackData: parses a 32-char hex voice id', () => {
   const id = '0a690dbeb3984a9f88cd39353880775f'
   assert.deepEqual(parseFishVoiceCallbackData(`fishvoice:${id}`), { id })
