@@ -1091,6 +1091,21 @@ test('buildReplyCallsFromChunks: a falsy keyboard adds no reply_markup', () => {
   assert.equal(calls[0].params.reply_markup, undefined)
 })
 
+test('buildReplyCallsFromChunks: a keyboard is attached to a single-chunk editMessageText call too', () => {
+  const keyboard = { inline_keyboard: [[{ text: '🎵 Прослушать', callback_data: 'listen:123' }]] }
+  const calls = buildReplyCallsFromChunks('123', ['only'], 99, 'HTML', 777, undefined, keyboard)
+  assert.deepEqual(calls, [
+    { method: 'editMessageText', params: { chat_id: '123', text: 'only', parse_mode: 'HTML', message_id: 777, reply_markup: keyboard } },
+  ])
+})
+
+test('buildReplyCallsFromChunks: a keyboard is not attached to a non-last editMessageText chunk', () => {
+  const keyboard = { inline_keyboard: [[{ text: '🎵 Прослушать', callback_data: 'listen:123' }]] }
+  const calls = buildReplyCallsFromChunks('123', ['first', 'second'], 99, 'HTML', 777, undefined, keyboard)
+  assert.equal(calls[0].params.reply_markup, undefined)
+  assert.deepEqual(calls[1].params.reply_markup, keyboard)
+})
+
 test('extractReactionMarker: no marker leaves text untouched and emoji null', () => {
   assert.deepEqual(extractReactionMarker('just a plain reply'), { text: 'just a plain reply', emoji: null })
 })

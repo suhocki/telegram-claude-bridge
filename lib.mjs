@@ -403,7 +403,9 @@ export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, pars
   return chunks.map((part, i) => {
     const params = { chat_id: chatId, text: part }
     if (parseMode) params.parse_mode = parseMode
+    const isLastChunk = i === chunks.length - 1
     if (i === 0 && editMessageId != null) {
+      if (isLastChunk && keyboard) params.reply_markup = keyboard
       // editMessageText targets a message that already carries its own thread membership — no message_thread_id needed
       return { method: 'editMessageText', params: { ...params, message_id: editMessageId } }
     }
@@ -411,7 +413,7 @@ export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, pars
     if (i === 0 && replyToMessageId != null) {
       params.reply_parameters = { message_id: replyToMessageId, allow_sending_without_reply: true }
     }
-    if (i === chunks.length - 1 && keyboard) {
+    if (isLastChunk && keyboard) {
       params.reply_markup = keyboard
     }
     return { method: 'sendMessage', params }

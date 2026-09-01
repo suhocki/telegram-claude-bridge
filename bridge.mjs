@@ -408,6 +408,8 @@ const activeRuns = new Map()
 const consumedByJoin = new Map()
 // serializes the join-count editMessageReplyMarkup calls per chat so back-to-back joins can't land out of order at Telegram
 const joinKeyboardQueue = createKeyedQueue()
+// `${chatId}:${messageId}` currently generating a voice note, so a duplicate/retried callback_query for the same tap is a no-op instead of a second TTS call
+const listenInFlight = new Set()
 // setTimeout handles can't be persisted, so state.pendingCheckins is re-armed into this Map on every boot.
 const checkinTimers = new Map()
 for (const key of Object.keys(state.pendingCheckins)) armCheckinTimer(key)
@@ -2108,27 +2110,41 @@ async function handleCallbackQuery(cq) {
   }
 
   if (parsed.action === 'listen') {
-    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: '🎵 генерация…' }).catch(() => {})
     const messageId = cq.message?.message_id
-    await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {})
-    let statusId = null
-    try {
-      const sent = await tg('sendMessage', {
-        chat_id: chatId,
-        text: '🎵 Генерация…',
-        reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
-        ...threadIdParam(threadId),
-      })
-      statusId = sent.message_id
-    } catch (e) {
-      log('listen status message failed', e.message)
+    const listenGuardKey = `${chatId}:${messageId}`
+    if (listenInFlight.has(listenGuardKey)) {
+      await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'already generating…' }).catch(() => {})
       return
     }
-    const { ok, error } = await sendVoiceReply(chatId, cq.message?.text ?? '', messageId, threadId)
-    if (ok) {
-      await tg('deleteMessage', { chat_id: chatId, message_id: statusId }).catch(() => {})
-    } else {
-      await tg('editMessageText', { chat_id: chatId, message_id: statusId, text: `⚠️ не получилось озвучить: ${error || 'unknown error'}` }).catch(() => {})
+    listenInFlight.add(listenGuardKey)
+    try {
+      await tg('answerCallbackQuery', { callback_query_id: cq.id, text: '🎵 генерация…' }).catch(() => {})
+      await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {})
+      let statusId = null
+      try {
+        const sent = await tg('sendMessage', {
+          chat_id: chatId,
+          text: '🎵 Генерация…',
+          reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
+          ...threadIdParam(threadId),
+        })
+        statusId = sent.message_id
+        trackBotMessages(key, [statusId])
+      } catch (e) {
+        log('listen status message failed', e.message)
+        return
+      }
+      // vocalizes exactly the bubble the button was attached to (its own text), not the full turn — a long,
+      // multi-chunk reply only ever carries the button on its last chunk, so that's what this reads out
+      const { ok, messageIds, error } = await sendVoiceReply(chatId, cq.message?.text ?? '', messageId, threadId)
+      if (ok) {
+        trackBotMessages(key, messageIds)
+        await tg('deleteMessage', { chat_id: chatId, message_id: statusId }).catch(() => {})
+      } else {
+        await tg('editMessageText', { chat_id: chatId, message_id: statusId, text: `⚠️ не получилось озвучить: ${error || 'unknown error'}` }).catch(() => {})
+      }
+    } finally {
+      listenInFlight.delete(listenGuardKey)
     }
     return
   }
