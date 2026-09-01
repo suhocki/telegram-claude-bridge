@@ -78,15 +78,12 @@ import {
   CONFIG_EFFORTS,
   getModelConfig,
   setModelConfigField,
-  resetModelConfig,
   isValidModelConfigValue,
   buildModelConfigArgs,
-  buildConfigText,
   buildConfigPinText,
   classifyConfigPinSyncError,
   buildConfigKeyboard,
-  buildConfigMessageParams,
-  buildConfigEditParams,
+  buildConfigPinRenderKey,
   parseConfigCallbackData,
   buildContinuePrompt,
   buildJoinedPromptText,
@@ -143,7 +140,6 @@ import {
   normalizeAuthMode,
   deriveLegacyAuthMode,
   buildChildEnv,
-  AUTH_SWITCH_REACTION,
 } from '../lib.mjs'
 import path from 'node:path'
 import { mkdtempSync, rmSync, readFileSync, readdirSync } from 'node:fs'
@@ -307,13 +303,10 @@ test('classifyCommand: "/status" classifies as status', () => {
   assert.equal(classifyCommand('/status'), 'status')
 })
 
-test('classifyCommand: "/subscription" and "/apikey" classify as auth-mode switches', () => {
-  assert.equal(classifyCommand('/subscription'), 'authSubscription')
-  assert.equal(classifyCommand('/apikey'), 'authApiKey')
-})
-
-test('classifyCommand: "/config" classifies as config', () => {
-  assert.equal(classifyCommand('/config'), 'config')
+test('classifyCommand: "/subscription", "/apikey" and "/config" are no longer commands — folded into the pin\'s own buttons', () => {
+  assert.equal(classifyCommand('/subscription'), null)
+  assert.equal(classifyCommand('/apikey'), null)
+  assert.equal(classifyCommand('/config'), null)
 })
 
 test('classifyCommand: ordinary text is not a command', () => {
@@ -391,10 +384,6 @@ test('buildChildEnv: "subscription" mode strips ANTHROPIC_API_KEY but keeps ever
 test('buildChildEnv: "subscription" mode is a no-op when there was no key to strip', () => {
   const env = { PATH: '/usr/bin' }
   assert.deepEqual(buildChildEnv(env, 'subscription'), { PATH: '/usr/bin' })
-})
-
-test('AUTH_SWITCH_REACTION is a Telegram-allowed reaction emoji', () => {
-  assert.ok(ALLOWED_REACTION_EMOJI.has(AUTH_SWITCH_REACTION))
 })
 
 test('normalizeSession: null/undefined stays null', () => {
@@ -1561,23 +1550,15 @@ test('setModelConfigField: other keys are left untouched', () => {
   assert.deepEqual(after.b, { effort: 'low' })
 })
 
-test('resetModelConfig: drops the key without mutating the input, leaves other keys alone', () => {
-  const before = { a: { model: 'opus' }, b: { effort: 'low' } }
-  const after = resetModelConfig(before, 'a')
-  assert.deepEqual(after, { b: { effort: 'low' } })
-  assert.deepEqual(before, { a: { model: 'opus' }, b: { effort: 'low' } })
-})
-
-test('resetModelConfig: resetting an already-unset key is a no-op', () => {
-  assert.deepEqual(resetModelConfig({ b: { effort: 'low' } }, 'a'), { b: { effort: 'low' } })
-})
-
-test('isValidModelConfigValue: accepts only the known model/effort values, and any value for reset', () => {
+test('isValidModelConfigValue: accepts only the known model/effort/auth values', () => {
   for (const m of CONFIG_MODELS) assert.equal(isValidModelConfigValue('model', m), true)
   for (const e of CONFIG_EFFORTS) assert.equal(isValidModelConfigValue('effort', e), true)
   assert.equal(isValidModelConfigValue('model', 'zzzzz'), false)
   assert.equal(isValidModelConfigValue('effort', 'zzzzz'), false)
-  assert.equal(isValidModelConfigValue('reset', 'x'), true)
+  assert.equal(isValidModelConfigValue('auth', 'subscription'), true)
+  assert.equal(isValidModelConfigValue('auth', 'apikey'), true)
+  assert.equal(isValidModelConfigValue('auth', 'zzzzz'), false)
+  assert.equal(isValidModelConfigValue('reset', 'x'), false)
   assert.equal(isValidModelConfigValue('bogus', 'x'), false)
 })
 
@@ -1592,36 +1573,17 @@ test('buildModelConfigArgs: model and/or effort become --model/--effort flags', 
   assert.deepEqual(buildModelConfigArgs({ model: 'opus', effort: 'high' }), ['--model', 'opus', '--effort', 'high'])
 })
 
-test('buildConfigText: reports "default" for whatever is not explicitly set', () => {
-  assert.match(buildConfigText({}), /model: default/)
-  assert.match(buildConfigText({}), /reasoning effort: default/)
+test('buildConfigPinText: no session means $0.0000', () => {
+  assert.equal(buildConfigPinText(null), 'session cost: $0.0000')
 })
 
-test('buildConfigText: reports the chosen model label and effort level', () => {
-  const text = buildConfigText({ model: 'opus', effort: 'xhigh' })
-  assert.match(text, /model: Opus/)
-  assert.match(text, /reasoning effort: xhigh/)
-})
-
-test('buildConfigPinText: defaults for an unconfigured, session-less, API-key thread', () => {
-  const text = buildConfigPinText(null, undefined, {})
-  assert.match(text, /model: default/)
-  assert.match(text, /reasoning effort: default/)
-  assert.match(text, /connection: API key/)
-  assert.match(text, /session cost: \$0\.0000/)
-})
-
-test('buildConfigPinText: reports the chosen model, effort, connection mode and accumulated cost', () => {
-  const text = buildConfigPinText({ id: 'sess-1', costUsd: 0.1234 }, 'subscription', { model: 'opus', effort: 'xhigh' })
-  assert.match(text, /model: Opus/)
-  assert.match(text, /reasoning effort: xhigh/)
-  assert.match(text, /connection: subscription \(OAuth\)/)
-  assert.match(text, /session cost: \$0\.1234/)
+test('buildConfigPinText: reports the accumulated cost', () => {
+  assert.equal(buildConfigPinText({ id: 'sess-1', costUsd: 0.1234 }), 'session cost: $0.1234')
 })
 
 test('buildConfigPinText: a corrupted non-numeric costUsd renders as $0.0000 instead of throwing', () => {
-  assert.match(buildConfigPinText({ id: 'sess-1', costUsd: 'oops' }, undefined, {}), /session cost: \$0\.0000/)
-  assert.match(buildConfigPinText({ id: 'sess-1', costUsd: NaN }, undefined, {}), /session cost: \$0\.0000/)
+  assert.match(buildConfigPinText({ id: 'sess-1', costUsd: 'oops' }), /session cost: \$0\.0000/)
+  assert.match(buildConfigPinText({ id: 'sess-1', costUsd: NaN }), /session cost: \$0\.0000/)
 })
 
 test('classifyConfigPinSyncError: "message is not modified" is treated as a no-op success', () => {
@@ -1644,57 +1606,56 @@ test('classifyConfigPinSyncError: a rate limit, an ambiguous "can\'t be edited",
   assert.equal(classifyConfigPinSyncError(undefined), 'retry')
 })
 
-test('buildConfigKeyboard: lists every model and effort as a button, checkmarking the current selection', () => {
-  const keyboard = buildConfigKeyboard('123', { model: 'sonnet', effort: 'high' })
+test('buildConfigKeyboard: lists every model, effort and auth option as a button, checkmarking the current selection', () => {
+  const keyboard = buildConfigKeyboard('123', { model: 'sonnet', effort: 'high' }, 'subscription')
   assert.equal(keyboard.inline_keyboard.length, 3)
-  const [modelRow, effortRow, resetRow] = keyboard.inline_keyboard
+  const [modelRow, effortRow, authRow] = keyboard.inline_keyboard
   assert.deepEqual(modelRow.map(b => b.callback_data), CONFIG_MODELS.map(m => `cfg:model:${m}:123`))
   assert.ok(modelRow.some(b => b.text === '✅ Sonnet'))
   assert.deepEqual(effortRow.map(b => b.callback_data), CONFIG_EFFORTS.map(e => `cfg:effort:${e}:123`))
   assert.ok(effortRow.some(b => b.text === '✅ high'))
-  assert.equal(resetRow.length, 1)
-  assert.equal(resetRow[0].callback_data, 'cfg:reset:x:123')
+  assert.deepEqual(authRow.map(b => b.callback_data), ['cfg:auth:subscription:123', 'cfg:auth:apikey:123'])
+  assert.ok(authRow.some(b => b.text.startsWith('✅')))
+  assert.ok(authRow.find(b => b.callback_data === 'cfg:auth:subscription:123').text.startsWith('✅'))
+  assert.ok(!authRow.find(b => b.callback_data === 'cfg:auth:apikey:123').text.startsWith('✅'))
 })
 
-test('buildConfigKeyboard: nothing selected means no checkmarked button', () => {
-  const keyboard = buildConfigKeyboard('123', {})
-  const flat = keyboard.inline_keyboard.flat()
-  assert.ok(flat.every(b => !b.text.startsWith('✅')))
+test('buildConfigKeyboard: nothing selected for model/effort means no checkmarked button in those rows; auth defaults to apikey', () => {
+  const keyboard = buildConfigKeyboard('123', {}, undefined)
+  const [modelRow, effortRow, authRow] = keyboard.inline_keyboard
+  assert.ok([...modelRow, ...effortRow].every(b => !b.text.startsWith('✅')))
+  assert.ok(authRow.find(b => b.callback_data === 'cfg:auth:apikey:123').text.startsWith('✅'))
+  assert.ok(!authRow.find(b => b.callback_data === 'cfg:auth:subscription:123').text.startsWith('✅'))
 })
 
-test('buildConfigMessageParams: builds a sendMessage-shaped payload with the config text and keyboard', () => {
-  const params = buildConfigMessageParams('123', { model: 'opus' }, null)
-  assert.equal(params.chat_id, '123')
-  assert.equal(params.text, buildConfigText({ model: 'opus' }))
-  assert.deepEqual(params.reply_markup, buildConfigKeyboard('123', { model: 'opus' }))
-  assert.equal('message_thread_id' in params, false)
+test('buildConfigPinRenderKey: differs when the keyboard differs even if the text is identical', () => {
+  const text = 'session cost: $0.0000'
+  const a = buildConfigPinRenderKey(text, buildConfigKeyboard('123', { model: 'sonnet' }, 'apikey'))
+  const b = buildConfigPinRenderKey(text, buildConfigKeyboard('123', { model: 'opus' }, 'apikey'))
+  assert.notEqual(a, b)
 })
 
-test('buildConfigMessageParams: includes message_thread_id when given a threadId', () => {
-  const params = buildConfigMessageParams('123', {}, 42)
-  assert.equal(params.message_thread_id, 42)
+test('buildConfigPinRenderKey: identical text and keyboard produce the same key', () => {
+  const text = 'session cost: $0.0000'
+  const keyboardA = buildConfigKeyboard('123', { model: 'sonnet' }, 'apikey')
+  const keyboardB = buildConfigKeyboard('123', { model: 'sonnet' }, 'apikey')
+  assert.equal(buildConfigPinRenderKey(text, keyboardA), buildConfigPinRenderKey(text, keyboardB))
 })
 
-test('buildConfigEditParams: builds an editMessageText-shaped payload', () => {
-  const params = buildConfigEditParams('123', 456, { effort: 'low' })
-  assert.equal(params.chat_id, '123')
-  assert.equal(params.message_id, 456)
-  assert.equal(params.text, buildConfigText({ effort: 'low' }))
-  assert.deepEqual(params.reply_markup, buildConfigKeyboard('123', { effort: 'low' }))
-})
-
-test('parseConfigCallbackData: parses model/effort/reset payloads into field, value and chat id', () => {
+test('parseConfigCallbackData: parses model/effort/auth payloads into field, value and chat id', () => {
   assert.deepEqual(parseConfigCallbackData('cfg:model:opus:123'), { field: 'model', value: 'opus', chatId: '123' })
   assert.deepEqual(parseConfigCallbackData('cfg:effort:xhigh:123'), { field: 'effort', value: 'xhigh', chatId: '123' })
-  assert.deepEqual(parseConfigCallbackData('cfg:reset:x:123'), { field: 'reset', value: 'x', chatId: '123' })
+  assert.deepEqual(parseConfigCallbackData('cfg:auth:subscription:123'), { field: 'auth', value: 'subscription', chatId: '123' })
+  assert.deepEqual(parseConfigCallbackData('cfg:auth:apikey:123'), { field: 'auth', value: 'apikey', chatId: '123' })
 })
 
 test('parseConfigCallbackData: a chat id containing a colon (e.g. a supergroup topic id) is kept whole', () => {
   assert.deepEqual(parseConfigCallbackData('cfg:model:opus:-100123:456'), { field: 'model', value: 'opus', chatId: '-100123:456' })
 })
 
-test('parseConfigCallbackData: an unrecognized field, malformed payload, or missing data returns null', () => {
+test('parseConfigCallbackData: an unrecognized field (including the removed "reset"), malformed payload, or missing data returns null', () => {
   assert.equal(parseConfigCallbackData('cfg:bogus:opus:123'), null)
+  assert.equal(parseConfigCallbackData('cfg:reset:x:123'), null)
   assert.equal(parseConfigCallbackData('cancel:123'), null)
   assert.equal(parseConfigCallbackData(''), null)
   assert.equal(parseConfigCallbackData(undefined), null)
@@ -2595,9 +2556,9 @@ const userTurnLine = (messageId, text = 'hi') =>
     message: { role: 'user', content: `<channel source="telegram" chat_id="1" message_id="${messageId}" user="u" ts="t">\n${text}\n</channel>` },
   })
 
-test('buildBotCommands: registers /new, /status, /compact, /subscription, /apikey and /config with descriptions', () => {
+test('buildBotCommands: registers /new, /status and /compact with descriptions', () => {
   const commands = buildBotCommands()
-  assert.deepEqual(commands.map(c => c.command), ['new', 'status', 'compact', 'subscription', 'apikey', 'config'])
+  assert.deepEqual(commands.map(c => c.command), ['new', 'status', 'compact'])
   for (const { command, description } of commands) {
     assert.match(command, /^[a-z0-9_]{1,32}$/)
     assert.ok(description.length > 0 && description.length <= 256)
