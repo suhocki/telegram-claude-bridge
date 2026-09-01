@@ -817,9 +817,7 @@ async function clearPendingContinue(chatId, key) {
   }
 }
 
-// anchorBotMessageId pins the append to the turn that actually owns that bot message (e.g. the
-// message a Listen tap is generating audio for) instead of always the latest turn, which may by
-// then belong to a different, unrelated message the user has since sent in the same chat/thread.
+// anchorBotMessageId pins the append to the turn owning that bot message, instead of always the latest turn (which may since belong to an unrelated later message)
 function trackBotMessages(key, ids, anchorBotMessageId) {
   const turnList = state.turns[String(key)]
   if (!turnList?.length || !ids?.length) return
@@ -2150,8 +2148,7 @@ async function handleCallbackQuery(cq) {
         }).catch(() => {})
         return
       }
-      // vocalizes exactly the bubble the button was attached to (its own text), not the full turn — a long,
-      // multi-chunk reply only ever carries the button on its last chunk, so that's what this reads out
+      // vocalizes only the bubble the button is on, not the full turn — a multi-chunk reply's button only ever lives on its last chunk
       const { ok, messageIds, error } = await sendVoiceReply(chatId, cq.message?.text ?? '', messageId, threadId, { alreadyPlain: true })
       if (ok) {
         trackBotMessages(key, messageIds, messageId)
