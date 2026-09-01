@@ -112,6 +112,9 @@ import {
   buildBotIdentity,
   buildTtsRequestOptions,
   buildFishTtsRequestOptions,
+  buildProsodyAnnotationPrompt,
+  stripBracketTags,
+  annotationPreservesText,
   normalizeTtsProvider,
   resolveVoiceReplyConfig,
   buildVoiceReplyRequestOptions,
@@ -1995,6 +1998,65 @@ test('normalizeTtsProvider: only the literal "elevenlabs" resolves to elevenlabs
   assert.equal(normalizeTtsProvider('fish'), 'fish')
   assert.equal(normalizeTtsProvider(undefined), 'fish')
   assert.equal(normalizeTtsProvider('ElevenLabs'), 'fish')
+})
+
+test('buildProsodyAnnotationPrompt: documents the real tag vocabulary', () => {
+  const prompt = buildProsodyAnnotationPrompt('Привет, как дела?')
+  assert.match(prompt, /\[break\]/)
+  assert.match(prompt, /\[long-break\]/)
+  assert.match(prompt, /\[emphasis\]/)
+  assert.match(prompt, /\[whispering\]/)
+  assert.match(prompt, /\[in a hurry tone\]/)
+})
+
+test('buildProsodyAnnotationPrompt: does not invent unsupported pitch/speed/question tags', () => {
+  const prompt = buildProsodyAnnotationPrompt('hello')
+  assert.doesNotMatch(prompt.toLowerCase(), /\[pitch/)
+  assert.doesNotMatch(prompt.toLowerCase(), /\[speed/)
+  assert.doesNotMatch(prompt.toLowerCase(), /\[question/)
+})
+
+test('buildProsodyAnnotationPrompt: instructs adding tags only, never editing words', () => {
+  const prompt = buildProsodyAnnotationPrompt('hello')
+  assert.match(prompt, /Only ADD tags/)
+  assert.match(prompt, /Never rewrite, translate, reorder, summarize, or remove/)
+})
+
+test('buildProsodyAnnotationPrompt: asks for output with no explanation or code fences', () => {
+  const prompt = buildProsodyAnnotationPrompt('hello')
+  assert.match(prompt, /Output ONLY the annotated text/)
+  assert.match(prompt, /no code fences/)
+})
+
+test('buildProsodyAnnotationPrompt: embeds the exact input text to annotate', () => {
+  const prompt = buildProsodyAnnotationPrompt('Привет, как дела? Это тест.')
+  assert.match(prompt, /Привет, как дела\? Это тест\./)
+})
+
+test('stripBracketTags: removes bracketed tags and leaves the words', () => {
+  assert.equal(stripBracketTags('[calm] Привет, [break] как дела?'), ' Привет,  как дела?')
+})
+
+test('stripBracketTags: text with no tags is unchanged', () => {
+  assert.equal(stripBracketTags('hello world'), 'hello world')
+})
+
+test('stripBracketTags: null/undefined becomes an empty string', () => {
+  assert.equal(stripBracketTags(undefined), '')
+  assert.equal(stripBracketTags(null), '')
+})
+
+test('annotationPreservesText: tags-only additions still match modulo whitespace', () => {
+  assert.equal(annotationPreservesText('Привет, как дела?', '[calm] Привет, [break] как дела?'), true)
+})
+
+test('annotationPreservesText: dropped or paraphrased words are rejected', () => {
+  assert.equal(annotationPreservesText('Привет, как дела?', '[calm] Привет!'), false)
+  assert.equal(annotationPreservesText('hello world', '[calm] hello there world'), false)
+})
+
+test('annotationPreservesText: differing whitespace alone does not count as a mismatch', () => {
+  assert.equal(annotationPreservesText('hello   world', '[break] hello\nworld'), true)
 })
 
 test('resolveVoiceReplyConfig: no overrides resolves to the Fish defaults', () => {
