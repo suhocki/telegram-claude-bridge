@@ -2043,18 +2043,20 @@ async function handleConfigCallbackQuery(cq, { field, value }) {
     return
   }
   if (field === 'auth') {
-    if (currentAuthMode() === value) {
-      await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'already active' }).catch(() => {})
-      return
-    }
     const unmet = AUTH_MODE_PREREQUISITES[value]()
     if (unmet) {
       await tg('answerCallbackQuery', { callback_query_id: cq.id, text: unmet, show_alert: true }).catch(() => {})
       return
     }
+    if (currentAuthMode() === value) {
+      await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'already active' }).catch(() => {})
+      return
+    }
     saveGlobalAuthMode(authModeFile, value)
-    syncAllConfigPins()
-    // every other thread's pin refreshes fire-and-forget above, but this chat's own tapped keyboard is awaited so its ✅ moves before the toast does
+    // every other thread's pin refreshes fire-and-forget, but this chat's own tapped keyboard is awaited so its ✅ moves before the toast does
+    for (const otherKey of Object.keys(state.configPinMessages)) {
+      if (otherKey !== key) syncConfigPin(otherKey)
+    }
     await syncConfigPin(key)
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'connection switched' }).catch(() => {})
     return

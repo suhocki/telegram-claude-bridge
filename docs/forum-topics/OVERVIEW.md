@@ -62,8 +62,8 @@ isolated per topic, with no exceptions:
 - The Claude session itself (`state.sessions`) — the core of the feature.
 - `/new`, `/compact`, `/status`.
 - `/voice on|off` (voice-reply preference).
-- `/subscription` / `/apikey` (auth mode).
-- `/config` (model/reasoning-effort selection).
+- Auth mode (subscription vs API key) and model/reasoning-effort selection — now the
+  pinned status message's own buttons, not slash commands.
 - The risky-command confirmation guard (a "CONFIRM" typed in one topic must never
   confirm a risky command flagged in another).
 - Scheduled check-ins.
