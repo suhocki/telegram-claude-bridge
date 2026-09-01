@@ -723,7 +723,7 @@ export function classifyConfigPinSyncError(message) {
   return 'retry'
 }
 
-export function buildConfigKeyboard(chatId, entry, authMode) {
+export function buildConfigKeyboard(chatId, entry, authMode, fishVoiceLabel = null) {
   const effectiveModel = CONFIG_MODELS.includes(entry?.model) ? entry.model : DEFAULT_CONFIG_MODEL
   const effectiveEffort = CONFIG_EFFORTS.includes(entry?.effort) ? entry.effort : DEFAULT_CONFIG_EFFORT
   const modelRow = CONFIG_MODELS.map(m => ({
@@ -742,7 +742,11 @@ export function buildConfigKeyboard(chatId, entry, authMode) {
     text: normalizedAuthMode === value ? `✅ ${label}` : label,
     callback_data: `cfg:auth:${value}:${chatId}`,
   }))
-  return { inline_keyboard: [modelRow, effortRow, authRow] }
+  const rows = [modelRow, effortRow, authRow]
+  if (fishVoiceLabel != null) {
+    rows.push([{ text: `🎙️ Voice: ${fishVoiceLabel}`, callback_data: 'fishvoices:1' }])
+  }
+  return { inline_keyboard: rows }
 }
 
 // Text alone can't detect a change-only-the-keyboard tap now that the pin's text is just the cost.
@@ -820,6 +824,84 @@ export const DEFAULT_TTS_VOICE_SETTINGS = {
 
 export const DEFAULT_FISH_TTS_VOICE_ID = '0a690dbeb3984a9f88cd39353880775f'
 export const DEFAULT_FISH_TTS_MODEL_ID = 's2.1-pro-free'
+export const DEFAULT_FISH_TTS_VOICE_TITLE = 'Меллстрой'
+
+export const FISH_VOICES_PAGE_SIZE = 8
+
+// Always RU + task_count (real usage popularity), matching this repo's RU-only TTS focus — no language switcher in scope.
+export function buildFishVoiceListUrl({ pageNumber = 1, pageSize = FISH_VOICES_PAGE_SIZE } = {}) {
+  const params = new URLSearchParams({
+    language: 'ru',
+    sort_by: 'task_count',
+    page_size: String(pageSize),
+    page_number: String(pageNumber),
+  })
+  return `https://api.fish.audio/model?${params.toString()}`
+}
+
+// Voice-conversion ("svc") entries aren't usable as a TTS reference_id, so filter to "tts" here rather than trust the language filter alone.
+export function parseFishVoiceListResponse(data) {
+  const items = Array.isArray(data?.items) ? data.items : []
+  return items.filter(item => item?.type === 'tts').map(item => ({ id: item._id, title: item.title }))
+}
+
+export function resolveActiveFishVoiceId(globalFishVoice, defaultVoiceId) {
+  return globalFishVoice?.id ?? defaultVoiceId
+}
+
+export function resolveFishVoiceLabel(globalFishVoice, defaultVoiceId = DEFAULT_FISH_TTS_VOICE_ID) {
+  if (globalFishVoice?.title) return globalFishVoice.title
+  return defaultVoiceId === DEFAULT_FISH_TTS_VOICE_ID ? `${DEFAULT_FISH_TTS_VOICE_TITLE} (default)` : `${defaultVoiceId} (default)`
+}
+
+const FISH_VOICE_CALLBACK_RE = /^fishvoice:([0-9a-f]{32})$/
+const FISH_VOICES_PAGE_CALLBACK_RE = /^fishvoices:(\d+)$/
+
+export function parseFishVoiceCallbackData(data) {
+  const m = String(data ?? '').match(FISH_VOICE_CALLBACK_RE)
+  return m ? { id: m[1] } : null
+}
+
+export function parseFishVoicesPageCallbackData(data) {
+  const m = String(data ?? '').match(FISH_VOICES_PAGE_CALLBACK_RE)
+  return m ? { pageNumber: Number(m[1]) } : null
+}
+
+// One voice per button row: titles are often Cyrillic and vary widely in length, so packing 2+ per row risks unreadable truncation.
+export function buildFishVoicesKeyboard({ voices, pageNumber, activeVoiceId, hasNext }) {
+  const voiceRows = (voices ?? []).map(v => [{
+    text: v.id === activeVoiceId ? `✅ ${v.title}` : v.title,
+    callback_data: `fishvoice:${v.id}`,
+  }])
+  const navRow = []
+  if (pageNumber > 1) navRow.push({ text: '⬅️ Prev', callback_data: `fishvoices:${pageNumber - 1}` })
+  if (hasNext) navRow.push({ text: 'Next ➡️', callback_data: `fishvoices:${pageNumber + 1}` })
+  return { inline_keyboard: navRow.length ? [...voiceRows, navRow] : voiceRows }
+}
+
+// Toggles the ✅ prefix in place from the tapped keyboard itself, so picking a voice doesn't need a re-fetch just to redraw checkmarks.
+export function markSelectedFishVoiceButton(keyboard, selectedId) {
+  return {
+    inline_keyboard: (keyboard?.inline_keyboard ?? []).map(row =>
+      row.map(btn => {
+        const parsed = parseFishVoiceCallbackData(btn.callback_data)
+        if (!parsed) return btn
+        const bareText = btn.text.replace(/^✅ /, '')
+        return { ...btn, text: parsed.id === selectedId ? `✅ ${bareText}` : bareText }
+      })
+    ),
+  }
+}
+
+// callback_data only carries the id, not the title, so recover it from the button text rendered moments ago.
+export function extractCallbackButtonTitle(keyboard, callbackData) {
+  for (const row of keyboard?.inline_keyboard ?? []) {
+    for (const btn of row) {
+      if (btn.callback_data === callbackData) return btn.text.replace(/^✅ /, '')
+    }
+  }
+  return null
+}
 
 export function buildTtsRequestOptions(text, { voiceId, apiKey, modelId, voiceSettings } = {}) {
   return {

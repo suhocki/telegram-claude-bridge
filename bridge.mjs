@@ -105,6 +105,16 @@ import {
   buildProsodyAnnotationPrompt,
   annotationPreservesText,
   buildOutboxFilename,
+  buildFishVoiceListUrl,
+  parseFishVoiceListResponse,
+  resolveFishVoiceLabel,
+  resolveActiveFishVoiceId,
+  parseFishVoiceCallbackData,
+  parseFishVoicesPageCallbackData,
+  buildFishVoicesKeyboard,
+  markSelectedFishVoiceButton,
+  extractCallbackButtonTitle,
+  FISH_VOICES_PAGE_SIZE,
   isGroupChatType,
   resolveGroupPolicy,
   isCallbackQueryAuthorized,
@@ -157,6 +167,7 @@ import {
   buildJobCompletionCheckin,
 } from './jobs.mjs'
 import { loadGlobalAuthMode, saveGlobalAuthMode, seedGlobalAuthModeIfMissing, collectLegacyAuthModeValues } from './auth-mode.mjs'
+import { loadGlobalFishVoice, saveGlobalFishVoice } from './fish-voice.mjs'
 import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml } from './markdown-html.mjs'
 import {
   DEFAULT_WORKING_STATUS,
@@ -214,6 +225,8 @@ const jobsDir = resolveJobsDir(stateDir, botSlug)
 mkdirSync(jobsDir, { recursive: true })
 // Deliberately NOT namespaced by botSlug: switching auth mode anywhere should apply to every bot sharing this stateDir.
 const authModeFile = path.join(stateDir, 'auth-mode.txt')
+// Same cross-bot-global scope as authModeFile: picking a Fish Audio voice anywhere applies everywhere.
+const fishVoiceFile = path.join(stateDir, 'fish-voice.json')
 // Resolved against the bridge module's own directory, not cwd/configPath, so every config shares one file.
 const workingPhrasesFile = path.join(path.dirname(fileURLToPath(import.meta.url)), 'working-phrases.json')
 // Undocumented as a normal setting: lets the test suite point a scratch bridge at a fake Telegram server.
@@ -307,6 +320,10 @@ function currentAuthMode() {
   return loadGlobalAuthMode(authModeFile)
 }
 
+function currentFishVoice() {
+  return loadGlobalFishVoice(fishVoiceFile)
+}
+
 function currentModelConfig(key) {
   return getModelConfig(state.modelConfig, key)
 }
@@ -329,7 +346,8 @@ function forgetConfigPin(key) {
 async function syncConfigPinNow(key) {
   const { chatId, threadId } = parseThreadKey(key)
   const text = buildConfigPinText(normalizeSession(state.sessions[key]))
-  const keyboard = buildConfigKeyboard(chatId, currentModelConfig(key), currentAuthMode())
+  const fishVoiceLabel = voiceReplyConfig.provider === 'fish' ? resolveFishVoiceLabel(currentFishVoice(), voiceReplyConfig.voiceId) : null
+  const keyboard = buildConfigKeyboard(chatId, currentModelConfig(key), currentAuthMode(), fishVoiceLabel)
   const renderKey = buildConfigPinRenderKey(text, keyboard)
   const entry = state.configPinMessages[key]
   let messageId = entry?.id ?? null
@@ -379,6 +397,18 @@ function syncConfigPin(key) {
 
 function syncAllConfigPins() {
   for (const key of Object.keys(state.configPinMessages)) syncConfigPin(key)
+}
+
+// Every other thread's pin refreshes fire-and-forget, but the tapping chat's own pin is awaited so its ✅/row lands before the toast does.
+function syncOwnPinThenBroadcastRest(key) {
+  for (const otherKey of Object.keys(state.configPinMessages)) {
+    if (otherKey !== key) syncConfigPin(otherKey)
+  }
+  return syncConfigPin(key)
+}
+
+function isConfigPinMessage(key, messageId) {
+  return state.configPinMessages[key]?.id === messageId
 }
 
 // Reads working-phrases.json fresh each call; never throws, since it runs before handleMessage's own try/catch.
@@ -1417,7 +1447,9 @@ async function sendVoiceReply(chatId, text, replyToMessageId, threadId, { alread
     return { ok: false, messageIds: [], error: 'no TTS api key configured' }
   }
   try {
-    const { url, headers, body } = buildVoiceReplyRequestOptions(speechText, voiceReplyConfig, apiKey)
+    const globalFishVoice = voiceReplyConfig.provider === 'fish' ? currentFishVoice() : null
+    const effectiveVoiceReplyConfig = { ...voiceReplyConfig, voiceId: resolveActiveFishVoiceId(globalFishVoice, voiceReplyConfig.voiceId) }
+    const { url, headers, body } = buildVoiceReplyRequestOptions(speechText, effectiveVoiceReplyConfig, apiKey)
     const res = await fetchWithTimeout(fetch, url, { method: 'POST', headers, body }, TTS_REQUEST_TIMEOUT_MS)
     if (!res.ok) throw new Error(`TTS request failed: HTTP ${res.status}`)
     const buf = Buffer.from(await res.arrayBuffer())
@@ -1439,6 +1471,19 @@ async function sendVoiceReply(chatId, text, replyToMessageId, threadId, { alread
   } catch (e) {
     log('sendVoiceReply failed', e.message)
     return { ok: false, messageIds: [], error: e.message }
+  }
+}
+
+// Uses the same Fish Audio API key as sendVoiceReply's fish branch — this picker is Fish-only (gated at call sites on voiceReplyConfig.provider === 'fish'), never invoked for elevenlabs.
+async function fetchFishVoicesPage(pageNumber) {
+  const apiKey = readFileSync(expandHome(voiceReplyConfig.apiKeyPath, homedir()), 'utf8').trim()
+  const url = buildFishVoiceListUrl({ pageNumber, pageSize: FISH_VOICES_PAGE_SIZE })
+  const res = await fetchWithTimeout(fetch, url, { headers: { Authorization: `Bearer ${apiKey}` } }, TTS_REQUEST_TIMEOUT_MS)
+  if (!res.ok) throw new Error(`fish voice list request failed: HTTP ${res.status}`)
+  const data = await res.json()
+  return {
+    voices: parseFishVoiceListResponse(data),
+    hasNext: Boolean(data.has_more),
   }
 }
 
@@ -2121,11 +2166,7 @@ async function handleConfigCallbackQuery(cq, { field, value }) {
       return
     }
     saveGlobalAuthMode(authModeFile, value)
-    // every other thread's pin refreshes fire-and-forget, but this chat's own tapped keyboard is awaited so its ✅ moves before the toast does
-    for (const otherKey of Object.keys(state.configPinMessages)) {
-      if (otherKey !== key) syncConfigPin(otherKey)
-    }
-    await syncConfigPin(key)
+    await syncOwnPinThenBroadcastRest(key)
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'connection switched' }).catch(() => {})
     return
   }
@@ -2135,11 +2176,95 @@ async function handleConfigCallbackQuery(cq, { field, value }) {
   await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'updated' }).catch(() => {})
 }
 
+// Both handlers below are gated on the pin row never rendering for a non-fish provider, but that's a UI omission, not enforcement.
+function isFishVoicePickerAvailable() {
+  return voiceReplyConfig.provider === 'fish'
+}
+
+async function handleFishVoicesPageCallbackQuery(cq, { pageNumber }) {
+  if (!isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig)) {
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'not authorized', show_alert: true }).catch(() => {})
+    return
+  }
+  if (!isFishVoicePickerAvailable()) {
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'voice picker unavailable', show_alert: true }).catch(() => {})
+    return
+  }
+  const chatId = String(cq.message?.chat?.id ?? '')
+  const key = threadKey(chatId, cq.message)
+  const threadId = resolveThreadId(cq.message)
+  // Captured before the network await below, not after: a concurrent pin resync (e.g. an /auth tap on the same chat) could otherwise recreate the pin under a new message id while this call is in flight, misclassifying a genuine pin tap as a stale one.
+  const isPinTap = isConfigPinMessage(key, cq.message?.message_id)
+  let voices, hasNext
+  try {
+    ;({ voices, hasNext } = await fetchFishVoicesPage(pageNumber))
+  } catch (e) {
+    log('fish voice list fetch failed', e.message)
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'failed to load voices', show_alert: true }).catch(() => {})
+    return
+  }
+  const activeVoiceId = resolveActiveFishVoiceId(currentFishVoice(), voiceReplyConfig.voiceId)
+  const keyboard = buildFishVoicesKeyboard({ voices, pageNumber, activeVoiceId, hasNext })
+  const text = voices.length ? 'Choose a voice:' : 'No voices matched on this page — try Prev/Next.'
+  let renderFailed = false
+  try {
+    if (isPinTap) {
+      await tg('sendMessage', { chat_id: chatId, text, reply_markup: keyboard, ...threadIdParam(threadId) })
+    } else {
+      await tg('editMessageText', { chat_id: chatId, message_id: cq.message?.message_id, text, reply_markup: keyboard })
+    }
+  } catch (e) {
+    log('failed to render fish voice list', key, e.message)
+    renderFailed = true
+  }
+  const answerParams = renderFailed
+    ? { callback_query_id: cq.id, text: 'failed to update voice list', show_alert: true }
+    : { callback_query_id: cq.id }
+  await tg('answerCallbackQuery', answerParams).catch(() => {})
+}
+
+// Trusts the tapped id was one this same picker rendered moments ago (same trust model as cancel/continue/join taps elsewhere).
+async function handleFishVoicePickCallbackQuery(cq, { id }) {
+  if (!isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig)) {
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'not authorized', show_alert: true }).catch(() => {})
+    return
+  }
+  if (!isFishVoicePickerAvailable()) {
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'voice picker unavailable', show_alert: true }).catch(() => {})
+    return
+  }
+  const chatId = String(cq.message?.chat?.id ?? '')
+  const key = threadKey(chatId, cq.message)
+  const title = extractCallbackButtonTitle(cq.message?.reply_markup, cq.data) ?? id
+  saveGlobalFishVoice(fishVoiceFile, { id, title })
+  const updatedKeyboard = markSelectedFishVoiceButton(cq.message?.reply_markup, id)
+  let refreshFailed = false
+  await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: cq.message?.message_id, reply_markup: updatedKeyboard }).catch(e => {
+    log('failed to refresh fish voice list selection', key, e.message)
+    refreshFailed = true
+  })
+  await syncOwnPinThenBroadcastRest(key)
+  const answerText = refreshFailed ? `${title} (saved, but the list didn't refresh)` : title
+  await tg('answerCallbackQuery', { callback_query_id: cq.id, text: answerText, show_alert: refreshFailed }).catch(() => {})
+}
+
 // cancel/join interrupt the run at chatQueue's head directly; continue starts a new run, so it's queued like any other message
 async function handleCallbackQuery(cq) {
   const configParsed = parseConfigCallbackData(cq.data)
   if (configParsed) {
     await handleConfigCallbackQuery(cq, configParsed)
+    return
+  }
+
+  const fishVoiceParsed = parseFishVoiceCallbackData(cq.data)
+  if (fishVoiceParsed) {
+    await handleFishVoicePickCallbackQuery(cq, fishVoiceParsed)
+    return
+  }
+
+  const fishVoicesPageParsed = parseFishVoicesPageCallbackData(cq.data)
+  if (fishVoicesPageParsed) {
+    await handleFishVoicesPageCallbackQuery(cq, fishVoicesPageParsed)
     return
   }
 
