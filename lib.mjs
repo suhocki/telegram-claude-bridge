@@ -858,6 +858,48 @@ export function normalizeTtsProvider(raw) {
   return raw === 'elevenlabs' ? 'elevenlabs' : 'fish'
 }
 
+// Only the subset of Fish Audio's documented [bracket] tags we want the annotator biasing toward, not its full open-vocabulary emotion list.
+const FISH_PROSODY_TAGS_REFERENCE = `Allowed tags (Fish Audio square-bracket prosody/emotion markup):
+- [break] — brief pause; use at natural clause/comma boundaries and sentence ends
+- [long-break] — extended pause, for a bigger beat between ideas
+- [emphasis] — stress the word or phrase that follows
+- [whispering], [soft tone], [in a hurry tone], [shouting], [screaming] — delivery/tone
+- Open-vocabulary calm/emotion tags when the content clearly calls for them, e.g. [calm], [happy], [excited], [surprised], [nervous], [confident], [determined], or a short free-form phrase like [warm and reassuring]`
+
+export function buildProsodyAnnotationPrompt(text) {
+  return [
+    'You are annotating text-to-speech input with Fish Audio prosody tags so it sounds natural instead of monotonic.',
+    'Insert [bracket] tags directly into the text to control pacing and delivery.',
+    '',
+    FISH_PROSODY_TAGS_REFERENCE,
+    '',
+    'Rules:',
+    '- Only ADD tags. Never rewrite, translate, reorder, summarize, or remove a single word of the original text.',
+    '- Bias toward [break] at natural clause and comma boundaries and at sentence ends — that is the main fix needed here.',
+    '- Use [emphasis] only on genuinely stressed words.',
+    '- Default to a calm, neutral delivery; only add a tone/emotion tag when the text\'s own content clearly reads as excited, urgent, etc.',
+    '- Never invent tags outside the list above — no pitch-contour, no speed-percentage, no question-intonation tags exist in this system.',
+    '- Use at most about 3 tags per sentence.',
+    '- Output ONLY the annotated text. No explanation, no preamble, no code fences.',
+    '',
+    'Text to annotate:',
+    text,
+  ].join('\n')
+}
+
+export function stripBracketTags(text) {
+  return String(text ?? '').replace(/\[[^\]\n]*\]/g, '')
+}
+
+function normalizeForTagComparison(text) {
+  return String(text ?? '').replace(/\s+/g, ' ').trim()
+}
+
+// Safety net: an LLM told to "only add tags" can still paraphrase or drop words, so verify the stripped text still matches modulo whitespace before trusting it.
+export function annotationPreservesText(original, annotated) {
+  return normalizeForTagComparison(stripBracketTags(annotated)) === normalizeForTagComparison(original)
+}
+
 const VOICE_REPLY_PROVIDERS = {
   fish: {
     apiKeyPath: '~/.config/tts/fish.key',

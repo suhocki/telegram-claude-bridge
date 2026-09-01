@@ -102,6 +102,8 @@ import {
   truncateForSpeech,
   resolveVoiceReplyConfig,
   buildVoiceReplyRequestOptions,
+  buildProsodyAnnotationPrompt,
+  annotationPreservesText,
   buildOutboxFilename,
   isGroupChatType,
   resolveGroupPolicy,
@@ -226,6 +228,8 @@ const FILE_TRANSFER_TIMEOUT_MS = 60000
 // mid-upload, which used to cause a duplicate send (see sendAttachmentGroup).
 const MEDIA_GROUP_PER_FILE_TIMEOUT_MS = 15000
 const TTS_REQUEST_TIMEOUT_MS = 30000
+// Short by design: a preprocessing nicety, not a conversation turn — must never delay a voice reply.
+const PROSODY_ANNOTATION_TIMEOUT_MS = 6000
 // Telegram rate-limits editMessageText to roughly 1/sec per chat; this stays safely under
 // that while still feeling "live" for the growing-text placeholder preview.
 const STREAM_EDIT_INTERVAL_MS = 1300
@@ -1337,10 +1341,74 @@ async function transcribeVoiceLogged(filePath) {
   return transcription
 }
 
+// Single short-lived `claude -p` call, deliberately not runClaude — no session/streaming machinery needed for a one-shot tagging pass. Never rejects; resolves to null on any failure/timeout/bad-output.
+async function annotateProsody(text, authMode) {
+  const prompt = buildProsodyAnnotationPrompt(text)
+  return new Promise(resolve => {
+    let settled = false
+    const finish = value => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    // detached, same as runClaude/runSpawn, so a timeout SIGKILLs the whole process group rather than leaving a reparented tool-call subprocess running
+    const child = spawn(
+      'claude',
+      ['-p', prompt, '--model', 'haiku', '--output-format', 'json', '--permission-mode', 'bypassPermissions'],
+      { cwd, env: buildChildEnv(process.env, authMode), detached: true }
+    )
+    let out = ''
+    let err = ''
+    const timer = setTimeout(() => {
+      log('prosody annotation timed out')
+      try {
+        process.kill(-child.pid, 'SIGKILL')
+      } catch (e) {
+        log('prosody annotation: kill failed', e.message)
+      }
+      finish(null)
+    }, PROSODY_ANNOTATION_TIMEOUT_MS)
+    child.stdout.on('data', d => (out += d))
+    child.stderr.on('data', d => (err += d))
+    child.on('error', e => {
+      log('prosody annotation spawn failed', e.message)
+      finish(null)
+    })
+    child.on('close', code => {
+      if (code !== 0) {
+        log('prosody annotation exited', code, err.slice(0, 500))
+        return finish(null)
+      }
+      try {
+        const parsed = JSON.parse(out)
+        finish(typeof parsed.result === 'string' ? parsed.result.trim() : null)
+      } catch (e) {
+        log('prosody annotation: failed to parse result', e.message)
+        finish(null)
+      }
+    })
+  })
+}
+
+// Fish's S2-family models (incl. the s2.1-pro-free default) read [bracket] tags as markup; older/other model ids may just speak them literally.
+function supportsFishProsodyTags(voiceReplyConfig) {
+  return voiceReplyConfig.provider === 'fish' && String(voiceReplyConfig.modelId ?? '').startsWith('s2')
+}
+
 async function sendVoiceReply(chatId, text, replyToMessageId, threadId, { alreadyPlain = false } = {}) {
   // alreadyPlain: the Listen button passes Telegram's own already-rendered message.text, which must skip the markdown pass buildSpeechText applies for raw model output
-  const speechText = truncateForSpeech(alreadyPlain ? String(text ?? '').trim() : buildSpeechText(text), voiceReplyConfig.maxTtsChars)
+  // Annotated after truncateForSpeech (below), not before: truncating an already-tagged string risks slicing a tag in half and reading a stray literal "[" aloud.
+  let speechText = truncateForSpeech(alreadyPlain ? String(text ?? '').trim() : buildSpeechText(text), voiceReplyConfig.maxTtsChars)
   if (!speechText) return { ok: false, messageIds: [], error: 'nothing to say' }
+  if (supportsFishProsodyTags(voiceReplyConfig)) {
+    const annotated = await annotateProsody(speechText, currentAuthMode())
+    if (annotated && annotationPreservesText(speechText, annotated)) {
+      speechText = annotated
+    } else if (annotated) {
+      log('prosody annotation discarded: text changed after stripping tags')
+    }
+  }
   let apiKey
   try {
     apiKey = readFileSync(expandHome(voiceReplyConfig.apiKeyPath, homedir()), 'utf8').trim()
