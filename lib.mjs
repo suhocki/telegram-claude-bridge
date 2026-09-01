@@ -858,9 +858,7 @@ export function normalizeTtsProvider(raw) {
   return raw === 'elevenlabs' ? 'elevenlabs' : 'fish'
 }
 
-// Fish Audio S2-family models (incl. s2.1-pro-free) read free-form [bracket] tags inline —
-// see docs.fish.audio/api-reference/emotion-reference. Only paste the subset we actually want
-// the annotator to use; the full open-vocabulary emotion list would invite over-tagging.
+// Only the subset of Fish Audio's documented [bracket] tags we want the annotator biasing toward, not its full open-vocabulary emotion list.
 const FISH_PROSODY_TAGS_REFERENCE = `Allowed tags (Fish Audio square-bracket prosody/emotion markup):
 - [break] — brief pause; use at natural clause/comma boundaries and sentence ends
 - [long-break] — extended pause, for a bigger beat between ideas
@@ -897,9 +895,7 @@ function normalizeForTagComparison(text) {
   return String(text ?? '').replace(/\s+/g, ' ').trim()
 }
 
-// Safety net for the annotation step: an LLM asked to "only add tags" can still paraphrase or
-// drop words. Compare what's left after stripping tags against the original, modulo whitespace,
-// so a mismatch discards the annotation instead of shipping altered speech.
+// Safety net: an LLM told to "only add tags" can still paraphrase or drop words, so verify the stripped text still matches modulo whitespace before trusting it.
 export function annotationPreservesText(original, annotated) {
   return normalizeForTagComparison(stripBracketTags(annotated)) === normalizeForTagComparison(original)
 }
