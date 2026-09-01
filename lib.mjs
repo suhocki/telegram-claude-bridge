@@ -838,6 +838,9 @@ export const DEFAULT_TTS_VOICE_SETTINGS = {
   use_speaker_boost: true,
 }
 
+export const DEFAULT_FISH_TTS_VOICE_ID = '0a690dbeb3984a9f88cd39353880775f'
+export const DEFAULT_FISH_TTS_MODEL_ID = 's2.1-pro-free'
+
 export function buildTtsRequestOptions(text, { voiceId, apiKey, modelId, voiceSettings } = {}) {
   return {
     url: `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`,
@@ -852,6 +855,63 @@ export function buildTtsRequestOptions(text, { voiceId, apiKey, modelId, voiceSe
       voice_settings: voiceSettings ?? DEFAULT_TTS_VOICE_SETTINGS,
     }),
   }
+}
+
+export function buildFishTtsRequestOptions(text, { voiceId, apiKey, modelId } = {}) {
+  return {
+    url: 'https://api.fish.audio/v1/tts',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${apiKey}`,
+      model: modelId ?? DEFAULT_FISH_TTS_MODEL_ID,
+    },
+    body: JSON.stringify({
+      text,
+      reference_id: voiceId ?? DEFAULT_FISH_TTS_VOICE_ID,
+      format: 'mp3',
+      mp3_bitrate: 128,
+    }),
+  }
+}
+
+export function normalizeTtsProvider(raw) {
+  return raw === 'elevenlabs' ? 'elevenlabs' : 'fish'
+}
+
+const VOICE_REPLY_PROVIDERS = {
+  fish: {
+    apiKeyPath: '~/.config/tts/fish.key',
+    voiceId: DEFAULT_FISH_TTS_VOICE_ID,
+    modelId: DEFAULT_FISH_TTS_MODEL_ID,
+    buildRequestOptions: buildFishTtsRequestOptions,
+  },
+  elevenlabs: {
+    apiKeyPath: '~/.config/tts/elevenlabs.key',
+    voiceId: DEFAULT_TTS_VOICE_ID,
+    modelId: DEFAULT_TTS_MODEL_ID,
+    buildRequestOptions: buildTtsRequestOptions,
+  },
+}
+
+export function resolveVoiceReplyConfig(overrides) {
+  const safeOverrides = overrides ?? {}
+  const provider = normalizeTtsProvider(safeOverrides.provider)
+  const { buildRequestOptions, ...defaults } = VOICE_REPLY_PROVIDERS[provider]
+  return {
+    maxTtsChars: 4000,
+    ...defaults,
+    ...safeOverrides,
+    provider,
+  }
+}
+
+export function buildVoiceReplyRequestOptions(text, voiceReplyConfig, apiKey) {
+  return VOICE_REPLY_PROVIDERS[voiceReplyConfig.provider].buildRequestOptions(text, {
+    voiceId: voiceReplyConfig.voiceId,
+    apiKey,
+    modelId: voiceReplyConfig.modelId,
+    voiceSettings: voiceReplyConfig.voiceSettings,
+  })
 }
 
 export function buildOutboxFilename(timestampMs, chatId) {
@@ -1187,6 +1247,12 @@ export function validateBridgeConfig(config, { stateFilePath, existingStateFileP
   }
   if (config.apiBaseUrl != null && (typeof config.apiBaseUrl !== 'string' || !config.apiBaseUrl.trim())) {
     return '"apiBaseUrl" must be a non-empty string when given'
+  }
+  if (config.voiceReply != null && typeof config.voiceReply === 'object' && config.voiceReply.provider == null) {
+    const ambiguousField = ['apiKeyPath', 'voiceId', 'modelId', 'voiceSettings'].find(field => config.voiceReply[field] != null)
+    if (ambiguousField) {
+      return `"voiceReply" sets "${ambiguousField}" but no "provider" — add "provider": "fish" or "elevenlabs" so it's unambiguous which service the other voiceReply fields belong to`
+    }
   }
   return null
 }

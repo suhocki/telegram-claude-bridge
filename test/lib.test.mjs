@@ -112,10 +112,17 @@ import {
   handleUnrecognizedCallback,
   buildBotIdentity,
   buildTtsRequestOptions,
+  buildFishTtsRequestOptions,
+  normalizeTtsProvider,
+  resolveVoiceReplyConfig,
+  buildVoiceReplyRequestOptions,
   buildOutboxFilename,
   DEFAULT_WHISPER_LANGUAGE,
   DEFAULT_TTS_MODEL_ID,
+  DEFAULT_TTS_VOICE_ID,
   DEFAULT_TTS_VOICE_SETTINGS,
+  DEFAULT_FISH_TTS_VOICE_ID,
+  DEFAULT_FISH_TTS_MODEL_ID,
   createTelegramClient,
   fetchWithTimeout,
   FetchTimeoutError,
@@ -1948,6 +1955,87 @@ test('buildTtsRequestOptions: honors an explicit modelId and voiceSettings overr
   const parsed = JSON.parse(body)
   assert.equal(parsed.model_id, 'm2')
   assert.deepEqual(parsed.voice_settings, settings)
+})
+
+test('buildFishTtsRequestOptions: builds the Fish Audio request shape', () => {
+  const { url, headers, body } = buildFishTtsRequestOptions('hello', { voiceId: 'v1', apiKey: 'key123' })
+  assert.equal(url, 'https://api.fish.audio/v1/tts')
+  assert.equal(headers.authorization, 'Bearer key123')
+  assert.equal(headers.model, DEFAULT_FISH_TTS_MODEL_ID)
+  const parsed = JSON.parse(body)
+  assert.equal(parsed.text, 'hello')
+  assert.equal(parsed.reference_id, 'v1')
+  assert.equal(parsed.format, 'mp3')
+  assert.equal(parsed.mp3_bitrate, 128)
+})
+
+test('buildFishTtsRequestOptions: falls back to default voiceId and modelId', () => {
+  const { headers, body } = buildFishTtsRequestOptions('hi', { apiKey: 'k' })
+  assert.equal(headers.model, DEFAULT_FISH_TTS_MODEL_ID)
+  const parsed = JSON.parse(body)
+  assert.equal(parsed.reference_id, DEFAULT_FISH_TTS_VOICE_ID)
+})
+
+test('buildFishTtsRequestOptions: honors an explicit modelId override', () => {
+  const { headers } = buildFishTtsRequestOptions('hi', { voiceId: 'v1', apiKey: 'k', modelId: 's1' })
+  assert.equal(headers.model, 's1')
+})
+
+test('normalizeTtsProvider: only the literal "elevenlabs" resolves to elevenlabs, everything else is fish', () => {
+  assert.equal(normalizeTtsProvider('elevenlabs'), 'elevenlabs')
+  assert.equal(normalizeTtsProvider('fish'), 'fish')
+  assert.equal(normalizeTtsProvider(undefined), 'fish')
+  assert.equal(normalizeTtsProvider('ElevenLabs'), 'fish')
+})
+
+test('resolveVoiceReplyConfig: no overrides resolves to the Fish defaults', () => {
+  const resolved = resolveVoiceReplyConfig()
+  assert.equal(resolved.provider, 'fish')
+  assert.equal(resolved.apiKeyPath, '~/.config/tts/fish.key')
+  assert.equal(resolved.voiceId, DEFAULT_FISH_TTS_VOICE_ID)
+  assert.equal(resolved.modelId, DEFAULT_FISH_TTS_MODEL_ID)
+  assert.equal(resolved.maxTtsChars, 4000)
+})
+
+test('resolveVoiceReplyConfig: switching provider to elevenlabs alone also switches apiKeyPath/voiceId/modelId defaults', () => {
+  const resolved = resolveVoiceReplyConfig({ provider: 'elevenlabs' })
+  assert.equal(resolved.apiKeyPath, '~/.config/tts/elevenlabs.key')
+  assert.equal(resolved.voiceId, DEFAULT_TTS_VOICE_ID)
+  assert.equal(resolved.modelId, DEFAULT_TTS_MODEL_ID)
+})
+
+test('resolveVoiceReplyConfig: explicit fields still override the provider defaults', () => {
+  const resolved = resolveVoiceReplyConfig({ provider: 'elevenlabs', voiceId: 'custom-voice', maxTtsChars: 100 })
+  assert.equal(resolved.voiceId, 'custom-voice')
+  assert.equal(resolved.modelId, DEFAULT_TTS_MODEL_ID)
+  assert.equal(resolved.maxTtsChars, 100)
+})
+
+test('resolveVoiceReplyConfig: a typo\'d provider does not leave mismatched fish/elevenlabs defaults', () => {
+  const resolved = resolveVoiceReplyConfig({ provider: 'ElevenLabs' })
+  assert.equal(resolved.provider, 'fish')
+  assert.equal(resolved.apiKeyPath, '~/.config/tts/fish.key')
+  assert.equal(resolved.voiceId, DEFAULT_FISH_TTS_VOICE_ID)
+})
+
+test('resolveVoiceReplyConfig: null overrides (e.g. an explicit "voiceReply": null in config) resolve to the Fish defaults instead of throwing', () => {
+  const resolved = resolveVoiceReplyConfig(null)
+  assert.equal(resolved.provider, 'fish')
+  assert.equal(resolved.apiKeyPath, '~/.config/tts/fish.key')
+})
+
+test('buildVoiceReplyRequestOptions: routes to the Fish builder for a fish-resolved config', () => {
+  const resolved = resolveVoiceReplyConfig()
+  const { url, body } = buildVoiceReplyRequestOptions('hi', resolved, 'key123')
+  assert.equal(url, 'https://api.fish.audio/v1/tts')
+  assert.equal(JSON.parse(body).reference_id, DEFAULT_FISH_TTS_VOICE_ID)
+})
+
+test('buildVoiceReplyRequestOptions: routes to the ElevenLabs builder and threads voiceSettings for an elevenlabs-resolved config', () => {
+  const resolved = resolveVoiceReplyConfig({ provider: 'elevenlabs', voiceSettings: { stability: 1 } })
+  const { url, body } = buildVoiceReplyRequestOptions('hi', resolved, 'key123')
+  assert.equal(url, `https://api.elevenlabs.io/v1/text-to-speech/${DEFAULT_TTS_VOICE_ID}?output_format=mp3_44100_128`)
+  assert.deepEqual(JSON.parse(body).voice_settings, { stability: 1 })
 })
 
 test('buildOutboxFilename: combines timestamp and sanitized chat id with an mp3 extension', () => {
