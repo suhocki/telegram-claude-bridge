@@ -65,7 +65,6 @@ import {
   buildSetMessageReactionParams,
   RECEIPT_REACTION,
   ERROR_REACTION,
-  AUTH_SWITCH_REACTION,
   buildChildEnv,
   expandHome,
   DEFAULT_WHISPER_BIN,
@@ -82,12 +81,11 @@ import {
   parseCallbackData,
   getModelConfig,
   setModelConfigField,
-  resetModelConfig,
   isValidModelConfigValue,
   buildModelConfigArgs,
-  buildConfigMessageParams,
-  buildConfigEditParams,
   buildConfigPinText,
+  buildConfigKeyboard,
+  buildConfigPinRenderKey,
   classifyConfigPinSyncError,
   parseConfigCallbackData,
   buildContinuePrompt,
@@ -313,34 +311,36 @@ function saveState(state) {
   atomicWriteFileSync(stateFile, JSON.stringify(state, null, 2))
 }
 
-// threadKey -> last text written to that thread's pinned config message, purely to skip a no-op editMessageText call.
-const lastRenderedConfigPinText = new Map()
+// threadKey -> last text+keyboard rendered onto that thread's pinned config message, purely to skip a no-op editMessageText call.
+const lastConfigPinRenderKey = new Map()
 // Own queue, not chatQueue: chatQueue is already holding the in-flight handleMessage/handleConfigCallbackQuery task that triggers a sync, so reusing it here would enqueue a key behind itself and deadlock (mirrors jobStatusQueue's separation from chatQueue).
 const configPinQueue = createKeyedQueue()
 
 function forgetConfigPin(key) {
   delete state.configPinMessages[key]
-  lastRenderedConfigPinText.delete(key)
+  lastConfigPinRenderKey.delete(key)
   saveState(state)
 }
 
 async function syncConfigPinNow(key) {
-  const text = buildConfigPinText(normalizeSession(state.sessions[key]), currentAuthMode(), currentModelConfig(key))
+  const { chatId, threadId } = parseThreadKey(key)
+  const text = buildConfigPinText(normalizeSession(state.sessions[key]))
+  const keyboard = buildConfigKeyboard(chatId, currentModelConfig(key), currentAuthMode())
+  const renderKey = buildConfigPinRenderKey(text, keyboard)
   const entry = state.configPinMessages[key]
   let messageId = entry?.id ?? null
-  const { chatId, threadId } = parseThreadKey(key)
 
-  if (lastRenderedConfigPinText.get(key) !== text) {
+  if (lastConfigPinRenderKey.get(key) !== renderKey) {
     try {
       if (messageId != null) {
-        await tg('editMessageText', { chat_id: chatId, message_id: messageId, text })
+        await tg('editMessageText', { chat_id: chatId, message_id: messageId, text, reply_markup: keyboard })
       } else {
-        const sent = await tg('sendMessage', { chat_id: chatId, text, ...threadIdParam(threadId) })
+        const sent = await tg('sendMessage', { chat_id: chatId, text, reply_markup: keyboard, ...threadIdParam(threadId) })
         messageId = sent.message_id
         state.configPinMessages[key] = { id: messageId, pinned: false }
         saveState(state)
       }
-      lastRenderedConfigPinText.set(key, text)
+      lastConfigPinRenderKey.set(key, renderKey)
     } catch (e) {
       const outcome = classifyConfigPinSyncError(e.message)
       if (outcome !== 'unmodified') {
@@ -351,7 +351,7 @@ async function syncConfigPinNow(key) {
         }
         return
       }
-      lastRenderedConfigPinText.set(key, text)
+      lastConfigPinRenderKey.set(key, renderKey)
     }
   }
 
@@ -368,9 +368,10 @@ async function syncConfigPinNow(key) {
   }
 }
 
-// Fire-and-forget: no caller (a reply, a callback answer, the next queued message) should wait on this.
+// Callers that don't need to wait (a reply, the next queued message) can just call this without awaiting;
+// handleConfigCallbackQuery awaits it directly so a button tap's ✅ moves before the tap is answered.
 function syncConfigPin(key) {
-  configPinQueue.enqueue(key, () => syncConfigPinNow(key)).catch(e => log('config pin sync failed', key, e.message))
+  return configPinQueue.enqueue(key, () => syncConfigPinNow(key)).catch(e => log('config pin sync failed', key, e.message))
 }
 
 function syncAllConfigPins() {
@@ -1749,24 +1750,6 @@ async function handleMessage(msg) {
     return
   }
 
-  if (command === 'authSubscription' || command === 'authApiKey') {
-    const mode = command === 'authSubscription' ? 'subscription' : 'apikey'
-    const unmet = AUTH_MODE_PREREQUISITES[mode]()
-    if (unmet) {
-      await sendReply(chatId, unmet, msg.message_id, null, threadId).catch(() => {})
-      return
-    }
-    saveGlobalAuthMode(authModeFile, mode)
-    syncAllConfigPins()
-    await setReaction(chatId, msg.message_id, AUTH_SWITCH_REACTION).catch(() => {})
-    return
-  }
-
-  if (command === 'config') {
-    await tg('sendMessage', buildConfigMessageParams(chatId, currentModelConfig(key), threadId)).catch(() => {})
-    return
-  }
-
   const session = normalizeSession(state.sessions[key])
   const sessionId = session?.id
 
@@ -2060,14 +2043,21 @@ async function handleConfigCallbackQuery(cq, { field, value }) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'unknown option' }).catch(() => {})
     return
   }
-  state.modelConfig = field === 'reset' ? resetModelConfig(state.modelConfig, key) : setModelConfigField(state.modelConfig, key, field, value)
-  saveState(state)
-  const messageId = cq.message?.message_id
-  if (messageId != null) {
-    await tg('editMessageText', buildConfigEditParams(chatId, messageId, currentModelConfig(key))).catch(() => {})
+  if (field === 'auth') {
+    const unmet = AUTH_MODE_PREREQUISITES[value]()
+    if (unmet) {
+      await tg('answerCallbackQuery', { callback_query_id: cq.id, text: unmet, show_alert: true }).catch(() => {})
+      return
+    }
+    saveGlobalAuthMode(authModeFile, value)
+    syncAllConfigPins()
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'connection switched' }).catch(() => {})
+    return
   }
-  syncConfigPin(key)
-  await tg('answerCallbackQuery', { callback_query_id: cq.id, text: field === 'reset' ? 'reset to default' : 'updated' }).catch(() => {})
+  state.modelConfig = setModelConfigField(state.modelConfig, key, field, value)
+  saveState(state)
+  await syncConfigPin(key)
+  await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'updated' }).catch(() => {})
 }
 
 // cancel/join interrupt the run at chatQueue's head directly; continue starts a new run, so it's queued like any other message

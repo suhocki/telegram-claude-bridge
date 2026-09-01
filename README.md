@@ -74,7 +74,7 @@ persistent session per Telegram chat.
    | `voiceReply` | `provider` (`'fish'` default, or `'elevenlabs'`), `apiKeyPath`, `voiceId`, `modelId`, `maxTtsChars` for TTS replies. Fish Audio (`https://fish.audio`) is the default provider, using the free `s2.1-pro-free` model and the "Меллстрой" voice; setting `provider` to `'elevenlabs'` alone switches `apiKeyPath`/`voiceId`/`modelId` to that provider's own built-in defaults too, so you only need to add `apiKeyPath`/`voiceId`/`modelId` if you want to override those defaults. If you do set `apiKeyPath`/`voiceId`/`modelId`/`voiceSettings` yourself, `provider` must be set alongside them — the bridge refuses to start otherwise, since it can't tell which service those fields belong to |
    | `claudeArgs` | Extra args appended to every `claude -p` invocation |
    | `appendSystemPrompt` | Extra system prompt appended for every message (the example file's default explains the channel-tag format, attachments, and the `ATTACH`/`REACT`/`CHECKIN` reply markers to Claude) |
-   | `buttonsModule` | Path (absolute, or relative to `cwd`) to a `.mjs` file exporting `buildKeyboard(context)` and `async handleCallback(callbackData, context)`, for a project's own inline-keyboard buttons. Loaded once and cached. Any tap whose `callback_data` isn't the bridge's own `cancel`/`join`/`continue`/`cfg:*` (the `/config` model/effort picker) is delegated to `handleCallback`; if it returns `{ handled: false }`, the tap is queued as a synthetic text message instead of being silently dropped. If `buttonsModule` isn't configured at all, unrecognized taps are ignored exactly as before (no import attempted) |
+   | `buttonsModule` | Path (absolute, or relative to `cwd`) to a `.mjs` file exporting `buildKeyboard(context)` and `async handleCallback(callbackData, context)`, for a project's own inline-keyboard buttons. Loaded once and cached. Any tap whose `callback_data` isn't the bridge's own `cancel`/`join`/`continue`/`cfg:*` (the pinned status message's model/effort/connection picker) is delegated to `handleCallback`; if it returns `{ handled: false }`, the tap is queued as a synthetic text message instead of being silently dropped. If `buttonsModule` isn't configured at all, unrecognized taps are ignored exactly as before (no import attempted) |
    | `maxConcurrentJobs` | Cap on background jobs running at once per bot (see "Background jobs" under [Other behavior](#other-behavior)), default 5 |
    | `jobDefaultTimeoutMinutes` | Default per-job timeout before the bridge kills it, default 60 |
    | `jobSweepIntervalMs` | How often the bridge scans for new job specs and re-checks running jobs, default 15000 |
@@ -131,6 +131,8 @@ Target chat defaults to `config.notifyChatId`, then `config.allowedUserIds[0]`.
 - `/compact` — compact the current session
 - `/status` — show current session info (cost, etc.)
 - `/voice on` / `/voice off` — toggle sending replies as a voice note (requires `voiceReply` config)
+- Model, reasoning effort, and connection (subscription vs API key) are no longer separate
+  commands — they're buttons on the pinned status message, see below
 - Every successful text reply also gets a "🎵 Прослушать" button for generating a one-off voice
   note on demand (hidden when `/voice on` is already active for that chat, since audio is sent
   automatically then)
@@ -147,27 +149,31 @@ its first message and then edited in place (never re-sent) whenever anything it 
 changes:
 
 ```
-📌 config
-model: Sonnet
-reasoning effort: high
-connection: subscription (OAuth)
 session cost: $0.1234
 ```
 
+with three rows of inline buttons underneath it: model (Fable/Sonnet/Opus), reasoning
+effort (low/medium/high/xhigh/max), and connection (Subscription/API key), each
+checkmarking (✅) the currently active choice. Tapping a model/effort button that's
+already checked clears just that field back to the CLI default; tapping a connection
+button switches every bot's global auth mode (same effect as the old `/subscription`/
+`/apikey` commands) and is rejected with an alert if its prerequisite isn't met (no OAuth
+login for subscription, no `ANTHROPIC_API_KEY` for API key).
+
 It's checked on every incoming message for that thread (a no-op unless the rendered text
-actually changed) and explicitly refreshed right after anything that can change it: a
-`/config` change (model/effort), a `/subscription`/`/apikey` switch (global, so every
-thread's pin refreshes, not just the one the command was typed in), a `/new`/`/reset`,
-a completed turn or check-in that moved the session's accumulated cost, and a
-cancelled/timed-out turn that still produced a resumable, cost-bearing session. Each
-thread tracks its own pinned message id, so this never touches another thread's pin.
-If pinning fails the first time (e.g. the bot briefly lacks "can pin messages" rights),
-the next sync retries it. Deleting the message outright is only noticed the next time a
-sync actually has to touch Telegram (the text changed, or pinning is still being
-retried) — an idle thread whose deleted pin's text hasn't changed stays without a pin
-until that thread's next real update. A bare *unpin* by a human (leaving the message
-itself in place) isn't detectable over the Bot API at all, so it keeps
-getting edited in place without being automatically re-pinned.
+*or* keyboard actually changed) and explicitly refreshed right after anything that can
+change it: a button tap (model/effort local to that thread, connection global — every
+thread's pin refreshes, not just the one tapped), a `/new`/`/reset`, a completed turn or
+check-in that moved the session's accumulated cost, and a cancelled/timed-out turn that
+still produced a resumable, cost-bearing session. Each thread tracks its own pinned
+message id, so this never touches another thread's pin. If pinning fails the first time
+(e.g. the bot briefly lacks "can pin messages" rights), the next sync retries it.
+Deleting the message outright is only noticed the next time a sync actually has to touch
+Telegram (the text or keyboard changed, or pinning is still being retried) — an idle
+thread whose deleted pin hasn't changed stays without a pin until that thread's next real
+update. A bare *unpin* by a human (leaving the message itself in place) isn't detectable
+over the Bot API at all, so it keeps getting edited in place without being automatically
+re-pinned.
 
 ## Live progress in chat
 

@@ -89,9 +89,6 @@ export function classifyCommand(text, botUsername) {
   if (parsed.command === '/new' || parsed.command === '/reset') return 'reset'
   if (parsed.command === '/compact') return 'compact'
   if (parsed.command === '/status') return 'status'
-  if (parsed.command === '/subscription') return 'authSubscription'
-  if (parsed.command === '/apikey') return 'authApiKey'
-  if (parsed.command === '/config') return 'config'
   return null
 }
 
@@ -442,7 +439,6 @@ export const ALLOWED_REACTION_EMOJI = new Set([
 
 export const RECEIPT_REACTION = '👀'
 export const ERROR_REACTION = '😢'
-export const AUTH_SWITCH_REACTION = '👍'
 
 export function buildSetMessageReactionParams(chatId, messageId, emoji) {
   return {
@@ -691,16 +687,10 @@ export function setModelConfigField(modelConfigState, key, field, value) {
   return next
 }
 
-export function resetModelConfig(modelConfigState, key) {
-  const next = { ...modelConfigState }
-  delete next[key]
-  return next
-}
-
 export function isValidModelConfigValue(field, value) {
-  if (field === 'reset') return true
   if (field === 'model') return CONFIG_MODELS.includes(value)
   if (field === 'effort') return CONFIG_EFFORTS.includes(value)
+  if (field === 'auth') return value === 'subscription' || value === 'apikey'
   return false
 }
 
@@ -711,21 +701,9 @@ export function buildModelConfigArgs(entry) {
   return args
 }
 
-function modelAndEffortLabels(entry) {
-  const model = entry?.model ? CONFIG_MODEL_LABELS[entry.model] ?? entry.model : 'default'
-  const effort = entry?.effort ?? 'default'
-  return { model, effort }
-}
-
-export function buildConfigText(entry) {
-  const { model, effort } = modelAndEffortLabels(entry)
-  return `⚙️ model: ${model}\nreasoning effort: ${effort}\n\ntap to change, tap the same choice again to clear it, or reset both to default.`
-}
-
-export function buildConfigPinText(session, authMode, entry) {
-  const { model, effort } = modelAndEffortLabels(entry)
+export function buildConfigPinText(session) {
   const cost = (Number.isFinite(session?.costUsd) ? session.costUsd : 0).toFixed(4)
-  return `📌 config\nmodel: ${model}\nreasoning effort: ${effort}\nconnection: ${authModeLabel(authMode)}\nsession cost: $${cost}`
+  return `session cost: $${cost}`
 }
 
 // Deliberately narrow to unambiguous "this thread is permanently unreachable" signals — "message can't be edited" also covers ambiguous, non-deletion causes (e.g. a lost permission), so it's left to the 'retry' default rather than risk unpinning a message that's still perfectly fine.
@@ -738,7 +716,7 @@ export function classifyConfigPinSyncError(message) {
   return 'retry'
 }
 
-export function buildConfigKeyboard(chatId, entry) {
+export function buildConfigKeyboard(chatId, entry, authMode) {
   const modelRow = CONFIG_MODELS.map(m => ({
     text: entry?.model === m ? `✅ ${CONFIG_MODEL_LABELS[m]}` : CONFIG_MODEL_LABELS[m],
     callback_data: `cfg:model:${m}:${chatId}`,
@@ -747,31 +725,26 @@ export function buildConfigKeyboard(chatId, entry) {
     text: entry?.effort === e ? `✅ ${e}` : e,
     callback_data: `cfg:effort:${e}:${chatId}`,
   }))
-  return {
-    inline_keyboard: [modelRow, effortRow, [{ text: '↩️ Reset to default', callback_data: `cfg:reset:x:${chatId}` }]],
-  }
+  const normalizedAuthMode = normalizeAuthMode(authMode)
+  const authRow = [
+    { label: 'Subscription', value: 'subscription' },
+    { label: 'API key', value: 'apikey' },
+  ].map(({ label, value }) => ({
+    text: normalizedAuthMode === value ? `✅ ${label}` : label,
+    callback_data: `cfg:auth:${value}:${chatId}`,
+  }))
+  return { inline_keyboard: [modelRow, effortRow, authRow] }
 }
 
-export function buildConfigMessageParams(chatId, entry, threadId) {
-  return {
-    chat_id: chatId,
-    text: buildConfigText(entry),
-    reply_markup: buildConfigKeyboard(chatId, entry),
-    ...threadIdParam(threadId),
-  }
+// Both the pin's rendered text and its keyboard state have to be captured together: once the
+// pin text drops to just the session cost, a model/effort/auth tap changes only the keyboard, so
+// keying the "did anything change" check off text alone would silently swallow every button update.
+export function buildConfigPinRenderKey(text, keyboard) {
+  return JSON.stringify({ text, keyboard })
 }
 
-export function buildConfigEditParams(chatId, messageId, entry) {
-  return {
-    chat_id: chatId,
-    message_id: messageId,
-    text: buildConfigText(entry),
-    reply_markup: buildConfigKeyboard(chatId, entry),
-  }
-}
-
-// value is captured but deliberately ignored by the caller for 'reset' — kept in the payload only for a consistent cfg:<field>:<value>:<chatId> shape
-const CONFIG_CALLBACK_RE = /^cfg:(model|effort|reset):([a-z]+):(.+)$/
+// value is deliberately loose ([a-z]+) since it covers both model/effort slugs and auth's own subscription/apikey values
+const CONFIG_CALLBACK_RE = /^cfg:(model|effort|auth):([a-z]+):(.+)$/
 
 export function parseConfigCallbackData(data) {
   const m = String(data ?? '').match(CONFIG_CALLBACK_RE)
@@ -1068,9 +1041,6 @@ export function buildBotCommands() {
     { command: 'new', description: 'start a new conversation (clears the context)' },
     { command: 'status', description: 'show the session id and cost so far' },
     { command: 'compact', description: 'compact the conversation to free up context' },
-    { command: 'subscription', description: 'run claude on the subscription (OAuth) login, everywhere' },
-    { command: 'apikey', description: 'run claude on the ANTHROPIC_API_KEY, everywhere' },
-    { command: 'config', description: 'choose the model and reasoning effort for this chat' },
   ]
 }
 
