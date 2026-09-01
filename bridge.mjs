@@ -368,8 +368,7 @@ async function syncConfigPinNow(key) {
   }
 }
 
-// Callers that don't need to wait (a reply, the next queued message) can just call this without awaiting;
-// handleConfigCallbackQuery awaits it directly so a button tap's ✅ moves before the tap is answered.
+// Returns the promise so a callback handler can await its own tap's ✅ landing; other callers just don't await it.
 function syncConfigPin(key) {
   return configPinQueue.enqueue(key, () => syncConfigPinNow(key)).catch(e => log('config pin sync failed', key, e.message))
 }
@@ -2044,6 +2043,10 @@ async function handleConfigCallbackQuery(cq, { field, value }) {
     return
   }
   if (field === 'auth') {
+    if (currentAuthMode() === value) {
+      await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'already active' }).catch(() => {})
+      return
+    }
     const unmet = AUTH_MODE_PREREQUISITES[value]()
     if (unmet) {
       await tg('answerCallbackQuery', { callback_query_id: cq.id, text: unmet, show_alert: true }).catch(() => {})
@@ -2051,6 +2054,8 @@ async function handleConfigCallbackQuery(cq, { field, value }) {
     }
     saveGlobalAuthMode(authModeFile, value)
     syncAllConfigPins()
+    // every other thread's pin refreshes fire-and-forget above, but this chat's own tapped keyboard is awaited so its ✅ moves before the toast does
+    await syncConfigPin(key)
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'connection switched' }).catch(() => {})
     return
   }

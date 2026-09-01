@@ -736,9 +736,7 @@ export function buildConfigKeyboard(chatId, entry, authMode) {
   return { inline_keyboard: [modelRow, effortRow, authRow] }
 }
 
-// Both the pin's rendered text and its keyboard state have to be captured together: once the
-// pin text drops to just the session cost, a model/effort/auth tap changes only the keyboard, so
-// keying the "did anything change" check off text alone would silently swallow every button update.
+// Text alone can't detect a change-only-the-keyboard tap now that the pin's text is just the cost.
 export function buildConfigPinRenderKey(text, keyboard) {
   return JSON.stringify({ text, keyboard })
 }
