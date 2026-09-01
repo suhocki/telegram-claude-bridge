@@ -321,7 +321,6 @@ function currentAuthMode() {
   return loadGlobalAuthMode(authModeFile)
 }
 
-// Read fresh, same as currentAuthMode above — a pick made anywhere (any bot/chat) must apply on the very next voice reply.
 function currentFishVoice() {
   return loadGlobalFishVoice(fishVoiceFile)
 }
@@ -2183,7 +2182,6 @@ function isFishVoicePickerAvailable() {
   return voiceReplyConfig.provider === 'fish'
 }
 
-// A tap on the pin's own row sends a new message (keeps the pin small); a tap on that message's Prev/Next edits it in place.
 async function handleFishVoicesPageCallbackQuery(cq, { pageNumber }) {
   if (!isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig)) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'not authorized', show_alert: true }).catch(() => {})
@@ -2196,6 +2194,8 @@ async function handleFishVoicesPageCallbackQuery(cq, { pageNumber }) {
   const chatId = String(cq.message?.chat?.id ?? '')
   const key = threadKey(chatId, cq.message)
   const threadId = resolveThreadId(cq.message)
+  // Captured before the network await below, not after: a concurrent pin resync (e.g. an /auth tap on the same chat) could otherwise recreate the pin under a new message id while this call is in flight, misclassifying a genuine pin tap as a stale one.
+  const isPinTap = isConfigPinMessage(key, cq.message?.message_id)
   let voices, hasNext
   try {
     ;({ voices, hasNext } = await fetchFishVoicesPage(pageNumber))
@@ -2207,7 +2207,6 @@ async function handleFishVoicesPageCallbackQuery(cq, { pageNumber }) {
   const activeVoiceId = resolveActiveFishVoiceId(currentFishVoice(), voiceReplyConfig.voiceId)
   const keyboard = buildFishVoicesKeyboard({ voices, pageNumber, activeVoiceId, hasNext })
   const text = voices.length ? 'Choose a voice:' : 'No voices matched on this page — try Prev/Next.'
-  const isPinTap = isConfigPinMessage(key, cq.message?.message_id)
   try {
     if (isPinTap) {
       await tg('sendMessage', { chat_id: chatId, text, reply_markup: keyboard, ...threadIdParam(threadId) })
