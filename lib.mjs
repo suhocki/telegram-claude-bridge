@@ -668,6 +668,10 @@ export function parseCallbackData(data) {
 export const CONFIG_MODELS = ['fable', 'sonnet', 'opus']
 export const CONFIG_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 
+// sonnet is claude's confirmed no-flag default; medium is an unverified guess, not confirmed against the CLI
+export const DEFAULT_CONFIG_MODEL = 'sonnet'
+export const DEFAULT_CONFIG_EFFORT = 'medium'
+
 const CONFIG_MODEL_LABELS = { fable: 'Fable', sonnet: 'Sonnet', opus: 'Opus' }
 
 // per chat key, not global like auth-mode: a per-project quality/cost choice, not a machine-wide credential switch.
@@ -675,11 +679,14 @@ export function getModelConfig(modelConfigState, key) {
   return modelConfigState?.[key] ?? {}
 }
 
-// tapping the already-selected button again clears just that field, back to CLI default
+const CONFIG_FIELD_DEFAULTS = { model: DEFAULT_CONFIG_MODEL, effort: DEFAULT_CONFIG_EFFORT }
+
+// tapping the button matching the effective value (explicit, or the CLI default when unset) clears the field again
 export function setModelConfigField(modelConfigState, key, field, value) {
   const current = modelConfigState?.[key] ?? {}
   const nextEntry = { ...current }
-  if (current[field] === value) delete nextEntry[field]
+  const effective = current[field] ?? CONFIG_FIELD_DEFAULTS[field]
+  if (effective === value) delete nextEntry[field]
   else nextEntry[field] = value
   const next = { ...modelConfigState }
   if (Object.keys(nextEntry).length) next[key] = nextEntry
@@ -717,12 +724,14 @@ export function classifyConfigPinSyncError(message) {
 }
 
 export function buildConfigKeyboard(chatId, entry, authMode) {
+  const effectiveModel = CONFIG_MODELS.includes(entry?.model) ? entry.model : DEFAULT_CONFIG_MODEL
+  const effectiveEffort = CONFIG_EFFORTS.includes(entry?.effort) ? entry.effort : DEFAULT_CONFIG_EFFORT
   const modelRow = CONFIG_MODELS.map(m => ({
-    text: entry?.model === m ? `✅ ${CONFIG_MODEL_LABELS[m]}` : CONFIG_MODEL_LABELS[m],
+    text: effectiveModel === m ? `✅ ${CONFIG_MODEL_LABELS[m]}` : CONFIG_MODEL_LABELS[m],
     callback_data: `cfg:model:${m}:${chatId}`,
   }))
   const effortRow = CONFIG_EFFORTS.map(e => ({
-    text: entry?.effort === e ? `✅ ${e}` : e,
+    text: effectiveEffort === e ? `✅ ${e}` : e,
     callback_data: `cfg:effort:${e}:${chatId}`,
   }))
   const normalizedAuthMode = normalizeAuthMode(authMode)
