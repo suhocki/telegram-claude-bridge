@@ -403,18 +403,14 @@ export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, pars
   return chunks.map((part, i) => {
     const params = { chat_id: chatId, text: part }
     if (parseMode) params.parse_mode = parseMode
-    const isLastChunk = i === chunks.length - 1
+    if (i === chunks.length - 1 && keyboard) params.reply_markup = keyboard
     if (i === 0 && editMessageId != null) {
-      if (isLastChunk && keyboard) params.reply_markup = keyboard
       // editMessageText targets a message that already carries its own thread membership — no message_thread_id needed
       return { method: 'editMessageText', params: { ...params, message_id: editMessageId } }
     }
     Object.assign(params, threadIdParam(threadId))
     if (i === 0 && replyToMessageId != null) {
       params.reply_parameters = { message_id: replyToMessageId, allow_sending_without_reply: true }
-    }
-    if (isLastChunk && keyboard) {
-      params.reply_markup = keyboard
     }
     return { method: 'sendMessage', params }
   })
@@ -1044,6 +1040,11 @@ export function appendTurn(turns, chatId, turn, maxTurns = MAX_TRACKED_TURNS) {
 export function findTurnIndexByMessageId(turnList, messageId) {
   if (!Array.isArray(turnList)) return -1
   return turnList.findIndex(t => String(t?.userMessageId) === String(messageId))
+}
+
+export function findTurnIndexByBotMessageId(turnList, messageId) {
+  if (!Array.isArray(turnList)) return -1
+  return turnList.findIndex(t => (t?.botMessageIds ?? []).some(id => String(id) === String(messageId)))
 }
 
 export function collectBotMessageIdsFrom(turnList, fromIndex) {

@@ -124,6 +124,7 @@ import {
   TELEGRAM_COMMAND_SCOPES_TO_CLEAR,
   appendTurn,
   findTurnIndexByMessageId,
+  findTurnIndexByBotMessageId,
   collectBotMessageIdsFrom,
   claudeProjectDirName,
   buildSessionTranscriptPath,
@@ -2561,6 +2562,19 @@ test('findTurnIndexByMessageId: matches across string/number ids and reports -1 
   assert.equal(findTurnIndexByMessageId(list, 10), 0)
   assert.equal(findTurnIndexByMessageId(list, 99), -1)
   assert.equal(findTurnIndexByMessageId(undefined, 10), -1)
+})
+
+test('findTurnIndexByBotMessageId: finds the turn owning a given bot message id, across string/number ids', () => {
+  const list = [{ botMessageIds: [10, 11] }, { botMessageIds: [20, 21] }]
+  assert.equal(findTurnIndexByBotMessageId(list, '21'), 1)
+  assert.equal(findTurnIndexByBotMessageId(list, 10), 0)
+  assert.equal(findTurnIndexByBotMessageId(list, 99), -1)
+  assert.equal(findTurnIndexByBotMessageId(undefined, 10), -1)
+})
+
+test('findTurnIndexByBotMessageId: a turn with no botMessageIds is skipped, not thrown on', () => {
+  const list = [{ userMessageId: 1 }, { botMessageIds: [5] }]
+  assert.equal(findTurnIndexByBotMessageId(list, 5), 1)
 })
 
 test('collectBotMessageIdsFrom: flattens from the given turn onwards, deduped', () => {

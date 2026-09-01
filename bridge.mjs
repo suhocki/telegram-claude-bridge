@@ -118,6 +118,7 @@ import {
   TELEGRAM_ALLOWED_UPDATES,
   appendTurn,
   findTurnIndexByMessageId,
+  findTurnIndexByBotMessageId,
   collectBotMessageIdsFrom,
   buildSessionTranscriptPath,
   findRewindCutIndex,
@@ -816,11 +817,16 @@ async function clearPendingContinue(chatId, key) {
   }
 }
 
-function trackBotMessages(key, ids) {
+// anchorBotMessageId pins the append to the turn that actually owns that bot message (e.g. the
+// message a Listen tap is generating audio for) instead of always the latest turn, which may by
+// then belong to a different, unrelated message the user has since sent in the same chat/thread.
+function trackBotMessages(key, ids, anchorBotMessageId) {
   const turnList = state.turns[String(key)]
   if (!turnList?.length || !ids?.length) return
-  const lastTurn = turnList[turnList.length - 1]
-  lastTurn.botMessageIds = [...(lastTurn.botMessageIds ?? []), ...ids]
+  const turnIndex = anchorBotMessageId != null ? findTurnIndexByBotMessageId(turnList, anchorBotMessageId) : turnList.length - 1
+  if (turnIndex < 0) return
+  const turn = turnList[turnIndex]
+  turn.botMessageIds = [...(turn.botMessageIds ?? []), ...ids]
   saveState(state)
 }
 
@@ -1340,8 +1346,9 @@ async function transcribeVoiceLogged(filePath) {
   return transcription
 }
 
-async function sendVoiceReply(chatId, text, replyToMessageId, threadId) {
-  const speechText = truncateForSpeech(buildSpeechText(text), voiceReplyConfig.maxTtsChars)
+async function sendVoiceReply(chatId, text, replyToMessageId, threadId, { alreadyPlain = false } = {}) {
+  // alreadyPlain: the Listen button passes Telegram's own already-rendered message.text, which must skip the markdown pass buildSpeechText applies for raw model output
+  const speechText = truncateForSpeech(alreadyPlain ? String(text ?? '').trim() : buildSpeechText(text), voiceReplyConfig.maxTtsChars)
   if (!speechText) return { ok: false, messageIds: [], error: 'nothing to say' }
   let apiKey
   try {
@@ -2118,29 +2125,39 @@ async function handleCallbackQuery(cq) {
     }
     listenInFlight.add(listenGuardKey)
     try {
-      await tg('answerCallbackQuery', { callback_query_id: cq.id, text: '🎵 генерация…' }).catch(() => {})
-      await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {})
       let statusId = null
       try {
-        const sent = await tg('sendMessage', {
-          chat_id: chatId,
-          text: '🎵 Генерация…',
-          reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
-          ...threadIdParam(threadId),
-        })
+        const [, , sent] = await Promise.all([
+          tg('answerCallbackQuery', { callback_query_id: cq.id, text: '🎵 генерация…' }).catch(() => {}),
+          tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {}),
+          tg('sendMessage', {
+            chat_id: chatId,
+            text: '🎵 Генерация…',
+            reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
+            ...threadIdParam(threadId),
+          }),
+        ])
         statusId = sent.message_id
-        trackBotMessages(key, [statusId])
+        trackBotMessages(key, [statusId], messageId)
       } catch (e) {
         log('listen status message failed', e.message)
+        await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: buildListenKeyboard(chatId) }).catch(() => {})
+        await tg('sendMessage', {
+          chat_id: chatId,
+          text: `⚠️ не получилось озвучить: ${e.message}`,
+          reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
+          ...threadIdParam(threadId),
+        }).catch(() => {})
         return
       }
       // vocalizes exactly the bubble the button was attached to (its own text), not the full turn — a long,
       // multi-chunk reply only ever carries the button on its last chunk, so that's what this reads out
-      const { ok, messageIds, error } = await sendVoiceReply(chatId, cq.message?.text ?? '', messageId, threadId)
+      const { ok, messageIds, error } = await sendVoiceReply(chatId, cq.message?.text ?? '', messageId, threadId, { alreadyPlain: true })
       if (ok) {
-        trackBotMessages(key, messageIds)
+        trackBotMessages(key, messageIds, messageId)
         await tg('deleteMessage', { chat_id: chatId, message_id: statusId }).catch(() => {})
       } else {
+        await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: buildListenKeyboard(chatId) }).catch(() => {})
         await tg('editMessageText', { chat_id: chatId, message_id: statusId, text: `⚠️ не получилось озвучить: ${error || 'unknown error'}` }).catch(() => {})
       }
     } finally {
