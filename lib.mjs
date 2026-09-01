@@ -724,12 +724,14 @@ export function classifyConfigPinSyncError(message) {
 }
 
 export function buildConfigKeyboard(chatId, entry, authMode) {
+  const effectiveModel = CONFIG_MODELS.includes(entry?.model) ? entry.model : DEFAULT_CONFIG_MODEL
+  const effectiveEffort = CONFIG_EFFORTS.includes(entry?.effort) ? entry.effort : DEFAULT_CONFIG_EFFORT
   const modelRow = CONFIG_MODELS.map(m => ({
-    text: (entry?.model ?? DEFAULT_CONFIG_MODEL) === m ? `✅ ${CONFIG_MODEL_LABELS[m]}` : CONFIG_MODEL_LABELS[m],
+    text: effectiveModel === m ? `✅ ${CONFIG_MODEL_LABELS[m]}` : CONFIG_MODEL_LABELS[m],
     callback_data: `cfg:model:${m}:${chatId}`,
   }))
   const effortRow = CONFIG_EFFORTS.map(e => ({
-    text: (entry?.effort ?? DEFAULT_CONFIG_EFFORT) === e ? `✅ ${e}` : e,
+    text: effectiveEffort === e ? `✅ ${e}` : e,
     callback_data: `cfg:effort:${e}:${chatId}`,
   }))
   const normalizedAuthMode = normalizeAuthMode(authMode)

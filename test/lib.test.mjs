@@ -1658,6 +1658,15 @@ test('buildConfigKeyboard: an explicit non-default selection checkmarks only tha
   assert.ok(!modelRow.find(b => b.callback_data === `cfg:model:${DEFAULT_CONFIG_MODEL}:123`).text.startsWith('✅'))
 })
 
+test('buildConfigKeyboard: a stale or invalid stored value falls back to the default instead of checkmarking nothing', () => {
+  const keyboard = buildConfigKeyboard('123', { model: 'removed-alias', effort: '' }, undefined)
+  const [modelRow, effortRow] = keyboard.inline_keyboard
+  assert.equal(modelRow.filter(b => b.text.startsWith('✅')).length, 1)
+  assert.ok(modelRow.find(b => b.callback_data === `cfg:model:${DEFAULT_CONFIG_MODEL}:123`).text.startsWith('✅'))
+  assert.equal(effortRow.filter(b => b.text.startsWith('✅')).length, 1)
+  assert.ok(effortRow.find(b => b.callback_data === `cfg:effort:${DEFAULT_CONFIG_EFFORT}:123`).text.startsWith('✅'))
+})
+
 test('buildConfigKeyboard + setModelConfigField: tapping the default-checkmarked button renders an identical keyboard, not a spurious explicit pin', () => {
   const text = 'session cost: $0.0000'
   const before = buildConfigKeyboard('123', getModelConfig({}, 'a'), undefined)
