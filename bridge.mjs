@@ -107,7 +107,6 @@ import {
   buildOutboxFilename,
   buildFishVoiceListUrl,
   parseFishVoiceListResponse,
-  hasNextFishVoicePage,
   resolveFishVoiceLabel,
   resolveActiveFishVoiceId,
   parseFishVoiceCallbackData,
@@ -1484,7 +1483,7 @@ async function fetchFishVoicesPage(pageNumber) {
   const data = await res.json()
   return {
     voices: parseFishVoiceListResponse(data),
-    hasNext: hasNextFishVoicePage(pageNumber, FISH_VOICES_PAGE_SIZE, data.total),
+    hasNext: Boolean(data.has_more),
   }
 }
 
@@ -2207,6 +2206,7 @@ async function handleFishVoicesPageCallbackQuery(cq, { pageNumber }) {
   const activeVoiceId = resolveActiveFishVoiceId(currentFishVoice(), voiceReplyConfig.voiceId)
   const keyboard = buildFishVoicesKeyboard({ voices, pageNumber, activeVoiceId, hasNext })
   const text = voices.length ? 'Choose a voice:' : 'No voices matched on this page — try Prev/Next.'
+  let renderFailed = false
   try {
     if (isPinTap) {
       await tg('sendMessage', { chat_id: chatId, text, reply_markup: keyboard, ...threadIdParam(threadId) })
@@ -2215,8 +2215,12 @@ async function handleFishVoicesPageCallbackQuery(cq, { pageNumber }) {
     }
   } catch (e) {
     log('failed to render fish voice list', key, e.message)
+    renderFailed = true
   }
-  await tg('answerCallbackQuery', { callback_query_id: cq.id }).catch(() => {})
+  const answerParams = renderFailed
+    ? { callback_query_id: cq.id, text: 'failed to update voice list', show_alert: true }
+    : { callback_query_id: cq.id }
+  await tg('answerCallbackQuery', answerParams).catch(() => {})
 }
 
 // Trusts the tapped id was one this same picker rendered moments ago (same trust model as cancel/continue/join taps elsewhere).
@@ -2234,11 +2238,14 @@ async function handleFishVoicePickCallbackQuery(cq, { id }) {
   const title = extractCallbackButtonTitle(cq.message?.reply_markup, cq.data) ?? id
   saveGlobalFishVoice(fishVoiceFile, { id, title })
   const updatedKeyboard = markSelectedFishVoiceButton(cq.message?.reply_markup, id)
-  await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: cq.message?.message_id, reply_markup: updatedKeyboard }).catch(e =>
+  let refreshFailed = false
+  await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: cq.message?.message_id, reply_markup: updatedKeyboard }).catch(e => {
     log('failed to refresh fish voice list selection', key, e.message)
-  )
+    refreshFailed = true
+  })
   await syncOwnPinThenBroadcastRest(key)
-  await tg('answerCallbackQuery', { callback_query_id: cq.id, text: title }).catch(() => {})
+  const answerText = refreshFailed ? `${title} (saved, but the list didn't refresh)` : title
+  await tg('answerCallbackQuery', { callback_query_id: cq.id, text: answerText, show_alert: refreshFailed }).catch(() => {})
 }
 
 // cancel/join interrupt the run at chatQueue's head directly; continue starts a new run, so it's queued like any other message

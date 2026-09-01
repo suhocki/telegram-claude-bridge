@@ -845,10 +845,6 @@ export function parseFishVoiceListResponse(data) {
   return items.filter(item => item?.type === 'tts').map(item => ({ id: item._id, title: item.title }))
 }
 
-export function hasNextFishVoicePage(pageNumber, pageSize, total) {
-  return pageNumber * pageSize < (Number.isFinite(total) ? total : 0)
-}
-
 export function resolveActiveFishVoiceId(globalFishVoice, defaultVoiceId) {
   return globalFishVoice?.id ?? defaultVoiceId
 }

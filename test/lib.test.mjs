@@ -129,7 +129,6 @@ import {
   FISH_VOICES_PAGE_SIZE,
   buildFishVoiceListUrl,
   parseFishVoiceListResponse,
-  hasNextFishVoicePage,
   resolveFishVoiceLabel,
   resolveActiveFishVoiceId,
   parseFishVoiceCallbackData,
@@ -1770,17 +1769,6 @@ test('parseFishVoiceListResponse: a missing/non-array items list returns an empt
   assert.deepEqual(parseFishVoiceListResponse({}), [])
   assert.deepEqual(parseFishVoiceListResponse(null), [])
   assert.deepEqual(parseFishVoiceListResponse({ items: 'nope' }), [])
-})
-
-test('hasNextFishVoicePage: true only while the next page still starts before the total', () => {
-  assert.equal(hasNextFishVoicePage(1, 8, 1005), true)
-  assert.equal(hasNextFishVoicePage(125, 8, 1005), true)
-  assert.equal(hasNextFishVoicePage(126, 8, 1005), false)
-})
-
-test('hasNextFishVoicePage: a missing/non-finite total is treated as 0 (no next page)', () => {
-  assert.equal(hasNextFishVoicePage(1, 8, undefined), false)
-  assert.equal(hasNextFishVoicePage(1, 8, NaN), false)
 })
 
 test('resolveFishVoiceLabel: no global override labels the hardcoded default', () => {
