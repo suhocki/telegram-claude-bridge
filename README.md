@@ -131,6 +131,9 @@ Target chat defaults to `config.notifyChatId`, then `config.allowedUserIds[0]`.
 - `/compact` — compact the current session
 - `/status` — show current session info (cost, etc.)
 - `/voice on` / `/voice off` — toggle sending replies as a voice note (requires `voiceReply` config)
+- Every successful text reply also gets a "🎵 Прослушать" button for generating a one-off voice
+  note on demand (hidden when `/voice on` is already active for that chat, since audio is sent
+  automatically then)
 - Replying `CONFIRM` to a risky-command warning lets it proceed; anything else cancels it
 
 In a group, Telegram appends `@yourbotname` when a command is picked from the

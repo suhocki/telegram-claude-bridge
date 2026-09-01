@@ -78,6 +78,7 @@ import {
   buildTranscriptQuoteHtml,
   buildCancelKeyboard,
   buildContinueKeyboard,
+  buildListenKeyboard,
   parseCallbackData,
   getModelConfig,
   setModelConfigField,
@@ -117,6 +118,7 @@ import {
   TELEGRAM_ALLOWED_UPDATES,
   appendTurn,
   findTurnIndexByMessageId,
+  findTurnIndexByBotMessageId,
   collectBotMessageIdsFrom,
   buildSessionTranscriptPath,
   findRewindCutIndex,
@@ -407,6 +409,8 @@ const activeRuns = new Map()
 const consumedByJoin = new Map()
 // serializes the join-count editMessageReplyMarkup calls per chat so back-to-back joins can't land out of order at Telegram
 const joinKeyboardQueue = createKeyedQueue()
+// `${chatId}:${messageId}` currently generating a voice note, so a duplicate/retried callback_query for the same tap is a no-op instead of a second TTS call
+const listenInFlight = new Set()
 // setTimeout handles can't be persisted, so state.pendingCheckins is re-armed into this Map on every boot.
 const checkinTimers = new Map()
 for (const key of Object.keys(state.pendingCheckins)) armCheckinTimer(key)
@@ -416,10 +420,10 @@ const loadButtonsModule = createButtonsModuleLoader(resolveButtonsModulePath(but
 
 // Returns the ids of the messages it created (empty for an edit of an existing one) so a
 // caller can remember them and delete them later on a rewind.
-async function sendReply(chatId, text, replyToMessageId, editMessageId, threadId) {
+async function sendReply(chatId, text, replyToMessageId, editMessageId, threadId, keyboard) {
   const chunks = markdownToTelegramHtmlChunks(text || '(empty response)')
   const sentIds = []
-  for (const { method, params } of buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, 'HTML', editMessageId, threadId)) {
+  for (const { method, params } of buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, 'HTML', editMessageId, threadId, keyboard)) {
     let sent = null
     try {
       sent = await tg(method, params)
@@ -813,11 +817,14 @@ async function clearPendingContinue(chatId, key) {
   }
 }
 
-function trackBotMessages(key, ids) {
+// anchorBotMessageId pins the append to the turn owning that bot message, instead of always the latest turn (which may since belong to an unrelated later message)
+function trackBotMessages(key, ids, anchorBotMessageId) {
   const turnList = state.turns[String(key)]
   if (!turnList?.length || !ids?.length) return
-  const lastTurn = turnList[turnList.length - 1]
-  lastTurn.botMessageIds = [...(lastTurn.botMessageIds ?? []), ...ids]
+  const turnIndex = anchorBotMessageId != null ? findTurnIndexByBotMessageId(turnList, anchorBotMessageId) : turnList.length - 1
+  if (turnIndex < 0) return
+  const turn = turnList[turnIndex]
+  turn.botMessageIds = [...(turn.botMessageIds ?? []), ...ids]
   saveState(state)
 }
 
@@ -1337,15 +1344,16 @@ async function transcribeVoiceLogged(filePath) {
   return transcription
 }
 
-async function sendVoiceReply(chatId, text, replyToMessageId, threadId) {
-  const speechText = truncateForSpeech(buildSpeechText(text), voiceReplyConfig.maxTtsChars)
-  if (!speechText) return []
+async function sendVoiceReply(chatId, text, replyToMessageId, threadId, { alreadyPlain = false } = {}) {
+  // alreadyPlain: the Listen button passes Telegram's own already-rendered message.text, which must skip the markdown pass buildSpeechText applies for raw model output
+  const speechText = truncateForSpeech(alreadyPlain ? String(text ?? '').trim() : buildSpeechText(text), voiceReplyConfig.maxTtsChars)
+  if (!speechText) return { ok: false, messageIds: [], error: 'nothing to say' }
   let apiKey
   try {
     apiKey = readFileSync(expandHome(voiceReplyConfig.apiKeyPath, homedir()), 'utf8').trim()
   } catch {
     log('voice reply skipped: no TTS api key at', voiceReplyConfig.apiKeyPath)
-    return []
+    return { ok: false, messageIds: [], error: 'no TTS api key configured' }
   }
   try {
     const { url, headers, body } = buildTtsRequestOptions(speechText, {
@@ -1370,10 +1378,11 @@ async function sendVoiceReply(chatId, text, replyToMessageId, threadId) {
     const sendRes = await fetchWithTimeout(fetch, `${API}/sendVoice`, { method: 'POST', body: form }, FILE_TRANSFER_TIMEOUT_MS)
     const data = await sendRes.json()
     if (!data.ok) throw new Error(data.description)
-    return data.result?.message_id != null ? [data.result.message_id] : []
+    const messageIds = data.result?.message_id != null ? [data.result.message_id] : []
+    return { ok: true, messageIds }
   } catch (e) {
     log('sendVoiceReply failed', e.message)
-    return []
+    return { ok: false, messageIds: [], error: e.message }
   }
 }
 
@@ -1605,8 +1614,12 @@ async function runClaudeTurn(
       replyText = `${buildCostWarning(newSession.costUsd, costWarnUsd)}\n\n${replyText}`
     }
     if (!suppressReply) {
+      // only the plain successful reply gets the button — not errors/compact/cost-warnings/empty replies, and never when audio is already sent automatically
+      const showListenButton =
+        !result.is_error && !isCompact && !costWarningCrossed && cleanedResult && !isVoiceReplyEnabled(state.voiceReply, key)
+      const keyboard = showListenButton ? buildListenKeyboard(chatId) : null
       // new message, not an edit of the placeholder, so Telegram pushes a notification
-      botMessageIds.push(...(await sendReply(chatId, replyText, originMessageId, null, threadId)))
+      botMessageIds.push(...(await sendReply(chatId, replyText, originMessageId, null, threadId, keyboard)))
     }
     if (currentPlaceholderId != null) {
       // only untrack on a confirmed delete, so a failed one still gets the finally block's cleanup + a rewind retry
@@ -1625,7 +1638,7 @@ async function runClaudeTurn(
     if (!result.is_error) {
       botMessageIds.push(...(await sendAttachments(chatId, attachPaths, originMessageId, threadId)))
       if (isVoiceReplyEnabled(state.voiceReply, key)) {
-        botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, originMessageId, threadId)))
+        botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, originMessageId, threadId)).messageIds)
       }
       if (checkin) scheduleCheckin(key, newSession?.id ?? sessionId, checkin)
     }
@@ -2092,12 +2105,64 @@ async function handleCallbackQuery(cq) {
     return
   }
 
-  // derived from the button's own message, not the callback_data payload, so a chat can only cancel/continue/join its own run
+  // derived from the button's own message, not the callback_data payload, so a chat can only cancel/continue/join/listen its own run
   const chatId = String(cq.message?.chat?.id ?? '')
   const key = threadKey(chatId, cq.message)
   const threadId = resolveThreadId(cq.message)
   if (!isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig)) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'not authorized', show_alert: true }).catch(() => {})
+    return
+  }
+
+  if (parsed.action === 'listen') {
+    const messageId = cq.message?.message_id
+    const listenGuardKey = `${chatId}:${messageId}`
+    if (listenInFlight.has(listenGuardKey)) {
+      await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'already generating…' }).catch(() => {})
+      return
+    }
+    listenInFlight.add(listenGuardKey)
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: '🎵 генерация…' }).catch(() => {})
+    // queued behind this key's own in-flight turn, so trackBotMessages below always finds that turn's appendTurn record already in place
+    chatQueue
+      .enqueue(key, async () => {
+        try {
+          await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {})
+          let statusId = null
+          try {
+            const sent = await tg('sendMessage', {
+              chat_id: chatId,
+              text: '🎵 Генерация…',
+              reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
+              ...threadIdParam(threadId),
+            })
+            statusId = sent.message_id
+            trackBotMessages(key, [statusId], messageId)
+          } catch (e) {
+            log('listen status message failed', e.message)
+            await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: buildListenKeyboard(chatId) }).catch(() => {})
+            await tg('sendMessage', {
+              chat_id: chatId,
+              text: `⚠️ не получилось озвучить: ${e.message}`,
+              reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
+              ...threadIdParam(threadId),
+            }).catch(() => {})
+            return
+          }
+          // vocalizes only the bubble the button is on, not the full turn — a multi-chunk reply's button only ever lives on its last chunk
+          const { ok, messageIds, error } = await sendVoiceReply(chatId, cq.message?.text ?? '', messageId, threadId, { alreadyPlain: true })
+          if (ok) {
+            trackBotMessages(key, messageIds, messageId)
+            await tg('deleteMessage', { chat_id: chatId, message_id: statusId }).catch(() => {})
+          } else {
+            await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: buildListenKeyboard(chatId) }).catch(() => {})
+            await tg('editMessageText', { chat_id: chatId, message_id: statusId, text: `⚠️ не получилось озвучить: ${error || 'unknown error'}` }).catch(() => {})
+          }
+        } finally {
+          listenInFlight.delete(listenGuardKey)
+        }
+      })
+      .catch(e => log('queued listen handling rejected', e))
     return
   }
 

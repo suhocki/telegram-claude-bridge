@@ -399,10 +399,11 @@ export function buildOutboundAttachmentInstructions() {
   ].join('\n')
 }
 
-export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, parseMode, editMessageId, threadId) {
+export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, parseMode, editMessageId, threadId, keyboard) {
   return chunks.map((part, i) => {
     const params = { chat_id: chatId, text: part }
     if (parseMode) params.parse_mode = parseMode
+    if (i === chunks.length - 1 && keyboard) params.reply_markup = keyboard
     if (i === 0 && editMessageId != null) {
       // editMessageText targets a message that already carries its own thread membership — no message_thread_id needed
       return { method: 'editMessageText', params: { ...params, message_id: editMessageId } }
@@ -656,7 +657,11 @@ export function buildContinueKeyboard(chatId) {
   return { inline_keyboard: [[{ text: '▶️ Continue', callback_data: `continue:${chatId}` }]] }
 }
 
-const CALLBACK_DATA_RE = /^(cancel|continue|join):(.+)$/
+export function buildListenKeyboard(chatId) {
+  return { inline_keyboard: [[{ text: '🎵 Прослушать', callback_data: `listen:${chatId}` }]] }
+}
+
+const CALLBACK_DATA_RE = /^(cancel|continue|join|listen):(.+)$/
 
 export function parseCallbackData(data) {
   const m = String(data ?? '').match(CALLBACK_DATA_RE)
@@ -1035,6 +1040,11 @@ export function appendTurn(turns, chatId, turn, maxTurns = MAX_TRACKED_TURNS) {
 export function findTurnIndexByMessageId(turnList, messageId) {
   if (!Array.isArray(turnList)) return -1
   return turnList.findIndex(t => String(t?.userMessageId) === String(messageId))
+}
+
+export function findTurnIndexByBotMessageId(turnList, messageId) {
+  if (!Array.isArray(turnList)) return -1
+  return turnList.findIndex(t => (t?.botMessageIds ?? []).some(id => String(id) === String(messageId)))
 }
 
 export function collectBotMessageIdsFrom(turnList, fromIndex) {
