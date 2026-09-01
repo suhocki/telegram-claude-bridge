@@ -1,10 +1,8 @@
 # telegram-claude-bridge
 
-![Peak output, zero laptop time](assets/peak-productivity.jpg)
-
 **You never have to touch your laptop again.** Dictate a task on your commute, review a diff from the couch, kick off a fix while you're making coffee — Claude Code runs entirely from Telegram, on your phone, in your pocket. No lid to open, no context-switch tax, no hunching over a desk.
 
-**Run as many projects in parallel as you want.** Each bot is scoped to its own working directory with its own persistent session — spin one up per project and check on each for thirty seconds at a time instead of babysitting one terminal all day. That's what the graph above is: the highest sustained output of an entire career, and it happened without sitting at a desk for most of it.
+**Run as many projects in parallel as you want.** Each bot is scoped to its own working directory with its own persistent session — spin one up per project and check on each for thirty seconds at a time instead of babysitting one terminal all day.
 
 **Why Telegram?** Because it already solved the hard parts — voice notes, push notifications, file transfer, multi-device sync, offline queuing — for free. This bridge just plugs Claude Code into all of that instead of reinventing it.
 
@@ -160,6 +158,13 @@ button switches every bot's global auth mode (same effect as the old `/subscript
 `/apikey` commands) and is rejected with an alert if its prerequisite isn't met (no OAuth
 login for subscription, no `ANTHROPIC_API_KEY` for API key).
 
+A bot configured with `voiceReply.provider: 'fish'` (the default) gets a fourth row:
+`🎙️ Voice: <current voice>`. Tapping it opens a new message listing Fish Audio's voice
+marketplace — filtered to Russian, sorted by real usage popularity, one voice per button
+with Prev/Next pagination — and picking one sets it as the **global** default voice for
+every chat and every `fish`-provider bot, persisted across restarts. ElevenLabs-provider
+bots don't get this row; Fish Audio's marketplace is the only one this picker covers.
+
 It's checked on every incoming message for that thread (a no-op unless the rendered text
 *or* keyboard actually changed) and explicitly refreshed right after anything that can
 change it: a button tap (model/effort local to that thread, connection global — every
@@ -220,6 +225,7 @@ This defaults to 06:00 local time and logs to
 
 - **Attachments**: photos, documents, voice/audio/video sent to the bot are downloaded and passed to Claude via an `attachment_path` on the channel tag (voice messages get transcribed first if `voiceTranscription` is configured).
 - **Voice-driving agents**: with `voiceTranscription` set up, sending a voice note works just as well as typing — dictate a task on the go and Claude runs it the same as a text message. The opening placeholder freezes into a permanent, quoted transcript instead of the usual fancy phrase, and live progress (plus the Cancel button) moves to a second, ordinary placeholder — so in a group everyone can see what was actually dictated, and it doesn't disappear once the run finishes. Worth setting up the whisper model up front if you plan to mostly drive the bot by voice.
+- **Prosody-aware voice replies**: for `fish`-provider voice replies, the reply text is first passed through a short `claude --model haiku` pass that inserts Fish Audio's own `[break]`/`[emphasis]`/tone tags at natural clause and sentence boundaries, so the speech isn't monotonic. A safety check discards the annotation and falls back to the plain text if the model changed any actual words (verified live: the free `s2.1-pro-free` model honors the tags rather than reading them aloud); any failure or a 6-second timeout also falls back to plain text, so this can never delay or break a voice reply.
 - **Outbound files**: Claude can send files back by writing `ATTACH: /absolute/path` lines in its reply.
 - **Reactions**: Claude can react to the triggering message with `REACT: <emoji>`.
 - **Check-ins**: Claude can schedule a follow-up turn with `CHECKIN: <minutes> <what to check>` for work that keeps running after the reply is sent.
