@@ -668,10 +668,7 @@ export function parseCallbackData(data) {
 export const CONFIG_MODELS = ['fable', 'sonnet', 'opus']
 export const CONFIG_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 
-// what the claude CLI actually falls back to when --model/--effort are omitted; DEFAULT_CONFIG_MODEL
-// is empirically confirmed (claude -p --output-format json reports claude-sonnet-5 with no --model
-// flag), DEFAULT_CONFIG_EFFORT is an unverified assumption (industry-standard middle default) — flag
-// it to the user if their pin ever turns out to checkmark the wrong effort button
+// sonnet is claude's confirmed no-flag default; medium is an unverified guess, not confirmed against the CLI
 export const DEFAULT_CONFIG_MODEL = 'sonnet'
 export const DEFAULT_CONFIG_EFFORT = 'medium'
 
@@ -682,11 +679,14 @@ export function getModelConfig(modelConfigState, key) {
   return modelConfigState?.[key] ?? {}
 }
 
-// tapping the already-selected button again clears just that field, back to CLI default
+const CONFIG_FIELD_DEFAULTS = { model: DEFAULT_CONFIG_MODEL, effort: DEFAULT_CONFIG_EFFORT }
+
+// tapping the button matching the effective value (explicit, or the CLI default when unset) clears the field again
 export function setModelConfigField(modelConfigState, key, field, value) {
   const current = modelConfigState?.[key] ?? {}
   const nextEntry = { ...current }
-  if (current[field] === value) delete nextEntry[field]
+  const effective = current[field] ?? CONFIG_FIELD_DEFAULTS[field]
+  if (effective === value) delete nextEntry[field]
   else nextEntry[field] = value
   const next = { ...modelConfigState }
   if (Object.keys(nextEntry).length) next[key] = nextEntry

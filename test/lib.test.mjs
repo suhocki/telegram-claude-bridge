@@ -1534,7 +1534,17 @@ test('setModelConfigField: sets a field without mutating the input', () => {
 })
 
 test('setModelConfigField: creates a new entry for a key with no prior config', () => {
-  assert.deepEqual(setModelConfigField({}, 'a', 'model', 'sonnet'), { a: { model: 'sonnet' } })
+  assert.deepEqual(setModelConfigField({}, 'a', 'model', 'opus'), { a: { model: 'opus' } })
+})
+
+test('setModelConfigField: tapping the value that matches the CLI default while unset is a no-op, not an explicit pin', () => {
+  assert.deepEqual(setModelConfigField({}, 'a', 'model', DEFAULT_CONFIG_MODEL), {})
+  assert.deepEqual(setModelConfigField({}, 'a', 'effort', DEFAULT_CONFIG_EFFORT), {})
+})
+
+test('setModelConfigField: switching back to the default value from a different explicit selection still pins it explicitly', () => {
+  const after = setModelConfigField({ a: { model: 'opus' } }, 'a', 'model', DEFAULT_CONFIG_MODEL)
+  assert.deepEqual(after, { a: { model: DEFAULT_CONFIG_MODEL } })
 })
 
 test('setModelConfigField: tapping the already-selected value again clears just that field', () => {
@@ -1646,6 +1656,15 @@ test('buildConfigKeyboard: an explicit non-default selection checkmarks only tha
   assert.equal(modelRow.filter(b => b.text.startsWith('✅')).length, 1)
   assert.ok(modelRow.find(b => b.callback_data === 'cfg:model:opus:123').text.startsWith('✅'))
   assert.ok(!modelRow.find(b => b.callback_data === `cfg:model:${DEFAULT_CONFIG_MODEL}:123`).text.startsWith('✅'))
+})
+
+test('buildConfigKeyboard + setModelConfigField: tapping the default-checkmarked button renders an identical keyboard, not a spurious explicit pin', () => {
+  const text = 'session cost: $0.0000'
+  const before = buildConfigKeyboard('123', getModelConfig({}, 'a'), undefined)
+  const nextConfig = setModelConfigField({}, 'a', 'model', DEFAULT_CONFIG_MODEL)
+  const after = buildConfigKeyboard('123', getModelConfig(nextConfig, 'a'), undefined)
+  assert.equal(buildConfigPinRenderKey(text, before), buildConfigPinRenderKey(text, after))
+  assert.deepEqual(nextConfig, {})
 })
 
 test('buildConfigPinRenderKey: differs when the keyboard differs even if the text is identical', () => {
