@@ -76,6 +76,8 @@ import {
   parseCallbackData,
   CONFIG_MODELS,
   CONFIG_EFFORTS,
+  DEFAULT_CONFIG_MODEL,
+  DEFAULT_CONFIG_EFFORT,
   getModelConfig,
   setModelConfigField,
   isValidModelConfigValue,
@@ -1620,12 +1622,30 @@ test('buildConfigKeyboard: lists every model, effort and auth option as a button
   assert.ok(!authRow.find(b => b.callback_data === 'cfg:auth:apikey:123').text.startsWith('✅'))
 })
 
-test('buildConfigKeyboard: nothing selected for model/effort means no checkmarked button in those rows; auth defaults to apikey', () => {
+test('buildConfigKeyboard: nothing selected for model/effort checkmarks the CLI defaults, not nothing; auth defaults to apikey', () => {
   const keyboard = buildConfigKeyboard('123', {}, undefined)
   const [modelRow, effortRow, authRow] = keyboard.inline_keyboard
-  assert.ok([...modelRow, ...effortRow].every(b => !b.text.startsWith('✅')))
+  assert.equal(modelRow.filter(b => b.text.startsWith('✅')).length, 1)
+  assert.ok(modelRow.find(b => b.callback_data === `cfg:model:${DEFAULT_CONFIG_MODEL}:123`).text.startsWith('✅'))
+  assert.equal(effortRow.filter(b => b.text.startsWith('✅')).length, 1)
+  assert.ok(effortRow.find(b => b.callback_data === `cfg:effort:${DEFAULT_CONFIG_EFFORT}:123`).text.startsWith('✅'))
   assert.ok(authRow.find(b => b.callback_data === 'cfg:auth:apikey:123').text.startsWith('✅'))
   assert.ok(!authRow.find(b => b.callback_data === 'cfg:auth:subscription:123').text.startsWith('✅'))
+})
+
+test('buildConfigKeyboard: an undefined entry falls back to the same defaults as an empty one', () => {
+  const keyboard = buildConfigKeyboard('123', undefined, undefined)
+  const [modelRow, effortRow] = keyboard.inline_keyboard
+  assert.ok(modelRow.find(b => b.callback_data === `cfg:model:${DEFAULT_CONFIG_MODEL}:123`).text.startsWith('✅'))
+  assert.ok(effortRow.find(b => b.callback_data === `cfg:effort:${DEFAULT_CONFIG_EFFORT}:123`).text.startsWith('✅'))
+})
+
+test('buildConfigKeyboard: an explicit non-default selection checkmarks only that button, not the default', () => {
+  const keyboard = buildConfigKeyboard('123', { model: 'opus' }, undefined)
+  const [modelRow] = keyboard.inline_keyboard
+  assert.equal(modelRow.filter(b => b.text.startsWith('✅')).length, 1)
+  assert.ok(modelRow.find(b => b.callback_data === 'cfg:model:opus:123').text.startsWith('✅'))
+  assert.ok(!modelRow.find(b => b.callback_data === `cfg:model:${DEFAULT_CONFIG_MODEL}:123`).text.startsWith('✅'))
 })
 
 test('buildConfigPinRenderKey: differs when the keyboard differs even if the text is identical', () => {

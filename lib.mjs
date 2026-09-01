@@ -668,6 +668,13 @@ export function parseCallbackData(data) {
 export const CONFIG_MODELS = ['fable', 'sonnet', 'opus']
 export const CONFIG_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 
+// what the claude CLI actually falls back to when --model/--effort are omitted; DEFAULT_CONFIG_MODEL
+// is empirically confirmed (claude -p --output-format json reports claude-sonnet-5 with no --model
+// flag), DEFAULT_CONFIG_EFFORT is an unverified assumption (industry-standard middle default) — flag
+// it to the user if their pin ever turns out to checkmark the wrong effort button
+export const DEFAULT_CONFIG_MODEL = 'sonnet'
+export const DEFAULT_CONFIG_EFFORT = 'medium'
+
 const CONFIG_MODEL_LABELS = { fable: 'Fable', sonnet: 'Sonnet', opus: 'Opus' }
 
 // per chat key, not global like auth-mode: a per-project quality/cost choice, not a machine-wide credential switch.
@@ -718,11 +725,11 @@ export function classifyConfigPinSyncError(message) {
 
 export function buildConfigKeyboard(chatId, entry, authMode) {
   const modelRow = CONFIG_MODELS.map(m => ({
-    text: entry?.model === m ? `✅ ${CONFIG_MODEL_LABELS[m]}` : CONFIG_MODEL_LABELS[m],
+    text: (entry?.model ?? DEFAULT_CONFIG_MODEL) === m ? `✅ ${CONFIG_MODEL_LABELS[m]}` : CONFIG_MODEL_LABELS[m],
     callback_data: `cfg:model:${m}:${chatId}`,
   }))
   const effortRow = CONFIG_EFFORTS.map(e => ({
-    text: entry?.effort === e ? `✅ ${e}` : e,
+    text: (entry?.effort ?? DEFAULT_CONFIG_EFFORT) === e ? `✅ ${e}` : e,
     callback_data: `cfg:effort:${e}:${chatId}`,
   }))
   const normalizedAuthMode = normalizeAuthMode(authMode)
