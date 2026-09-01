@@ -72,6 +72,7 @@ import {
   buildWorkingPlaceholderParams,
   buildCancelKeyboard,
   buildContinueKeyboard,
+  buildListenKeyboard,
   parseCallbackData,
   CONFIG_MODELS,
   CONFIG_EFFORTS,
@@ -1067,6 +1068,29 @@ test('buildReplyCallsFromChunks: a threadId is not attached to an editMessageTex
   assert.deepEqual(calls, [{ method: 'editMessageText', params: { chat_id: '123', text: 'only', parse_mode: 'HTML', message_id: 777 } }])
 })
 
+test('buildReplyCallsFromChunks: a keyboard is attached to a single-chunk sendMessage call', () => {
+  const keyboard = { inline_keyboard: [[{ text: '🎵 Прослушать', callback_data: 'listen:123' }]] }
+  const calls = buildReplyCallsFromChunks('123', ['only'], 99, 'HTML', undefined, undefined, keyboard)
+  assert.deepEqual(calls, [
+    {
+      method: 'sendMessage',
+      params: { chat_id: '123', text: 'only', parse_mode: 'HTML', reply_parameters: { message_id: 99, allow_sending_without_reply: true }, reply_markup: keyboard },
+    },
+  ])
+})
+
+test('buildReplyCallsFromChunks: a keyboard is attached only to the last chunk of a multi-chunk reply', () => {
+  const keyboard = { inline_keyboard: [[{ text: '🎵 Прослушать', callback_data: 'listen:123' }]] }
+  const calls = buildReplyCallsFromChunks('123', ['first', 'second'], 99, 'HTML', undefined, undefined, keyboard)
+  assert.equal(calls[0].params.reply_markup, undefined)
+  assert.deepEqual(calls[1].params.reply_markup, keyboard)
+})
+
+test('buildReplyCallsFromChunks: a falsy keyboard adds no reply_markup', () => {
+  const calls = buildReplyCallsFromChunks('123', ['only'], 99, 'HTML', undefined, undefined, null)
+  assert.equal(calls[0].params.reply_markup, undefined)
+})
+
 test('extractReactionMarker: no marker leaves text untouched and emoji null', () => {
   assert.deepEqual(extractReactionMarker('just a plain reply'), { text: 'just a plain reply', emoji: null })
 })
@@ -1459,6 +1483,16 @@ test('parseCallbackData: parses a continue: payload into its action and chat id'
 
 test('parseCallbackData: parses a join: payload into its action and chat id', () => {
   assert.deepEqual(parseCallbackData('join:123'), { action: 'join', chatId: '123' })
+})
+
+test('buildListenKeyboard: builds a single-button inline keyboard scoped to the chat', () => {
+  assert.deepEqual(buildListenKeyboard('123'), {
+    inline_keyboard: [[{ text: '🎵 Прослушать', callback_data: 'listen:123' }]],
+  })
+})
+
+test('parseCallbackData: parses a listen: payload into its action and chat id', () => {
+  assert.deepEqual(parseCallbackData('listen:123'), { action: 'listen', chatId: '123' })
 })
 
 test('parseCallbackData: a chat id containing a colon (e.g. a supergroup topic id) is kept whole', () => {

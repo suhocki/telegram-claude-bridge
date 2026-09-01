@@ -78,6 +78,7 @@ import {
   buildTranscriptQuoteHtml,
   buildCancelKeyboard,
   buildContinueKeyboard,
+  buildListenKeyboard,
   parseCallbackData,
   getModelConfig,
   setModelConfigField,
@@ -416,10 +417,10 @@ const loadButtonsModule = createButtonsModuleLoader(resolveButtonsModulePath(but
 
 // Returns the ids of the messages it created (empty for an edit of an existing one) so a
 // caller can remember them and delete them later on a rewind.
-async function sendReply(chatId, text, replyToMessageId, editMessageId, threadId) {
+async function sendReply(chatId, text, replyToMessageId, editMessageId, threadId, keyboard) {
   const chunks = markdownToTelegramHtmlChunks(text || '(empty response)')
   const sentIds = []
-  for (const { method, params } of buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, 'HTML', editMessageId, threadId)) {
+  for (const { method, params } of buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, 'HTML', editMessageId, threadId, keyboard)) {
     let sent = null
     try {
       sent = await tg(method, params)
@@ -1339,13 +1340,13 @@ async function transcribeVoiceLogged(filePath) {
 
 async function sendVoiceReply(chatId, text, replyToMessageId, threadId) {
   const speechText = truncateForSpeech(buildSpeechText(text), voiceReplyConfig.maxTtsChars)
-  if (!speechText) return []
+  if (!speechText) return { ok: false, messageIds: [], error: 'nothing to say' }
   let apiKey
   try {
     apiKey = readFileSync(expandHome(voiceReplyConfig.apiKeyPath, homedir()), 'utf8').trim()
   } catch {
     log('voice reply skipped: no TTS api key at', voiceReplyConfig.apiKeyPath)
-    return []
+    return { ok: false, messageIds: [], error: 'no TTS api key configured' }
   }
   try {
     const { url, headers, body } = buildTtsRequestOptions(speechText, {
@@ -1370,10 +1371,11 @@ async function sendVoiceReply(chatId, text, replyToMessageId, threadId) {
     const sendRes = await fetchWithTimeout(fetch, `${API}/sendVoice`, { method: 'POST', body: form }, FILE_TRANSFER_TIMEOUT_MS)
     const data = await sendRes.json()
     if (!data.ok) throw new Error(data.description)
-    return data.result?.message_id != null ? [data.result.message_id] : []
+    const messageIds = data.result?.message_id != null ? [data.result.message_id] : []
+    return { ok: true, messageIds }
   } catch (e) {
     log('sendVoiceReply failed', e.message)
-    return []
+    return { ok: false, messageIds: [], error: e.message }
   }
 }
 
@@ -1605,8 +1607,12 @@ async function runClaudeTurn(
       replyText = `${buildCostWarning(newSession.costUsd, costWarnUsd)}\n\n${replyText}`
     }
     if (!suppressReply) {
+      // only the plain successful reply gets the button — not errors/compact/cost-warnings/empty replies, and never when audio is already sent automatically
+      const showListenButton =
+        !result.is_error && !isCompact && !costWarningCrossed && cleanedResult && !isVoiceReplyEnabled(state.voiceReply, key)
+      const keyboard = showListenButton ? buildListenKeyboard(chatId) : null
       // new message, not an edit of the placeholder, so Telegram pushes a notification
-      botMessageIds.push(...(await sendReply(chatId, replyText, originMessageId, null, threadId)))
+      botMessageIds.push(...(await sendReply(chatId, replyText, originMessageId, null, threadId, keyboard)))
     }
     if (currentPlaceholderId != null) {
       // only untrack on a confirmed delete, so a failed one still gets the finally block's cleanup + a rewind retry
@@ -1625,7 +1631,7 @@ async function runClaudeTurn(
     if (!result.is_error) {
       botMessageIds.push(...(await sendAttachments(chatId, attachPaths, originMessageId, threadId)))
       if (isVoiceReplyEnabled(state.voiceReply, key)) {
-        botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, originMessageId, threadId)))
+        botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, originMessageId, threadId)).messageIds)
       }
       if (checkin) scheduleCheckin(key, newSession?.id ?? sessionId, checkin)
     }
@@ -2092,12 +2098,38 @@ async function handleCallbackQuery(cq) {
     return
   }
 
-  // derived from the button's own message, not the callback_data payload, so a chat can only cancel/continue/join its own run
+  // derived from the button's own message, not the callback_data payload, so a chat can only cancel/continue/join/listen its own run
   const chatId = String(cq.message?.chat?.id ?? '')
   const key = threadKey(chatId, cq.message)
   const threadId = resolveThreadId(cq.message)
   if (!isCallbackQueryAuthorized(cq, allowedUserIds, groupsConfig)) {
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'not authorized', show_alert: true }).catch(() => {})
+    return
+  }
+
+  if (parsed.action === 'listen') {
+    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: '🎵 генерация…' }).catch(() => {})
+    const messageId = cq.message?.message_id
+    await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {})
+    let statusId = null
+    try {
+      const sent = await tg('sendMessage', {
+        chat_id: chatId,
+        text: '🎵 Генерация…',
+        reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
+        ...threadIdParam(threadId),
+      })
+      statusId = sent.message_id
+    } catch (e) {
+      log('listen status message failed', e.message)
+      return
+    }
+    const { ok, error } = await sendVoiceReply(chatId, cq.message?.text ?? '', messageId, threadId)
+    if (ok) {
+      await tg('deleteMessage', { chat_id: chatId, message_id: statusId }).catch(() => {})
+    } else {
+      await tg('editMessageText', { chat_id: chatId, message_id: statusId, text: `⚠️ не получилось озвучить: ${error || 'unknown error'}` }).catch(() => {})
+    }
     return
   }
 

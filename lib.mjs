@@ -399,7 +399,7 @@ export function buildOutboundAttachmentInstructions() {
   ].join('\n')
 }
 
-export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, parseMode, editMessageId, threadId) {
+export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, parseMode, editMessageId, threadId, keyboard) {
   return chunks.map((part, i) => {
     const params = { chat_id: chatId, text: part }
     if (parseMode) params.parse_mode = parseMode
@@ -410,6 +410,9 @@ export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, pars
     Object.assign(params, threadIdParam(threadId))
     if (i === 0 && replyToMessageId != null) {
       params.reply_parameters = { message_id: replyToMessageId, allow_sending_without_reply: true }
+    }
+    if (i === chunks.length - 1 && keyboard) {
+      params.reply_markup = keyboard
     }
     return { method: 'sendMessage', params }
   })
@@ -656,7 +659,11 @@ export function buildContinueKeyboard(chatId) {
   return { inline_keyboard: [[{ text: '▶️ Continue', callback_data: `continue:${chatId}` }]] }
 }
 
-const CALLBACK_DATA_RE = /^(cancel|continue|join):(.+)$/
+export function buildListenKeyboard(chatId) {
+  return { inline_keyboard: [[{ text: '🎵 Прослушать', callback_data: `listen:${chatId}` }]] }
+}
+
+const CALLBACK_DATA_RE = /^(cancel|continue|join|listen):(.+)$/
 
 export function parseCallbackData(data) {
   const m = String(data ?? '').match(CALLBACK_DATA_RE)
