@@ -838,6 +838,9 @@ export const DEFAULT_TTS_VOICE_SETTINGS = {
   use_speaker_boost: true,
 }
 
+export const DEFAULT_FISH_TTS_VOICE_ID = '0a690dbeb3984a9f88cd39353880775f'
+export const DEFAULT_FISH_TTS_MODEL_ID = 's2.1-pro-free'
+
 export function buildTtsRequestOptions(text, { voiceId, apiKey, modelId, voiceSettings } = {}) {
   return {
     url: `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`,
@@ -850,6 +853,23 @@ export function buildTtsRequestOptions(text, { voiceId, apiKey, modelId, voiceSe
       text,
       model_id: modelId ?? DEFAULT_TTS_MODEL_ID,
       voice_settings: voiceSettings ?? DEFAULT_TTS_VOICE_SETTINGS,
+    }),
+  }
+}
+
+export function buildFishTtsRequestOptions(text, { voiceId, apiKey, modelId } = {}) {
+  return {
+    url: 'https://api.fish.audio/v1/tts',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${apiKey}`,
+      model: modelId ?? DEFAULT_FISH_TTS_MODEL_ID,
+    },
+    body: JSON.stringify({
+      text,
+      reference_id: voiceId ?? DEFAULT_FISH_TTS_VOICE_ID,
+      format: 'mp3',
+      mp3_bitrate: 128,
     }),
   }
 }

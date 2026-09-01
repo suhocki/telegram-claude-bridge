@@ -37,7 +37,7 @@ persistent session per Telegram chat.
 - A Telegram bot token from [@BotFather](https://t.me/BotFather)
 - macOS, for the optional `launchd` auto-start setup (the bridge itself is cross-platform)
 - Optional: `whisper-cli` + a whisper.cpp model for voice message transcription
-- Optional: an ElevenLabs API key for voice replies
+- Optional: a Fish Audio API key for voice replies (default TTS provider), or an ElevenLabs API key to use that provider instead
 
 ## Setup
 
@@ -71,7 +71,7 @@ persistent session per Telegram chat.
    | `groups` | Per-group-chat config, keyed by chat ID — `requireMention` (bot must be @-mentioned) and `allowFrom` (allowed user IDs in that group) |
    | `costWarnUsd` | Warn in-chat once session cost crosses this USD threshold |
    | `voiceTranscription` | `whisperBin`, `modelPath`, `language` for transcribing incoming voice messages |
-   | `voiceReply` | `apiKeyPath`, `voiceId`, `modelId`, `maxTtsChars` for ElevenLabs TTS replies |
+   | `voiceReply` | `provider` (`'fish'` default, or `'elevenlabs'`), `apiKeyPath`, `voiceId`, `modelId`, `maxTtsChars` for TTS replies. Fish Audio (`https://fish.audio`) is the default provider, using the free `s2.1-pro-free` model and the "Меллстрой" voice; ElevenLabs remains available by setting `provider` to `'elevenlabs'` and pointing `apiKeyPath`/`voiceId`/`modelId` at an ElevenLabs key and voice |
    | `claudeArgs` | Extra args appended to every `claude -p` invocation |
    | `appendSystemPrompt` | Extra system prompt appended for every message (the example file's default explains the channel-tag format, attachments, and the `ATTACH`/`REACT`/`CHECKIN` reply markers to Claude) |
    | `buttonsModule` | Path (absolute, or relative to `cwd`) to a `.mjs` file exporting `buildKeyboard(context)` and `async handleCallback(callbackData, context)`, for a project's own inline-keyboard buttons. Loaded once and cached. Any tap whose `callback_data` isn't the bridge's own `cancel`/`join`/`continue`/`cfg:*` (the `/config` model/effort picker) is delegated to `handleCallback`; if it returns `{ handled: false }`, the tap is queued as a synthetic text message instead of being silently dropped. If `buttonsModule` isn't configured at all, unrecognized taps are ignored exactly as before (no import attempted) |

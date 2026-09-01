@@ -112,10 +112,13 @@ import {
   handleUnrecognizedCallback,
   buildBotIdentity,
   buildTtsRequestOptions,
+  buildFishTtsRequestOptions,
   buildOutboxFilename,
   DEFAULT_WHISPER_LANGUAGE,
   DEFAULT_TTS_MODEL_ID,
   DEFAULT_TTS_VOICE_SETTINGS,
+  DEFAULT_FISH_TTS_VOICE_ID,
+  DEFAULT_FISH_TTS_MODEL_ID,
   createTelegramClient,
   fetchWithTimeout,
   FetchTimeoutError,
@@ -1948,6 +1951,30 @@ test('buildTtsRequestOptions: honors an explicit modelId and voiceSettings overr
   const parsed = JSON.parse(body)
   assert.equal(parsed.model_id, 'm2')
   assert.deepEqual(parsed.voice_settings, settings)
+})
+
+test('buildFishTtsRequestOptions: builds the Fish Audio request shape', () => {
+  const { url, headers, body } = buildFishTtsRequestOptions('hello', { voiceId: 'v1', apiKey: 'key123' })
+  assert.equal(url, 'https://api.fish.audio/v1/tts')
+  assert.equal(headers.authorization, 'Bearer key123')
+  assert.equal(headers.model, DEFAULT_FISH_TTS_MODEL_ID)
+  const parsed = JSON.parse(body)
+  assert.equal(parsed.text, 'hello')
+  assert.equal(parsed.reference_id, 'v1')
+  assert.equal(parsed.format, 'mp3')
+  assert.equal(parsed.mp3_bitrate, 128)
+})
+
+test('buildFishTtsRequestOptions: falls back to default voiceId and modelId', () => {
+  const { headers, body } = buildFishTtsRequestOptions('hi', { apiKey: 'k' })
+  assert.equal(headers.model, DEFAULT_FISH_TTS_MODEL_ID)
+  const parsed = JSON.parse(body)
+  assert.equal(parsed.reference_id, DEFAULT_FISH_TTS_VOICE_ID)
+})
+
+test('buildFishTtsRequestOptions: honors an explicit modelId override', () => {
+  const { headers } = buildFishTtsRequestOptions('hi', { voiceId: 'v1', apiKey: 'k', modelId: 's1' })
+  assert.equal(headers.model, 's1')
 })
 
 test('buildOutboxFilename: combines timestamp and sanitized chat id with an mp3 extension', () => {

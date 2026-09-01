@@ -102,9 +102,10 @@ import {
   buildVoiceToggleReply,
   buildSpeechText,
   truncateForSpeech,
-  DEFAULT_TTS_VOICE_ID,
-  DEFAULT_TTS_MODEL_ID,
+  DEFAULT_FISH_TTS_VOICE_ID,
+  DEFAULT_FISH_TTS_MODEL_ID,
   buildTtsRequestOptions,
+  buildFishTtsRequestOptions,
   buildOutboxFilename,
   isGroupChatType,
   resolveGroupPolicy,
@@ -257,9 +258,10 @@ const voiceTranscriptionConfig = {
 }
 
 const voiceReplyConfig = {
-  apiKeyPath: '~/.config/tts/elevenlabs.key',
-  voiceId: DEFAULT_TTS_VOICE_ID,
-  modelId: DEFAULT_TTS_MODEL_ID,
+  provider: 'fish',
+  apiKeyPath: '~/.config/tts/fish.key',
+  voiceId: DEFAULT_FISH_TTS_VOICE_ID,
+  modelId: DEFAULT_FISH_TTS_MODEL_ID,
   maxTtsChars: 4000,
   ...config.voiceReply,
 }
@@ -1356,12 +1358,18 @@ async function sendVoiceReply(chatId, text, replyToMessageId, threadId, { alread
     return { ok: false, messageIds: [], error: 'no TTS api key configured' }
   }
   try {
-    const { url, headers, body } = buildTtsRequestOptions(speechText, {
-      voiceId: voiceReplyConfig.voiceId,
-      apiKey,
-      modelId: voiceReplyConfig.modelId,
-      voiceSettings: voiceReplyConfig.voiceSettings,
-    })
+    const { url, headers, body } = voiceReplyConfig.provider === 'elevenlabs'
+      ? buildTtsRequestOptions(speechText, {
+          voiceId: voiceReplyConfig.voiceId,
+          apiKey,
+          modelId: voiceReplyConfig.modelId,
+          voiceSettings: voiceReplyConfig.voiceSettings,
+        })
+      : buildFishTtsRequestOptions(speechText, {
+          voiceId: voiceReplyConfig.voiceId,
+          apiKey,
+          modelId: voiceReplyConfig.modelId,
+        })
     const res = await fetchWithTimeout(fetch, url, { method: 'POST', headers, body }, TTS_REQUEST_TIMEOUT_MS)
     if (!res.ok) throw new Error(`TTS request failed: HTTP ${res.status}`)
     const buf = Buffer.from(await res.arrayBuffer())
