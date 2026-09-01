@@ -125,6 +125,17 @@ import {
   DEFAULT_TTS_VOICE_SETTINGS,
   DEFAULT_FISH_TTS_VOICE_ID,
   DEFAULT_FISH_TTS_MODEL_ID,
+  DEFAULT_FISH_TTS_VOICE_TITLE,
+  FISH_VOICES_PAGE_SIZE,
+  buildFishVoiceListUrl,
+  parseFishVoiceListResponse,
+  hasNextFishVoicePage,
+  resolveFishVoiceLabel,
+  parseFishVoiceCallbackData,
+  parseFishVoicesPageCallbackData,
+  buildFishVoicesKeyboard,
+  markSelectedFishVoiceButton,
+  extractCallbackButtonTitle,
   createTelegramClient,
   fetchWithTimeout,
   FetchTimeoutError,
@@ -1711,6 +1722,156 @@ test('parseConfigCallbackData: an unrecognized field (including the removed "res
   assert.equal(parseConfigCallbackData(''), null)
   assert.equal(parseConfigCallbackData(undefined), null)
   assert.equal(parseConfigCallbackData(null), null)
+})
+
+test('buildConfigKeyboard: fishVoiceLabel omitted or null skips the 4th row entirely (non-Fish providers)', () => {
+  assert.equal(buildConfigKeyboard('123', {}, undefined).inline_keyboard.length, 3)
+  assert.equal(buildConfigKeyboard('123', {}, undefined, null).inline_keyboard.length, 3)
+})
+
+test('buildConfigKeyboard: a given fishVoiceLabel adds a 4th row with a single button that opens page 1', () => {
+  const keyboard = buildConfigKeyboard('123', {}, undefined, 'Меллстрой (default)')
+  assert.equal(keyboard.inline_keyboard.length, 4)
+  const [voiceRow] = keyboard.inline_keyboard.slice(3)
+  assert.deepEqual(voiceRow, [{ text: '🎙️ Voice: Меллстрой (default)', callback_data: 'fishvoices:1' }])
+})
+
+test('buildFishVoiceListUrl: defaults to RU + task_count sort + page 1 + the standard page size', () => {
+  const url = new URL(buildFishVoiceListUrl())
+  assert.equal(url.origin + url.pathname, 'https://api.fish.audio/model')
+  assert.equal(url.searchParams.get('language'), 'ru')
+  assert.equal(url.searchParams.get('sort_by'), 'task_count')
+  assert.equal(url.searchParams.get('page_size'), String(FISH_VOICES_PAGE_SIZE))
+  assert.equal(url.searchParams.get('page_number'), '1')
+})
+
+test('buildFishVoiceListUrl: pageNumber/pageSize override the defaults', () => {
+  const url = new URL(buildFishVoiceListUrl({ pageNumber: 3, pageSize: 5 }))
+  assert.equal(url.searchParams.get('page_number'), '3')
+  assert.equal(url.searchParams.get('page_size'), '5')
+})
+
+test('parseFishVoiceListResponse: keeps only type "tts" entries, mapped to {id, title}', () => {
+  const data = {
+    items: [
+      { _id: 'a'.repeat(32), title: 'Voice A', type: 'tts' },
+      { _id: 'b'.repeat(32), title: 'Voice B (svc)', type: 'svc' },
+      { _id: 'c'.repeat(32), title: 'Voice C', type: 'tts' },
+    ],
+  }
+  assert.deepEqual(parseFishVoiceListResponse(data), [
+    { id: 'a'.repeat(32), title: 'Voice A' },
+    { id: 'c'.repeat(32), title: 'Voice C' },
+  ])
+})
+
+test('parseFishVoiceListResponse: a missing/non-array items list returns an empty array instead of throwing', () => {
+  assert.deepEqual(parseFishVoiceListResponse({}), [])
+  assert.deepEqual(parseFishVoiceListResponse(null), [])
+  assert.deepEqual(parseFishVoiceListResponse({ items: 'nope' }), [])
+})
+
+test('hasNextFishVoicePage: true only while the next page still starts before the total', () => {
+  assert.equal(hasNextFishVoicePage(1, 8, 1005), true)
+  assert.equal(hasNextFishVoicePage(125, 8, 1005), true)
+  assert.equal(hasNextFishVoicePage(126, 8, 1005), false)
+})
+
+test('hasNextFishVoicePage: a missing/non-finite total is treated as 0 (no next page)', () => {
+  assert.equal(hasNextFishVoicePage(1, 8, undefined), false)
+  assert.equal(hasNextFishVoicePage(1, 8, NaN), false)
+})
+
+test('resolveFishVoiceLabel: no global override labels the hardcoded default', () => {
+  assert.equal(resolveFishVoiceLabel(null), `${DEFAULT_FISH_TTS_VOICE_TITLE} (default)`)
+  assert.equal(resolveFishVoiceLabel(undefined), `${DEFAULT_FISH_TTS_VOICE_TITLE} (default)`)
+})
+
+test('resolveFishVoiceLabel: a global override is labeled with its own stored title', () => {
+  assert.equal(resolveFishVoiceLabel({ id: 'x'.repeat(32), title: 'Зеленский' }), 'Зеленский')
+})
+
+test('parseFishVoiceCallbackData: parses a 32-char hex voice id', () => {
+  const id = '0a690dbeb3984a9f88cd39353880775f'
+  assert.deepEqual(parseFishVoiceCallbackData(`fishvoice:${id}`), { id })
+})
+
+test('parseFishVoiceCallbackData: rejects a non-hex or wrong-length id, and other callback prefixes', () => {
+  assert.equal(parseFishVoiceCallbackData('fishvoice:not-hex-at-all-not-hex-at-all'), null)
+  assert.equal(parseFishVoiceCallbackData('fishvoice:0a690dbeb3984a9f88cd39353880775'), null)
+  assert.equal(parseFishVoiceCallbackData('fishvoices:1'), null)
+  assert.equal(parseFishVoiceCallbackData('cfg:model:opus:123'), null)
+  assert.equal(parseFishVoiceCallbackData(undefined), null)
+})
+
+test('parseFishVoicesPageCallbackData: parses the page number', () => {
+  assert.deepEqual(parseFishVoicesPageCallbackData('fishvoices:1'), { pageNumber: 1 })
+  assert.deepEqual(parseFishVoicesPageCallbackData('fishvoices:12'), { pageNumber: 12 })
+})
+
+test('parseFishVoicesPageCallbackData: rejects non-numeric pages and other callback prefixes', () => {
+  assert.equal(parseFishVoicesPageCallbackData('fishvoices:one'), null)
+  assert.equal(parseFishVoicesPageCallbackData('fishvoice:0a690dbeb3984a9f88cd39353880775f'), null)
+  assert.equal(parseFishVoicesPageCallbackData(undefined), null)
+})
+
+test('buildFishVoicesKeyboard: one voice per row, checkmarking the active voice, no nav row when there is nothing to page', () => {
+  const voices = [{ id: 'a'.repeat(32), title: 'Voice A' }, { id: 'b'.repeat(32), title: 'Voice B' }]
+  const keyboard = buildFishVoicesKeyboard({ voices, pageNumber: 1, activeVoiceId: 'b'.repeat(32), hasNext: false })
+  assert.deepEqual(keyboard.inline_keyboard, [
+    [{ text: 'Voice A', callback_data: `fishvoice:${'a'.repeat(32)}` }],
+    [{ text: '✅ Voice B', callback_data: `fishvoice:${'b'.repeat(32)}` }],
+  ])
+})
+
+test('buildFishVoicesKeyboard: Prev appears only past page 1, Next appears only when hasNext, both share one trailing row', () => {
+  const voices = [{ id: 'a'.repeat(32), title: 'Voice A' }]
+  const first = buildFishVoicesKeyboard({ voices, pageNumber: 1, activeVoiceId: null, hasNext: true })
+  assert.deepEqual(first.inline_keyboard.at(-1), [{ text: 'Next ➡️', callback_data: 'fishvoices:2' }])
+  const middle = buildFishVoicesKeyboard({ voices, pageNumber: 2, activeVoiceId: null, hasNext: true })
+  assert.deepEqual(middle.inline_keyboard.at(-1), [
+    { text: '⬅️ Prev', callback_data: 'fishvoices:1' },
+    { text: 'Next ➡️', callback_data: 'fishvoices:3' },
+  ])
+  const last = buildFishVoicesKeyboard({ voices, pageNumber: 3, activeVoiceId: null, hasNext: false })
+  assert.deepEqual(last.inline_keyboard.at(-1), [{ text: '⬅️ Prev', callback_data: 'fishvoices:2' }])
+})
+
+test('buildFishVoicesKeyboard: no Prev/Next at all means no trailing nav row is appended', () => {
+  const voices = [{ id: 'a'.repeat(32), title: 'Voice A' }]
+  const keyboard = buildFishVoicesKeyboard({ voices, pageNumber: 1, activeVoiceId: null, hasNext: false })
+  assert.equal(keyboard.inline_keyboard.length, 1)
+})
+
+test('markSelectedFishVoiceButton: moves the ✅ to the selected id and strips it from every other voice button', () => {
+  const idA = 'a'.repeat(32)
+  const idB = 'b'.repeat(32)
+  const keyboard = {
+    inline_keyboard: [
+      [{ text: '✅ Voice A', callback_data: `fishvoice:${idA}` }],
+      [{ text: 'Voice B', callback_data: `fishvoice:${idB}` }],
+      [{ text: '⬅️ Prev', callback_data: 'fishvoices:1' }],
+    ],
+  }
+  const updated = markSelectedFishVoiceButton(keyboard, idB)
+  assert.deepEqual(updated.inline_keyboard, [
+    [{ text: 'Voice A', callback_data: `fishvoice:${idA}` }],
+    [{ text: '✅ Voice B', callback_data: `fishvoice:${idB}` }],
+    [{ text: '⬅️ Prev', callback_data: 'fishvoices:1' }],
+  ])
+})
+
+test('extractCallbackButtonTitle: finds the tapped button by callback_data and strips any ✅ prefix', () => {
+  const id = 'a'.repeat(32)
+  const keyboard = { inline_keyboard: [[{ text: '✅ Voice A', callback_data: `fishvoice:${id}` }]] }
+  assert.equal(extractCallbackButtonTitle(keyboard, `fishvoice:${id}`), 'Voice A')
+})
+
+test('extractCallbackButtonTitle: no matching button, or no keyboard at all, returns null', () => {
+  const keyboard = { inline_keyboard: [[{ text: 'Voice A', callback_data: `fishvoice:${'a'.repeat(32)}` }]] }
+  assert.equal(extractCallbackButtonTitle(keyboard, `fishvoice:${'b'.repeat(32)}`), null)
+  assert.equal(extractCallbackButtonTitle(undefined, 'fishvoice:x'), null)
+  assert.equal(extractCallbackButtonTitle(null, 'fishvoice:x'), null)
 })
 
 test('buildCancelKeyboard: joinCount=0 (the default) omits the Join button entirely', () => {
