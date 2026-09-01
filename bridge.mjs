@@ -102,8 +102,7 @@ import {
   buildVoiceToggleReply,
   buildSpeechText,
   truncateForSpeech,
-  DEFAULT_FISH_TTS_VOICE_ID,
-  DEFAULT_FISH_TTS_MODEL_ID,
+  resolveVoiceReplyConfig,
   buildTtsRequestOptions,
   buildFishTtsRequestOptions,
   buildOutboxFilename,
@@ -257,14 +256,7 @@ const voiceTranscriptionConfig = {
   ...config.voiceTranscription,
 }
 
-const voiceReplyConfig = {
-  provider: 'fish',
-  apiKeyPath: '~/.config/tts/fish.key',
-  voiceId: DEFAULT_FISH_TTS_VOICE_ID,
-  modelId: DEFAULT_FISH_TTS_MODEL_ID,
-  maxTtsChars: 4000,
-  ...config.voiceReply,
-}
+const voiceReplyConfig = resolveVoiceReplyConfig(config.voiceReply)
 
 function log(...args) {
   console.log(new Date().toISOString(), ...args)

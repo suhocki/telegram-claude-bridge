@@ -874,6 +874,34 @@ export function buildFishTtsRequestOptions(text, { voiceId, apiKey, modelId } = 
   }
 }
 
+export function normalizeTtsProvider(raw) {
+  return raw === 'elevenlabs' ? 'elevenlabs' : 'fish'
+}
+
+const VOICE_REPLY_PROVIDER_DEFAULTS = {
+  fish: {
+    apiKeyPath: '~/.config/tts/fish.key',
+    voiceId: DEFAULT_FISH_TTS_VOICE_ID,
+    modelId: DEFAULT_FISH_TTS_MODEL_ID,
+  },
+  elevenlabs: {
+    apiKeyPath: '~/.config/tts/elevenlabs.key',
+    voiceId: DEFAULT_TTS_VOICE_ID,
+    modelId: DEFAULT_TTS_MODEL_ID,
+  },
+}
+
+// provider drives its own apiKeyPath/voiceId/modelId defaults so switching provider alone (without hand-copying the other three fields) can't leave a stale cross-provider id/key pairing.
+export function resolveVoiceReplyConfig(overrides = {}) {
+  const provider = normalizeTtsProvider(overrides.provider)
+  return {
+    maxTtsChars: 4000,
+    ...VOICE_REPLY_PROVIDER_DEFAULTS[provider],
+    ...overrides,
+    provider,
+  }
+}
+
 export function buildOutboxFilename(timestampMs, chatId) {
   return `${timestampMs}-${sanitizeIdForFilename(chatId)}.mp3`
 }
