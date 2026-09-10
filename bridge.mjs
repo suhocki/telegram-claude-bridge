@@ -41,6 +41,9 @@ import {
   extractReplyToMessageId,
   resolveJoinedReplyToMessage,
   buildAttachmentCaption,
+  buildAttachmentsCaption,
+  buildMultiAttachmentAttrs,
+  mergeMediaGroupMessages,
   isServiceMessage,
   exceedsAttachmentLimit,
   buildInboxFilename,
@@ -1822,7 +1825,9 @@ async function handleMessage(msg) {
   if (!isAuthorizedMessage(msg)) return
   // every authorized message supersedes whatever interrupted turn a Continue button was still offering, regardless of which branch below handles it
   await clearPendingContinue(chatId, key)
-  const attachment = extractAttachment(msg)
+  const groupedMessages = msg.mediaGroupMessages ?? null
+  const attachments = groupedMessages ? groupedMessages.map(extractAttachment).filter(Boolean) : [extractAttachment(msg)].filter(Boolean)
+  const attachment = attachments[0] ?? null
   const content = msg.text ?? msg.caption ?? null
   if (content == null && !attachment && isServiceMessage(msg)) {
     log('ignoring service message', key, msg.message_id)
@@ -1900,7 +1905,7 @@ async function handleMessage(msg) {
     meta = resolveMessageMeta(decision, pendingEntry, fallbackMeta)
     promptText = decision.text
   }
-  if (!promptText && attachment) promptText = buildAttachmentCaption(attachment)
+  if (!promptText && attachment) promptText = buildAttachmentsCaption(attachments)
 
   await setReaction(chatId, msg.message_id, RECEIPT_REACTION)
 
@@ -1935,8 +1940,8 @@ async function handleMessage(msg) {
       log('failed to send working placeholder', e.message)
     }
 
-    let attachmentResult = null
-    if (attachment) attachmentResult = await downloadAttachmentLogged(attachment)
+    const attachmentResults = attachments.length ? await Promise.all(attachments.map(downloadAttachmentLogged)) : []
+    const attachmentResult = attachmentResults[0] ?? null
 
     let transcriptionError = null
     if (attachment?.kind === 'voice' && attachmentResult?.path) {
@@ -1971,16 +1976,19 @@ async function handleMessage(msg) {
       }
     }
 
-    const attachmentAttrs = attachment
-      ? {
-          attachment_kind: attachment.kind,
-          attachment_name: attachment.name,
-          attachment_mime: attachment.mime,
-          attachment_path: attachmentResult?.path,
-          attachment_error: attachmentResult?.error,
-          attachment_transcription_error: transcriptionError,
-        }
-      : {}
+    const attachmentAttrs =
+      attachments.length > 1
+        ? buildMultiAttachmentAttrs(attachments, attachmentResults)
+        : attachment
+          ? {
+              attachment_kind: attachment.kind,
+              attachment_name: attachment.name,
+              attachment_mime: attachment.mime,
+              attachment_path: attachmentResult?.path,
+              attachment_error: attachmentResult?.error,
+              attachment_transcription_error: transcriptionError,
+            }
+          : {}
 
     const channelAttrs = {
       ...attachmentAttrs,
@@ -2379,6 +2387,32 @@ async function handleCallbackQuery(cq) {
   chatQueue.enqueue(key, () => handleContinue(chatId, key, threadId, pending)).catch(e => log('queued handleContinue rejected', e))
 }
 
+// Telegram never tells us how many items an album holds, so completion is detected by a quiet
+// period: each arriving item resets the timer, and it only flushes once nothing new shows up.
+const mediaGroupBuffers = new Map()
+const MEDIA_GROUP_DEBOUNCE_MS = 1200
+
+function flushMediaGroup(mediaGroupId) {
+  const buf = mediaGroupBuffers.get(mediaGroupId)
+  if (!buf) return
+  mediaGroupBuffers.delete(mediaGroupId)
+  const messages = buf.messages.sort((a, b) => a.message_id - b.message_id)
+  const merged = messages.length > 1 ? mergeMediaGroupMessages(messages) : messages[0]
+  const key = threadKey(buf.chatId, merged)
+  chatQueue.enqueue(key, () => runQueuedMessage(key, merged)).catch(e => log('queued handleMessage rejected', e))
+}
+
+function bufferMediaGroupMessage(chatId, msg) {
+  let buf = mediaGroupBuffers.get(msg.media_group_id)
+  if (!buf) {
+    buf = { chatId, messages: [] }
+    mediaGroupBuffers.set(msg.media_group_id, buf)
+  }
+  buf.messages.push(msg)
+  clearTimeout(buf.timer)
+  buf.timer = setTimeout(() => flushMediaGroup(msg.media_group_id), MEDIA_GROUP_DEBOUNCE_MS)
+}
+
 async function poll() {
   try {
     botIdentity = buildBotIdentity(await tg('getMe', {}))
@@ -2405,12 +2439,16 @@ async function poll() {
         saveState(state)
         if (u.message) {
           const chatId = String(u.message.chat.id)
-          const key = threadKey(chatId, u.message)
-          const activeRun = activeRuns.get(key)
-          if (activeRun && isAuthorizedMessage(u.message) && isJoinableMessage(u.message, botIdentity.username)) {
-            addPendingJoinMessage(chatId, key, activeRun, u.message).catch(e => log('failed to track pending join message', e.message))
+          if (u.message.media_group_id) {
+            bufferMediaGroupMessage(chatId, u.message)
+          } else {
+            const key = threadKey(chatId, u.message)
+            const activeRun = activeRuns.get(key)
+            if (activeRun && isAuthorizedMessage(u.message) && isJoinableMessage(u.message, botIdentity.username)) {
+              addPendingJoinMessage(chatId, key, activeRun, u.message).catch(e => log('failed to track pending join message', e.message))
+            }
+            chatQueue.enqueue(key, () => runQueuedMessage(key, u.message)).catch(e => log('queued handleMessage rejected', e))
           }
-          chatQueue.enqueue(key, () => runQueuedMessage(key, u.message)).catch(e => log('queued handleMessage rejected', e))
         } else if (u.edited_message) {
           const chatId = String(u.edited_message.chat.id)
           const key = threadKey(chatId, u.edited_message)

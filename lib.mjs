@@ -206,6 +206,36 @@ export function exceedsAttachmentLimit(size) {
   return typeof size === 'number' && size > MAX_ATTACHMENT_BYTES
 }
 
+// caption text on a Telegram album lands on whichever item the sender attached it to, not necessarily the first
+export function mergeMediaGroupMessages(messages) {
+  const first = messages[0]
+  const caption = messages.map(m => m.caption).find(c => typeof c === 'string' && c.trim())
+  return { ...first, caption, caption_entities: undefined, mediaGroupMessages: messages }
+}
+
+export function buildAttachmentsCaption(attachments) {
+  if (!attachments?.length) return ''
+  if (attachments.length === 1) return buildAttachmentCaption(attachments[0])
+  const counts = new Map()
+  for (const a of attachments) counts.set(a.kind, (counts.get(a.kind) ?? 0) + 1)
+  const parts = [...counts.entries()].map(([kind, count]) => `${count} ${kind}${count > 1 ? 's' : ''}`)
+  return `(${parts.join(', ')})`
+}
+
+// positional comma lists, one entry per attachment — name/mime/error columns are dropped
+// entirely when every attachment lacks them, keeping the common all-photos case clean
+export function buildMultiAttachmentAttrs(attachments, results) {
+  const attrs = {
+    attachment_count: attachments.length,
+    attachment_kinds: attachments.map(a => a.kind).join(','),
+    attachment_paths: results.map(r => r?.path ?? '').join(','),
+  }
+  if (attachments.some(a => a.name)) attrs.attachment_names = attachments.map(a => a.name ?? '').join(',')
+  if (attachments.some(a => a.mime)) attrs.attachment_mimes = attachments.map(a => a.mime ?? '').join(',')
+  if (results.some(r => r?.error)) attrs.attachment_errors = results.map(r => r?.error ?? '').join(',')
+  return attrs
+}
+
 const KNOWN_SERVICE_MESSAGE_FIELDS = [
   'new_chat_members',
   'left_chat_member',

@@ -27,6 +27,9 @@ import {
   extractReplyToMessageId,
   resolveJoinedReplyToMessage,
   buildAttachmentCaption,
+  buildAttachmentsCaption,
+  buildMultiAttachmentAttrs,
+  mergeMediaGroupMessages,
   exceedsAttachmentLimit,
   isServiceMessage,
   resolveAttachmentExtension,
@@ -1896,6 +1899,64 @@ test('buildCancelKeyboard: a positive joinCount adds a Join button next to Cance
         { text: '⬇️ Join (2)', callback_data: 'join:123' },
       ],
     ],
+  })
+})
+
+test('mergeMediaGroupMessages: keeps chat/from/message_id from the first message', () => {
+  const first = { message_id: 10, chat: { id: 1 }, from: { id: 2 }, photo: [{ file_id: 'p1', file_size: 1 }] }
+  const second = { message_id: 11, chat: { id: 1 }, from: { id: 2 }, photo: [{ file_id: 'p2', file_size: 1 }] }
+  const merged = mergeMediaGroupMessages([first, second])
+  assert.equal(merged.message_id, 10)
+  assert.deepEqual(merged.photo, first.photo)
+})
+
+test('mergeMediaGroupMessages: caption comes from whichever item carries it, not necessarily the first', () => {
+  const first = { message_id: 10, photo: [{ file_id: 'p1', file_size: 1 }] }
+  const second = { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }], caption: 'look at these' }
+  const merged = mergeMediaGroupMessages([first, second])
+  assert.equal(merged.caption, 'look at these')
+})
+
+test('mergeMediaGroupMessages: no caption anywhere leaves it undefined', () => {
+  const first = { message_id: 10, photo: [{ file_id: 'p1', file_size: 1 }] }
+  const second = { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }] }
+  const merged = mergeMediaGroupMessages([first, second])
+  assert.equal(merged.caption, undefined)
+})
+
+test('buildAttachmentsCaption: a single attachment delegates to buildAttachmentCaption', () => {
+  assert.equal(buildAttachmentsCaption([{ kind: 'photo' }]), '(photo)')
+})
+
+test('buildAttachmentsCaption: multiple attachments summarize counts by kind', () => {
+  assert.equal(buildAttachmentsCaption([{ kind: 'photo' }, { kind: 'photo' }, { kind: 'photo' }]), '(3 photos)')
+  assert.equal(buildAttachmentsCaption([{ kind: 'photo' }, { kind: 'video' }]), '(1 photo, 1 video)')
+})
+
+test('buildAttachmentsCaption: empty or missing input returns an empty string', () => {
+  assert.equal(buildAttachmentsCaption([]), '')
+  assert.equal(buildAttachmentsCaption(null), '')
+})
+
+test('buildMultiAttachmentAttrs: positional comma lists, omitting name/mime/error columns when unused', () => {
+  const attachments = [{ kind: 'photo' }, { kind: 'photo' }]
+  const results = [{ path: '/a.jpg' }, { path: '/b.jpg' }]
+  assert.deepEqual(buildMultiAttachmentAttrs(attachments, results), {
+    attachment_count: 2,
+    attachment_kinds: 'photo,photo',
+    attachment_paths: '/a.jpg,/b.jpg',
+  })
+})
+
+test('buildMultiAttachmentAttrs: includes names/mimes/errors columns once any attachment has one', () => {
+  const attachments = [{ kind: 'document', name: 'a.pdf' }, { kind: 'photo' }]
+  const results = [{ path: '/a.pdf' }, { error: 'download failed' }]
+  assert.deepEqual(buildMultiAttachmentAttrs(attachments, results), {
+    attachment_count: 2,
+    attachment_kinds: 'document,photo',
+    attachment_paths: '/a.pdf,',
+    attachment_names: 'a.pdf,',
+    attachment_errors: ',download failed',
   })
 })
 
