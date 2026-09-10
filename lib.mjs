@@ -1068,6 +1068,8 @@ export function isSenderAllowedInGroup(policy, userId) {
 }
 
 export function isBotMentioned(msg, botUsername, botId) {
+  // a merged album only keeps one member's caption/entities, so a mention on any other member must be checked separately
+  if (Array.isArray(msg?.mediaGroupMessages)) return msg.mediaGroupMessages.some(m => isBotMentioned(m, botUsername, botId))
   const text = msg?.text ?? msg?.caption ?? ''
   const entities = msg?.entities ?? msg?.caption_entities ?? []
   if (!Array.isArray(entities)) return false
@@ -1088,6 +1090,7 @@ export function isBotMentioned(msg, botUsername, botId) {
 }
 
 export function isReplyToBot(msg, botId) {
+  if (Array.isArray(msg?.mediaGroupMessages)) return msg.mediaGroupMessages.some(m => isReplyToBot(m, botId))
   const replyFromId = msg?.reply_to_message?.from?.id
   return replyFromId != null && botId != null && String(replyFromId) === String(botId)
 }
@@ -1237,10 +1240,14 @@ export function findTurnIndexByMessageId(turnList, messageId) {
   return turnList.findIndex(t => String(t?.userMessageId) === needle || (t?.memberMessages ?? []).some(m => String(m?.message_id) === needle))
 }
 
-// editing one item's caption in an album must not silently drop the rest of it from the regenerated turn
 export function rebuildEditedMediaGroupMessage(memberMessages, editedMsg) {
   const messages = memberMessages.map(m => (String(m.message_id) === String(editedMsg.message_id) ? editedMsg : m))
-  return mergeMediaGroupMessages(messages)
+  const merged = mergeMediaGroupMessages(messages)
+  const editedCaptionIsNonEmpty = typeof editedMsg.caption === 'string' && Boolean(editedMsg.caption.trim())
+  if (editedCaptionIsNonEmpty) {
+    return { ...merged, caption: editedMsg.caption, caption_entities: editedMsg.caption_entities }
+  }
+  return merged
 }
 
 export function findTurnIndexByBotMessageId(turnList, messageId) {

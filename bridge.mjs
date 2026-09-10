@@ -876,6 +876,9 @@ async function handleEditedMessage(msg) {
   const turnList = state.turns[key] ?? []
   const turnIndex = findTurnIndexByMessageId(turnList, msg.message_id)
   const turn = turnIndex >= 0 ? turnList[turnIndex] : null
+  // resolved before any side effect below, since a required @mention can land on any album member, not just the edited one
+  const editedMsg = (turn?.memberMessages?.length ?? 0) > 1 ? rebuildEditedMediaGroupMessage(turn.memberMessages, msg) : msg
+  if (!isAuthorizedMessage(editedMsg)) return
   const session = normalizeSession(state.sessions[key])
 
   if (!turn || !session || turn.sessionId !== session.id) {
@@ -903,8 +906,6 @@ async function handleEditedMessage(msg) {
   await clearPendingContinue(chatId, key)
   saveState(state)
 
-  // an edit on a non-first album member must not drop its siblings from the regenerated turn
-  const editedMsg = (turn.memberMessages?.length ?? 0) > 1 ? rebuildEditedMediaGroupMessage(turn.memberMessages, msg) : msg
   await handleMessage(editedMsg)
 }
 
@@ -1832,6 +1833,8 @@ async function handleMessage(msg) {
   await clearPendingContinue(chatId, key)
   const groupedMessages = msg.mediaGroupMessages ?? null
   const memberMessages = groupedMessages ?? [msg]
+  const reactionMessageIds = memberMessages.map(m => m.message_id)
+  const albumMemberMessages = groupedMessages ?? undefined
   const attachments = memberMessages.map(extractAttachment).filter(Boolean)
   const attachment = attachments[0] ?? null
   const content = msg.text ?? msg.caption ?? null
@@ -2017,15 +2020,20 @@ async function handleMessage(msg) {
       workingStatus,
       botMessageIds,
       originMessageId: msg.message_id,
-      reactionMessageIds: memberMessages.map(m => m.message_id),
+      reactionMessageIds,
       isCompact: command === 'compact',
-      turnMeta: { originMessageId: msg.message_id, anchorMessageId: meta.messageId },
+      turnMeta: {
+        originMessageId: msg.message_id,
+        anchorMessageId: meta.messageId,
+        reactionMessageIds,
+        memberMessages: albumMemberMessages,
+      },
     })
   })
 
   state.turns = appendTurn(state.turns, key, {
     userMessageId: msg.message_id,
-    memberMessages: groupedMessages ?? undefined,
+    memberMessages: albumMemberMessages,
     anchorMessageId: meta.messageId,
     sessionId: turnResult.sessionId,
     botMessageIds: turnResult.botMessageIds,
@@ -2062,15 +2070,22 @@ async function handleContinue(chatId, key, threadId, pending) {
       workingStatus,
       botMessageIds,
       originMessageId: pending.originMessageId,
+      reactionMessageIds: pending.reactionMessageIds,
       isCompact: pending.isCompact,
       isResume: true,
       checkpointHistory: pending.checkpointHistory ?? [],
-      turnMeta: { originMessageId: pending.originMessageId, anchorMessageId: pending.anchorMessageId },
+      turnMeta: {
+        originMessageId: pending.originMessageId,
+        anchorMessageId: pending.anchorMessageId,
+        reactionMessageIds: pending.reactionMessageIds,
+        memberMessages: pending.memberMessages,
+      },
     })
   )
 
   state.turns = appendTurn(state.turns, key, {
     userMessageId: pending.originMessageId,
+    memberMessages: pending.memberMessages,
     anchorMessageId: pending.anchorMessageId,
     sessionId: turnResult.sessionId,
     botMessageIds: turnResult.botMessageIds,
@@ -2450,8 +2465,7 @@ async function poll() {
         if (u.message) {
           const chatId = String(u.message.chat.id)
           if (u.message.media_group_id) {
-            // unauthorized senders are dropped now rather than buffered for a debounce cycle first
-            if (isAuthorizedMessage(u.message)) bufferMediaGroupMessage(chatId, u.message)
+            bufferMediaGroupMessage(chatId, u.message)
           } else {
             const key = threadKey(chatId, u.message)
             const activeRun = activeRuns.get(key)
@@ -2463,14 +2477,11 @@ async function poll() {
         } else if (u.edited_message) {
           const chatId = String(u.edited_message.chat.id)
           const key = threadKey(chatId, u.edited_message)
-          if (isAuthorizedMessage(u.edited_message)) {
-            // whatever is running now can only be this turn or a later one, and the rewind
-            // is about to erase both — so stop it before it burns more tokens
-            activeRuns.get(key)?.cancel()
-            chatQueue
-              .enqueue(key, () => handleEditedMessage(u.edited_message))
-              .catch(e => log('queued handleEditedMessage rejected', e))
-          }
+          // best-effort early stop only — an unauthorized/unmentioned editor must not be able to kill another user's run sharing this chat-scoped key
+          if (isAuthorizedMessage(u.edited_message)) activeRuns.get(key)?.cancel()
+          chatQueue
+            .enqueue(key, () => handleEditedMessage(u.edited_message))
+            .catch(e => log('queued handleEditedMessage rejected', e))
         } else if (u.callback_query) {
           handleCallbackQuery(u.callback_query).catch(e => log('callback query handling rejected', e))
         }

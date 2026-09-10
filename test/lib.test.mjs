@@ -2419,6 +2419,27 @@ test('isBotMentioned: no entities means no mention', () => {
   assert.equal(isBotMentioned({ text: 'hey @mybot' }, 'mybot', '111'), false)
 })
 
+test('isBotMentioned: a merged album is mentioned if any member carries the mention, not just the one whose caption won the merge', () => {
+  const merged = {
+    caption: 'no mention here',
+    caption_entities: [],
+    mediaGroupMessages: [
+      { caption: 'no mention here', caption_entities: [] },
+      { caption: 'hey @mybot', caption_entities: [{ type: 'mention', offset: 4, length: 6 }] },
+    ],
+  }
+  assert.equal(isBotMentioned(merged, 'mybot', '111'), true)
+})
+
+test('isBotMentioned: a merged album with no member mentioning the bot is not mentioned', () => {
+  const merged = {
+    caption: 'no mention here',
+    caption_entities: [],
+    mediaGroupMessages: [{ caption: 'no mention here', caption_entities: [] }, { caption: 'also nothing' }],
+  }
+  assert.equal(isBotMentioned(merged, 'mybot', '111'), false)
+})
+
 test('isBotMentioned: a "/cmd@botname" bot_command entity naming this bot counts as a mention', () => {
   const msg = { text: '/new@mybot', entities: [{ type: 'bot_command', offset: 0, length: 10 }] }
   assert.equal(isBotMentioned(msg, 'mybot', '111'), true)
@@ -2446,6 +2467,13 @@ test('isReplyToBot: false when replying to a message from someone else', () => {
 
 test('isReplyToBot: false when there is no reply', () => {
   assert.equal(isReplyToBot({}, '111'), false)
+})
+
+test('isReplyToBot: a merged album is a reply-to-bot if any member carries it', () => {
+  const merged = {
+    mediaGroupMessages: [{ reply_to_message: { from: { id: 222 } } }, { reply_to_message: { from: { id: 111 } } }],
+  }
+  assert.equal(isReplyToBot(merged, '111'), true)
 })
 
 test('isMentioned: true via either @mention or reply-to-bot', () => {
@@ -2986,6 +3014,28 @@ test('rebuildEditedMediaGroupMessage: swaps in the edited copy of one member wit
   assert.equal(rebuilt.mediaGroupMessages[1].caption, 'new caption')
   assert.deepEqual(rebuilt.mediaGroupMessages[0].photo, memberMessages[0].photo)
   assert.deepEqual(rebuilt.mediaGroupMessages[2].photo, memberMessages[2].photo)
+})
+
+test('rebuildEditedMediaGroupMessage: the just-edited caption wins even when an earlier member already had one', () => {
+  const memberMessages = [
+    { message_id: 10, photo: [{ file_id: 'p1', file_size: 1 }], caption: 'earlier caption' },
+    { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }] },
+  ]
+  const entities = [{ type: 'bold', offset: 0, length: 3 }]
+  const editedMsg = { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }], caption: 'new caption', caption_entities: entities }
+  const rebuilt = rebuildEditedMediaGroupMessage(memberMessages, editedMsg)
+  assert.equal(rebuilt.caption, 'new caption')
+  assert.deepEqual(rebuilt.caption_entities, entities)
+})
+
+test('rebuildEditedMediaGroupMessage: clearing the edited caption falls back to the usual first-non-empty pick', () => {
+  const memberMessages = [
+    { message_id: 10, photo: [{ file_id: 'p1', file_size: 1 }], caption: 'earlier caption' },
+    { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }], caption: 'to be cleared' },
+  ]
+  const editedMsg = { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }], caption: undefined }
+  const rebuilt = rebuildEditedMediaGroupMessage(memberMessages, editedMsg)
+  assert.equal(rebuilt.caption, 'earlier caption')
 })
 
 test('findTurnIndexByBotMessageId: finds the turn owning a given bot message id, across string/number ids', () => {
