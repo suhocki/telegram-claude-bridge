@@ -41,6 +41,10 @@ import {
   extractReplyToMessageId,
   resolveJoinedReplyToMessage,
   buildAttachmentCaption,
+  buildAttachmentsCaption,
+  buildMultiAttachmentAttrs,
+  mergeMediaGroupMessages,
+  rebuildEditedMediaGroupMessage,
   isServiceMessage,
   exceedsAttachmentLimit,
   buildInboxFilename,
@@ -899,7 +903,9 @@ async function handleEditedMessage(msg) {
   await clearPendingContinue(chatId, key)
   saveState(state)
 
-  await handleMessage(msg)
+  // an edit on a non-first album member must not drop its siblings from the regenerated turn
+  const editedMsg = (turn.memberMessages?.length ?? 0) > 1 ? rebuildEditedMediaGroupMessage(turn.memberMessages, msg) : msg
+  await handleMessage(editedMsg)
 }
 
 function clearCheckinTimer(key) {
@@ -1608,6 +1614,7 @@ async function runClaudeTurn(
     workingStatus,
     botMessageIds,
     originMessageId = null,
+    reactionMessageIds = originMessageId != null ? [originMessageId] : [],
     isCompact = false,
     isResume = false,
     checkpointHistory = [],
@@ -1743,9 +1750,10 @@ async function runClaudeTurn(
       }
       if (checkin) scheduleCheckin(key, newSession?.id ?? sessionId, checkin)
     }
-    if (originMessageId != null) {
+    if (reactionMessageIds.length) {
       // on success, clear the 👀 receipt reaction instead of swapping in a 👍 — the reply itself is the signal now
-      await setReaction(chatId, originMessageId, reactionEmoji || (result.is_error ? ERROR_REACTION : null))
+      const outcome = reactionEmoji || (result.is_error ? ERROR_REACTION : null)
+      await Promise.all(reactionMessageIds.map(id => setReaction(chatId, id, outcome)))
     }
   } catch (e) {
     run.finished = true
@@ -1785,7 +1793,7 @@ async function runClaudeTurn(
     } else {
       log('handleMessage error', e)
       botMessageIds.push(...(await sendReply(chatId, `⚠️ bridge error: ${e.message}`, originMessageId, currentPlaceholderId, threadId).catch(() => [])))
-      if (originMessageId != null) await setReaction(chatId, originMessageId, ERROR_REACTION)
+      if (reactionMessageIds.length) await Promise.all(reactionMessageIds.map(id => setReaction(chatId, id, ERROR_REACTION)))
     }
   } finally {
     rootController.statusUpdater.stop()
@@ -1822,7 +1830,10 @@ async function handleMessage(msg) {
   if (!isAuthorizedMessage(msg)) return
   // every authorized message supersedes whatever interrupted turn a Continue button was still offering, regardless of which branch below handles it
   await clearPendingContinue(chatId, key)
-  const attachment = extractAttachment(msg)
+  const groupedMessages = msg.mediaGroupMessages ?? null
+  const memberMessages = groupedMessages ?? [msg]
+  const attachments = memberMessages.map(extractAttachment).filter(Boolean)
+  const attachment = attachments[0] ?? null
   const content = msg.text ?? msg.caption ?? null
   if (content == null && !attachment && isServiceMessage(msg)) {
     log('ignoring service message', key, msg.message_id)
@@ -1900,9 +1911,10 @@ async function handleMessage(msg) {
     meta = resolveMessageMeta(decision, pendingEntry, fallbackMeta)
     promptText = decision.text
   }
-  if (!promptText && attachment) promptText = buildAttachmentCaption(attachment)
+  if (!promptText && attachment) promptText = buildAttachmentsCaption(attachments)
 
-  await setReaction(chatId, msg.message_id, RECEIPT_REACTION)
+  // every album member gets its own receipt reaction, not just the one whose id anchors this turn
+  await Promise.all(memberMessages.map(m => setReaction(chatId, m.message_id, RECEIPT_REACTION)))
 
   const workingStatus = nextWorkingPhrase()
   // every message the bot posts for this turn, so a later rewind past this turn can delete them
@@ -1935,8 +1947,8 @@ async function handleMessage(msg) {
       log('failed to send working placeholder', e.message)
     }
 
-    let attachmentResult = null
-    if (attachment) attachmentResult = await downloadAttachmentLogged(attachment)
+    const attachmentResults = attachments.length ? await Promise.all(attachments.map(downloadAttachmentLogged)) : []
+    const attachmentResult = attachmentResults[0] ?? null
 
     let transcriptionError = null
     if (attachment?.kind === 'voice' && attachmentResult?.path) {
@@ -1971,16 +1983,19 @@ async function handleMessage(msg) {
       }
     }
 
-    const attachmentAttrs = attachment
-      ? {
-          attachment_kind: attachment.kind,
-          attachment_name: attachment.name,
-          attachment_mime: attachment.mime,
-          attachment_path: attachmentResult?.path,
-          attachment_error: attachmentResult?.error,
-          attachment_transcription_error: transcriptionError,
-        }
-      : {}
+    const attachmentAttrs =
+      attachments.length > 1
+        ? buildMultiAttachmentAttrs(attachments, attachmentResults)
+        : attachment
+          ? {
+              attachment_kind: attachment.kind,
+              attachment_name: attachment.name,
+              attachment_mime: attachment.mime,
+              attachment_path: attachmentResult?.path,
+              attachment_error: attachmentResult?.error,
+              attachment_transcription_error: transcriptionError,
+            }
+          : {}
 
     const channelAttrs = {
       ...attachmentAttrs,
@@ -2002,6 +2017,7 @@ async function handleMessage(msg) {
       workingStatus,
       botMessageIds,
       originMessageId: msg.message_id,
+      reactionMessageIds: memberMessages.map(m => m.message_id),
       isCompact: command === 'compact',
       turnMeta: { originMessageId: msg.message_id, anchorMessageId: meta.messageId },
     })
@@ -2009,6 +2025,7 @@ async function handleMessage(msg) {
 
   state.turns = appendTurn(state.turns, key, {
     userMessageId: msg.message_id,
+    memberMessages: groupedMessages ?? undefined,
     anchorMessageId: meta.messageId,
     sessionId: turnResult.sessionId,
     botMessageIds: turnResult.botMessageIds,
@@ -2379,6 +2396,33 @@ async function handleCallbackQuery(cq) {
   chatQueue.enqueue(key, () => handleContinue(chatId, key, threadId, pending)).catch(e => log('queued handleContinue rejected', e))
 }
 
+// Telegram never tells us an album's size, so completion is detected via a quiet-period timeout that each new item resets.
+const mediaGroupBuffers = new Map()
+const MEDIA_GROUP_DEBOUNCE_MS = 1200
+
+function flushMediaGroup(bufferKey) {
+  const buf = mediaGroupBuffers.get(bufferKey)
+  if (!buf) return
+  mediaGroupBuffers.delete(bufferKey)
+  const messages = buf.messages.sort((a, b) => a.message_id - b.message_id)
+  const merged = messages.length > 1 ? mergeMediaGroupMessages(messages) : messages[0]
+  const key = threadKey(buf.chatId, merged)
+  chatQueue.enqueue(key, () => runQueuedMessage(key, merged)).catch(e => log('queued handleMessage rejected', e))
+}
+
+function bufferMediaGroupMessage(chatId, msg) {
+  // chat-scoped even though media_group_id is already effectively unique platform-wide, so a collision can never merge two chats' albums
+  const bufferKey = `${chatId}:${msg.media_group_id}`
+  let buf = mediaGroupBuffers.get(bufferKey)
+  if (!buf) {
+    buf = { chatId, messages: [] }
+    mediaGroupBuffers.set(bufferKey, buf)
+  }
+  buf.messages.push(msg)
+  clearTimeout(buf.timer)
+  buf.timer = setTimeout(() => flushMediaGroup(bufferKey), MEDIA_GROUP_DEBOUNCE_MS)
+}
+
 async function poll() {
   try {
     botIdentity = buildBotIdentity(await tg('getMe', {}))
@@ -2405,12 +2449,17 @@ async function poll() {
         saveState(state)
         if (u.message) {
           const chatId = String(u.message.chat.id)
-          const key = threadKey(chatId, u.message)
-          const activeRun = activeRuns.get(key)
-          if (activeRun && isAuthorizedMessage(u.message) && isJoinableMessage(u.message, botIdentity.username)) {
-            addPendingJoinMessage(chatId, key, activeRun, u.message).catch(e => log('failed to track pending join message', e.message))
+          if (u.message.media_group_id) {
+            // unauthorized senders are dropped now rather than buffered for a debounce cycle first
+            if (isAuthorizedMessage(u.message)) bufferMediaGroupMessage(chatId, u.message)
+          } else {
+            const key = threadKey(chatId, u.message)
+            const activeRun = activeRuns.get(key)
+            if (activeRun && isAuthorizedMessage(u.message) && isJoinableMessage(u.message, botIdentity.username)) {
+              addPendingJoinMessage(chatId, key, activeRun, u.message).catch(e => log('failed to track pending join message', e.message))
+            }
+            chatQueue.enqueue(key, () => runQueuedMessage(key, u.message)).catch(e => log('queued handleMessage rejected', e))
           }
-          chatQueue.enqueue(key, () => runQueuedMessage(key, u.message)).catch(e => log('queued handleMessage rejected', e))
         } else if (u.edited_message) {
           const chatId = String(u.edited_message.chat.id)
           const key = threadKey(chatId, u.edited_message)

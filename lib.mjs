@@ -206,6 +206,38 @@ export function exceedsAttachmentLimit(size) {
   return typeof size === 'number' && size > MAX_ATTACHMENT_BYTES
 }
 
+// caption text (and its entities, e.g. an @mention) land on whichever item the sender attached it to, not necessarily the first
+export function mergeMediaGroupMessages(messages) {
+  const first = messages[0]
+  const withCaption = messages.find(m => typeof m.caption === 'string' && m.caption.trim())
+  return { ...first, caption: withCaption?.caption, caption_entities: withCaption?.caption_entities, mediaGroupMessages: messages }
+}
+
+export function buildAttachmentsCaption(attachments) {
+  if (!attachments?.length) return ''
+  if (attachments.length === 1) return buildAttachmentCaption(attachments[0])
+  const counts = new Map()
+  for (const a of attachments) counts.set(a.kind, (counts.get(a.kind) ?? 0) + 1)
+  const parts = [...counts.entries()].map(([kind, count]) => `${count} ${kind}${count > 1 ? 's' : ''}`)
+  return `(${parts.join(', ')})`
+}
+
+// swaps a literal comma for a lookalike so a filename/error containing one can't desync the positional columns below
+const escapeAttachmentListField = value => String(value ?? '').replaceAll(',', '，')
+
+// positional comma lists, one entry per attachment; name/mime/error columns are omitted when unused (the common all-photos case)
+export function buildMultiAttachmentAttrs(attachments, results) {
+  const attrs = {
+    attachment_count: attachments.length,
+    attachment_kinds: attachments.map(a => a.kind).join(','),
+    attachment_paths: results.map(r => r?.path ?? '').join(','),
+  }
+  if (attachments.some(a => a.name)) attrs.attachment_names = attachments.map(a => escapeAttachmentListField(a.name)).join(',')
+  if (attachments.some(a => a.mime)) attrs.attachment_mimes = attachments.map(a => escapeAttachmentListField(a.mime)).join(',')
+  if (results.some(r => r?.error)) attrs.attachment_errors = results.map(r => escapeAttachmentListField(r?.error)).join(',')
+  return attrs
+}
+
 const KNOWN_SERVICE_MESSAGE_FIELDS = [
   'new_chat_members',
   'left_chat_member',
@@ -1198,9 +1230,17 @@ export function appendTurn(turns, chatId, turn, maxTurns = MAX_TRACKED_TURNS) {
   return { ...turns, [String(chatId)]: list.slice(-maxTurns) }
 }
 
+// a merged album turn's userMessageId is only its first item's id, but editing any item's caption should still find this turn
 export function findTurnIndexByMessageId(turnList, messageId) {
   if (!Array.isArray(turnList)) return -1
-  return turnList.findIndex(t => String(t?.userMessageId) === String(messageId))
+  const needle = String(messageId)
+  return turnList.findIndex(t => String(t?.userMessageId) === needle || (t?.memberMessages ?? []).some(m => String(m?.message_id) === needle))
+}
+
+// editing one item's caption in an album must not silently drop the rest of it from the regenerated turn
+export function rebuildEditedMediaGroupMessage(memberMessages, editedMsg) {
+  const messages = memberMessages.map(m => (String(m.message_id) === String(editedMsg.message_id) ? editedMsg : m))
+  return mergeMediaGroupMessages(messages)
 }
 
 export function findTurnIndexByBotMessageId(turnList, messageId) {

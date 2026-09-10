@@ -27,6 +27,10 @@ import {
   extractReplyToMessageId,
   resolveJoinedReplyToMessage,
   buildAttachmentCaption,
+  buildAttachmentsCaption,
+  buildMultiAttachmentAttrs,
+  mergeMediaGroupMessages,
+  rebuildEditedMediaGroupMessage,
   exceedsAttachmentLimit,
   isServiceMessage,
   resolveAttachmentExtension,
@@ -1899,6 +1903,76 @@ test('buildCancelKeyboard: a positive joinCount adds a Join button next to Cance
   })
 })
 
+test('mergeMediaGroupMessages: keeps chat/from/message_id from the first message', () => {
+  const first = { message_id: 10, chat: { id: 1 }, from: { id: 2 }, photo: [{ file_id: 'p1', file_size: 1 }] }
+  const second = { message_id: 11, chat: { id: 1 }, from: { id: 2 }, photo: [{ file_id: 'p2', file_size: 1 }] }
+  const merged = mergeMediaGroupMessages([first, second])
+  assert.equal(merged.message_id, 10)
+  assert.deepEqual(merged.photo, first.photo)
+})
+
+test('mergeMediaGroupMessages: caption and its entities come from whichever item carries them, not necessarily the first', () => {
+  const first = { message_id: 10, photo: [{ file_id: 'p1', file_size: 1 }] }
+  const entities = [{ type: 'mention', offset: 0, length: 4 }]
+  const second = { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }], caption: '@bot look at these', caption_entities: entities }
+  const merged = mergeMediaGroupMessages([first, second])
+  assert.equal(merged.caption, '@bot look at these')
+  assert.deepEqual(merged.caption_entities, entities)
+})
+
+test('mergeMediaGroupMessages: no caption anywhere leaves it undefined', () => {
+  const first = { message_id: 10, photo: [{ file_id: 'p1', file_size: 1 }] }
+  const second = { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }] }
+  const merged = mergeMediaGroupMessages([first, second])
+  assert.equal(merged.caption, undefined)
+})
+
+test('buildAttachmentsCaption: a single attachment delegates to buildAttachmentCaption', () => {
+  assert.equal(buildAttachmentsCaption([{ kind: 'photo' }]), '(photo)')
+})
+
+test('buildAttachmentsCaption: multiple attachments summarize counts by kind', () => {
+  assert.equal(buildAttachmentsCaption([{ kind: 'photo' }, { kind: 'photo' }, { kind: 'photo' }]), '(3 photos)')
+  assert.equal(buildAttachmentsCaption([{ kind: 'photo' }, { kind: 'video' }]), '(1 photo, 1 video)')
+})
+
+test('buildAttachmentsCaption: empty or missing input returns an empty string', () => {
+  assert.equal(buildAttachmentsCaption([]), '')
+  assert.equal(buildAttachmentsCaption(null), '')
+})
+
+test('buildMultiAttachmentAttrs: positional comma lists, omitting name/mime/error columns when unused', () => {
+  const attachments = [{ kind: 'photo' }, { kind: 'photo' }]
+  const results = [{ path: '/a.jpg' }, { path: '/b.jpg' }]
+  assert.deepEqual(buildMultiAttachmentAttrs(attachments, results), {
+    attachment_count: 2,
+    attachment_kinds: 'photo,photo',
+    attachment_paths: '/a.jpg,/b.jpg',
+  })
+})
+
+test('buildMultiAttachmentAttrs: includes names/mimes/errors columns once any attachment has one', () => {
+  const attachments = [{ kind: 'document', name: 'a.pdf' }, { kind: 'photo' }]
+  const results = [{ path: '/a.pdf' }, { error: 'download failed' }]
+  assert.deepEqual(buildMultiAttachmentAttrs(attachments, results), {
+    attachment_count: 2,
+    attachment_kinds: 'document,photo',
+    attachment_paths: '/a.pdf,',
+    attachment_names: 'a.pdf,',
+    attachment_errors: ',download failed',
+  })
+})
+
+test('buildMultiAttachmentAttrs: a literal comma in a name/error is escaped so it cannot desync the positional columns', () => {
+  const attachments = [{ kind: 'document', name: 'Invoice, Q3 2026.pdf' }, { kind: 'document', name: 'b.pdf' }]
+  const results = [{ error: 'too large, over the cap' }, { path: '/b.pdf' }]
+  const attrs = buildMultiAttachmentAttrs(attachments, results)
+  assert.equal(attrs.attachment_names, 'Invoice， Q3 2026.pdf,b.pdf')
+  assert.equal(attrs.attachment_errors, 'too large， over the cap,')
+  assert.equal(attrs.attachment_names.split(',').length, 2)
+  assert.equal(attrs.attachment_errors.split(',').length, 2)
+})
+
 test('buildJoinedPromptText: newline-joins the original text with every queued message, in order', () => {
   assert.equal(buildJoinedPromptText(['first part', 'second part', 'third part']), 'first part\nsecond part\nthird part')
 })
@@ -2890,6 +2964,28 @@ test('findTurnIndexByMessageId: matches across string/number ids and reports -1 
   assert.equal(findTurnIndexByMessageId(list, 10), 0)
   assert.equal(findTurnIndexByMessageId(list, 99), -1)
   assert.equal(findTurnIndexByMessageId(undefined, 10), -1)
+})
+
+test('findTurnIndexByMessageId: also matches a merged album turn by any of its memberMessages, not just the first', () => {
+  const list = [{ userMessageId: 10, memberMessages: [{ message_id: 10 }, { message_id: 11 }, { message_id: 12 }] }]
+  assert.equal(findTurnIndexByMessageId(list, 11), 0)
+  assert.equal(findTurnIndexByMessageId(list, 12), 0)
+  assert.equal(findTurnIndexByMessageId(list, 13), -1)
+})
+
+test('rebuildEditedMediaGroupMessage: swaps in the edited copy of one member without dropping the others', () => {
+  const memberMessages = [
+    { message_id: 10, photo: [{ file_id: 'p1', file_size: 1 }] },
+    { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }], caption: 'old caption' },
+    { message_id: 12, photo: [{ file_id: 'p3', file_size: 1 }] },
+  ]
+  const editedMsg = { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }], caption: 'new caption' }
+  const rebuilt = rebuildEditedMediaGroupMessage(memberMessages, editedMsg)
+  assert.equal(rebuilt.caption, 'new caption')
+  assert.equal(rebuilt.mediaGroupMessages.length, 3)
+  assert.equal(rebuilt.mediaGroupMessages[1].caption, 'new caption')
+  assert.deepEqual(rebuilt.mediaGroupMessages[0].photo, memberMessages[0].photo)
+  assert.deepEqual(rebuilt.mediaGroupMessages[2].photo, memberMessages[2].photo)
 })
 
 test('findTurnIndexByBotMessageId: finds the turn owning a given bot message id, across string/number ids', () => {
