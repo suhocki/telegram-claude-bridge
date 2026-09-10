@@ -2419,6 +2419,27 @@ test('isBotMentioned: no entities means no mention', () => {
   assert.equal(isBotMentioned({ text: 'hey @mybot' }, 'mybot', '111'), false)
 })
 
+test('isBotMentioned: a merged album is mentioned if any member carries the mention, not just the one whose caption won the merge', () => {
+  const merged = {
+    caption: 'no mention here',
+    caption_entities: [],
+    mediaGroupMessages: [
+      { caption: 'no mention here', caption_entities: [] },
+      { caption: 'hey @mybot', caption_entities: [{ type: 'mention', offset: 4, length: 6 }] },
+    ],
+  }
+  assert.equal(isBotMentioned(merged, 'mybot', '111'), true)
+})
+
+test('isBotMentioned: a merged album with no member mentioning the bot is not mentioned', () => {
+  const merged = {
+    caption: 'no mention here',
+    caption_entities: [],
+    mediaGroupMessages: [{ caption: 'no mention here', caption_entities: [] }, { caption: 'also nothing' }],
+  }
+  assert.equal(isBotMentioned(merged, 'mybot', '111'), false)
+})
+
 test('isBotMentioned: a "/cmd@botname" bot_command entity naming this bot counts as a mention', () => {
   const msg = { text: '/new@mybot', entities: [{ type: 'bot_command', offset: 0, length: 10 }] }
   assert.equal(isBotMentioned(msg, 'mybot', '111'), true)

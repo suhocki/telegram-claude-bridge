@@ -1068,6 +1068,8 @@ export function isSenderAllowedInGroup(policy, userId) {
 }
 
 export function isBotMentioned(msg, botUsername, botId) {
+  // a merged album only keeps one member's caption/entities, so a mention on any other member must be checked separately
+  if (Array.isArray(msg?.mediaGroupMessages)) return msg.mediaGroupMessages.some(m => isBotMentioned(m, botUsername, botId))
   const text = msg?.text ?? msg?.caption ?? ''
   const entities = msg?.entities ?? msg?.caption_entities ?? []
   if (!Array.isArray(entities)) return false
@@ -1237,11 +1239,10 @@ export function findTurnIndexByMessageId(turnList, messageId) {
   return turnList.findIndex(t => String(t?.userMessageId) === needle || (t?.memberMessages ?? []).some(m => String(m?.message_id) === needle))
 }
 
-// editing one item's caption in an album must not silently drop the rest of it from the regenerated turn
+// rebuilds the full album (not just the edited item) with the just-edited caption winning outright, instead of mergeMediaGroupMessages' "first non-empty" default favoring an untouched sibling
 export function rebuildEditedMediaGroupMessage(memberMessages, editedMsg) {
   const messages = memberMessages.map(m => (String(m.message_id) === String(editedMsg.message_id) ? editedMsg : m))
   const merged = mergeMediaGroupMessages(messages)
-  // the caption the user just edited wins outright — mergeMediaGroupMessages' "first non-empty" default would otherwise keep favoring an earlier, untouched sibling
   if (typeof editedMsg.caption === 'string' && editedMsg.caption.trim()) {
     return { ...merged, caption: editedMsg.caption, caption_entities: editedMsg.caption_entities }
   }

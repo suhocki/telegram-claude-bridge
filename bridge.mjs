@@ -2419,9 +2419,8 @@ function flushMediaGroup(bufferKey) {
   if (!buf) return
   mediaGroupBuffers.delete(bufferKey)
   const messages = buf.messages.sort((a, b) => a.message_id - b.message_id)
-  // checked per raw item, not the merged caption, since a required @mention can land on any one album member
-  if (!messages.some(isAuthorizedMessage)) return
   const merged = messages.length > 1 ? mergeMediaGroupMessages(messages) : messages[0]
+  if (!isAuthorizedMessage(merged)) return
   const key = threadKey(buf.chatId, merged)
   chatQueue.enqueue(key, () => runQueuedMessage(key, merged)).catch(e => log('queued handleMessage rejected', e))
 }
@@ -2480,12 +2479,11 @@ async function poll() {
           const key = threadKey(chatId, u.edited_message)
           const editedTurnList = state.turns[key] ?? []
           const editedTurn = editedTurnList[findTurnIndexByMessageId(editedTurnList, u.edited_message.message_id)]
-          const editedMemberMessages =
+          const editedMsg =
             (editedTurn?.memberMessages?.length ?? 0) > 1
-              ? editedTurn.memberMessages.map(m => (String(m.message_id) === String(u.edited_message.message_id) ? u.edited_message : m))
-              : [u.edited_message]
-          // checked per raw item, same reasoning as flushMediaGroup: a required @mention can land on any one album member
-          if (editedMemberMessages.some(isAuthorizedMessage)) {
+              ? rebuildEditedMediaGroupMessage(editedTurn.memberMessages, u.edited_message)
+              : u.edited_message
+          if (isAuthorizedMessage(editedMsg)) {
             // whatever is running now can only be this turn or a later one, and the rewind
             // is about to erase both — so stop it before it burns more tokens
             activeRuns.get(key)?.cancel()
