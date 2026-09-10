@@ -2019,7 +2019,12 @@ async function handleMessage(msg) {
       originMessageId: msg.message_id,
       reactionMessageIds: memberMessages.map(m => m.message_id),
       isCompact: command === 'compact',
-      turnMeta: { originMessageId: msg.message_id, anchorMessageId: meta.messageId },
+      turnMeta: {
+        originMessageId: msg.message_id,
+        anchorMessageId: meta.messageId,
+        reactionMessageIds: memberMessages.map(m => m.message_id),
+        memberMessages: groupedMessages ?? undefined,
+      },
     })
   })
 
@@ -2062,15 +2067,22 @@ async function handleContinue(chatId, key, threadId, pending) {
       workingStatus,
       botMessageIds,
       originMessageId: pending.originMessageId,
+      reactionMessageIds: pending.reactionMessageIds,
       isCompact: pending.isCompact,
       isResume: true,
       checkpointHistory: pending.checkpointHistory ?? [],
-      turnMeta: { originMessageId: pending.originMessageId, anchorMessageId: pending.anchorMessageId },
+      turnMeta: {
+        originMessageId: pending.originMessageId,
+        anchorMessageId: pending.anchorMessageId,
+        reactionMessageIds: pending.reactionMessageIds,
+        memberMessages: pending.memberMessages,
+      },
     })
   )
 
   state.turns = appendTurn(state.turns, key, {
     userMessageId: pending.originMessageId,
+    memberMessages: pending.memberMessages,
     anchorMessageId: pending.anchorMessageId,
     sessionId: turnResult.sessionId,
     botMessageIds: turnResult.botMessageIds,
@@ -2406,6 +2418,8 @@ function flushMediaGroup(bufferKey) {
   mediaGroupBuffers.delete(bufferKey)
   const messages = buf.messages.sort((a, b) => a.message_id - b.message_id)
   const merged = messages.length > 1 ? mergeMediaGroupMessages(messages) : messages[0]
+  // checked here, on the merged caption/entities, not per raw item — a group's required @mention can land on any one album member
+  if (!isAuthorizedMessage(merged)) return
   const key = threadKey(buf.chatId, merged)
   chatQueue.enqueue(key, () => runQueuedMessage(key, merged)).catch(e => log('queued handleMessage rejected', e))
 }
@@ -2450,8 +2464,7 @@ async function poll() {
         if (u.message) {
           const chatId = String(u.message.chat.id)
           if (u.message.media_group_id) {
-            // unauthorized senders are dropped now rather than buffered for a debounce cycle first
-            if (isAuthorizedMessage(u.message)) bufferMediaGroupMessage(chatId, u.message)
+            bufferMediaGroupMessage(chatId, u.message)
           } else {
             const key = threadKey(chatId, u.message)
             const activeRun = activeRuns.get(key)

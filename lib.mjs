@@ -1240,7 +1240,12 @@ export function findTurnIndexByMessageId(turnList, messageId) {
 // editing one item's caption in an album must not silently drop the rest of it from the regenerated turn
 export function rebuildEditedMediaGroupMessage(memberMessages, editedMsg) {
   const messages = memberMessages.map(m => (String(m.message_id) === String(editedMsg.message_id) ? editedMsg : m))
-  return mergeMediaGroupMessages(messages)
+  const merged = mergeMediaGroupMessages(messages)
+  // the caption the user just edited wins outright — mergeMediaGroupMessages' "first non-empty" default would otherwise keep favoring an earlier, untouched sibling
+  if (typeof editedMsg.caption === 'string' && editedMsg.caption.trim()) {
+    return { ...merged, caption: editedMsg.caption, caption_entities: editedMsg.caption_entities }
+  }
+  return merged
 }
 
 export function findTurnIndexByBotMessageId(turnList, messageId) {

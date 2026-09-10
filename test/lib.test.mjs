@@ -2988,6 +2988,28 @@ test('rebuildEditedMediaGroupMessage: swaps in the edited copy of one member wit
   assert.deepEqual(rebuilt.mediaGroupMessages[2].photo, memberMessages[2].photo)
 })
 
+test('rebuildEditedMediaGroupMessage: the just-edited caption wins even when an earlier member already had one', () => {
+  const memberMessages = [
+    { message_id: 10, photo: [{ file_id: 'p1', file_size: 1 }], caption: 'earlier caption' },
+    { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }] },
+  ]
+  const entities = [{ type: 'bold', offset: 0, length: 3 }]
+  const editedMsg = { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }], caption: 'new caption', caption_entities: entities }
+  const rebuilt = rebuildEditedMediaGroupMessage(memberMessages, editedMsg)
+  assert.equal(rebuilt.caption, 'new caption')
+  assert.deepEqual(rebuilt.caption_entities, entities)
+})
+
+test('rebuildEditedMediaGroupMessage: clearing the edited caption falls back to the usual first-non-empty pick', () => {
+  const memberMessages = [
+    { message_id: 10, photo: [{ file_id: 'p1', file_size: 1 }], caption: 'earlier caption' },
+    { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }], caption: 'to be cleared' },
+  ]
+  const editedMsg = { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }], caption: undefined }
+  const rebuilt = rebuildEditedMediaGroupMessage(memberMessages, editedMsg)
+  assert.equal(rebuilt.caption, 'earlier caption')
+})
+
 test('findTurnIndexByBotMessageId: finds the turn owning a given bot message id, across string/number ids', () => {
   const list = [{ botMessageIds: [10, 11] }, { botMessageIds: [20, 21] }]
   assert.equal(findTurnIndexByBotMessageId(list, '21'), 1)
