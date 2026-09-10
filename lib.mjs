@@ -1230,9 +1230,11 @@ export function appendTurn(turns, chatId, turn, maxTurns = MAX_TRACKED_TURNS) {
   return { ...turns, [String(chatId)]: list.slice(-maxTurns) }
 }
 
+// a merged album turn's userMessageId is only its first item's id, but editing any item's caption should still find this turn
 export function findTurnIndexByMessageId(turnList, messageId) {
   if (!Array.isArray(turnList)) return -1
-  return turnList.findIndex(t => String(t?.userMessageId) === String(messageId))
+  const needle = String(messageId)
+  return turnList.findIndex(t => String(t?.userMessageId) === needle || (t?.memberMessageIds ?? []).some(id => String(id) === needle))
 }
 
 export function findTurnIndexByBotMessageId(turnList, messageId) {

@@ -2017,6 +2017,7 @@ async function handleMessage(msg) {
 
   state.turns = appendTurn(state.turns, key, {
     userMessageId: msg.message_id,
+    memberMessageIds: groupedMessages?.map(m => m.message_id),
     anchorMessageId: meta.messageId,
     sessionId: turnResult.sessionId,
     botMessageIds: turnResult.botMessageIds,

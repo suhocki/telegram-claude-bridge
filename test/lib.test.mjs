@@ -2965,6 +2965,13 @@ test('findTurnIndexByMessageId: matches across string/number ids and reports -1 
   assert.equal(findTurnIndexByMessageId(undefined, 10), -1)
 })
 
+test('findTurnIndexByMessageId: also matches a merged album turn by any of its memberMessageIds, not just the first', () => {
+  const list = [{ userMessageId: 10, memberMessageIds: [10, 11, 12] }]
+  assert.equal(findTurnIndexByMessageId(list, 11), 0)
+  assert.equal(findTurnIndexByMessageId(list, 12), 0)
+  assert.equal(findTurnIndexByMessageId(list, 13), -1)
+})
+
 test('findTurnIndexByBotMessageId: finds the turn owning a given bot message id, across string/number ids', () => {
   const list = [{ botMessageIds: [10, 11] }, { botMessageIds: [20, 21] }]
   assert.equal(findTurnIndexByBotMessageId(list, '21'), 1)
