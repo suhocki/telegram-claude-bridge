@@ -2420,7 +2420,6 @@ function flushMediaGroup(bufferKey) {
   mediaGroupBuffers.delete(bufferKey)
   const messages = buf.messages.sort((a, b) => a.message_id - b.message_id)
   const merged = messages.length > 1 ? mergeMediaGroupMessages(messages) : messages[0]
-  if (!isAuthorizedMessage(merged)) return
   const key = threadKey(buf.chatId, merged)
   chatQueue.enqueue(key, () => runQueuedMessage(key, merged)).catch(e => log('queued handleMessage rejected', e))
 }
