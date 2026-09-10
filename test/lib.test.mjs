@@ -1910,11 +1910,13 @@ test('mergeMediaGroupMessages: keeps chat/from/message_id from the first message
   assert.deepEqual(merged.photo, first.photo)
 })
 
-test('mergeMediaGroupMessages: caption comes from whichever item carries it, not necessarily the first', () => {
+test('mergeMediaGroupMessages: caption and its entities come from whichever item carries them, not necessarily the first', () => {
   const first = { message_id: 10, photo: [{ file_id: 'p1', file_size: 1 }] }
-  const second = { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }], caption: 'look at these' }
+  const entities = [{ type: 'mention', offset: 0, length: 4 }]
+  const second = { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }], caption: '@bot look at these', caption_entities: entities }
   const merged = mergeMediaGroupMessages([first, second])
-  assert.equal(merged.caption, 'look at these')
+  assert.equal(merged.caption, '@bot look at these')
+  assert.deepEqual(merged.caption_entities, entities)
 })
 
 test('mergeMediaGroupMessages: no caption anywhere leaves it undefined', () => {
@@ -1958,6 +1960,16 @@ test('buildMultiAttachmentAttrs: includes names/mimes/errors columns once any at
     attachment_names: 'a.pdf,',
     attachment_errors: ',download failed',
   })
+})
+
+test('buildMultiAttachmentAttrs: a literal comma in a name/error is escaped so it cannot desync the positional columns', () => {
+  const attachments = [{ kind: 'document', name: 'Invoice, Q3 2026.pdf' }, { kind: 'document', name: 'b.pdf' }]
+  const results = [{ error: 'too large, over the cap' }, { path: '/b.pdf' }]
+  const attrs = buildMultiAttachmentAttrs(attachments, results)
+  assert.equal(attrs.attachment_names, 'Invoice， Q3 2026.pdf,b.pdf')
+  assert.equal(attrs.attachment_errors, 'too large， over the cap,')
+  assert.equal(attrs.attachment_names.split(',').length, 2)
+  assert.equal(attrs.attachment_errors.split(',').length, 2)
 })
 
 test('buildJoinedPromptText: newline-joins the original text with every queued message, in order', () => {

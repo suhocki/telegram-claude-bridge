@@ -2387,8 +2387,7 @@ async function handleCallbackQuery(cq) {
   chatQueue.enqueue(key, () => handleContinue(chatId, key, threadId, pending)).catch(e => log('queued handleContinue rejected', e))
 }
 
-// Telegram never tells us how many items an album holds, so completion is detected by a quiet
-// period: each arriving item resets the timer, and it only flushes once nothing new shows up.
+// Telegram never tells us an album's size, so completion is detected via a quiet-period timeout that each new item resets.
 const mediaGroupBuffers = new Map()
 const MEDIA_GROUP_DEBOUNCE_MS = 1200
 

@@ -206,11 +206,11 @@ export function exceedsAttachmentLimit(size) {
   return typeof size === 'number' && size > MAX_ATTACHMENT_BYTES
 }
 
-// caption text on a Telegram album lands on whichever item the sender attached it to, not necessarily the first
+// caption text (and its entities, e.g. an @mention) land on whichever item the sender attached it to, not necessarily the first
 export function mergeMediaGroupMessages(messages) {
   const first = messages[0]
-  const caption = messages.map(m => m.caption).find(c => typeof c === 'string' && c.trim())
-  return { ...first, caption, caption_entities: undefined, mediaGroupMessages: messages }
+  const withCaption = messages.find(m => typeof m.caption === 'string' && m.caption.trim())
+  return { ...first, caption: withCaption?.caption, caption_entities: withCaption?.caption_entities, mediaGroupMessages: messages }
 }
 
 export function buildAttachmentsCaption(attachments) {
@@ -222,17 +222,19 @@ export function buildAttachmentsCaption(attachments) {
   return `(${parts.join(', ')})`
 }
 
-// positional comma lists, one entry per attachment — name/mime/error columns are dropped
-// entirely when every attachment lacks them, keeping the common all-photos case clean
+// swaps a literal comma for a lookalike so a filename/error containing one can't desync the positional columns below
+const escapeAttachmentListField = value => String(value ?? '').replaceAll(',', '，')
+
+// positional comma lists, one entry per attachment; name/mime/error columns are omitted when unused (the common all-photos case)
 export function buildMultiAttachmentAttrs(attachments, results) {
   const attrs = {
     attachment_count: attachments.length,
     attachment_kinds: attachments.map(a => a.kind).join(','),
     attachment_paths: results.map(r => r?.path ?? '').join(','),
   }
-  if (attachments.some(a => a.name)) attrs.attachment_names = attachments.map(a => a.name ?? '').join(',')
-  if (attachments.some(a => a.mime)) attrs.attachment_mimes = attachments.map(a => a.mime ?? '').join(',')
-  if (results.some(r => r?.error)) attrs.attachment_errors = results.map(r => r?.error ?? '').join(',')
+  if (attachments.some(a => a.name)) attrs.attachment_names = attachments.map(a => escapeAttachmentListField(a.name)).join(',')
+  if (attachments.some(a => a.mime)) attrs.attachment_mimes = attachments.map(a => escapeAttachmentListField(a.mime)).join(',')
+  if (results.some(r => r?.error)) attrs.attachment_errors = results.map(r => escapeAttachmentListField(r?.error)).join(',')
   return attrs
 }
 
