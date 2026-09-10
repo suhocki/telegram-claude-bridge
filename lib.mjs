@@ -1243,7 +1243,7 @@ export function findTurnIndexByMessageId(turnList, messageId) {
 export function rebuildEditedMediaGroupMessage(memberMessages, editedMsg) {
   const messages = memberMessages.map(m => (String(m.message_id) === String(editedMsg.message_id) ? editedMsg : m))
   const merged = mergeMediaGroupMessages(messages)
-  const editedCaptionIsNonEmpty = typeof editedMsg.caption === 'string' && editedMsg.caption.trim()
+  const editedCaptionIsNonEmpty = typeof editedMsg.caption === 'string' && Boolean(editedMsg.caption.trim())
   if (editedCaptionIsNonEmpty) {
     return { ...merged, caption: editedMsg.caption, caption_entities: editedMsg.caption_entities }
   }
