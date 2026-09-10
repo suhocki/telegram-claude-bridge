@@ -2477,9 +2477,8 @@ async function poll() {
         } else if (u.edited_message) {
           const chatId = String(u.edited_message.chat.id)
           const key = threadKey(chatId, u.edited_message)
-          // whatever is running now can only be this turn or a later one, and the rewind
-          // is about to erase both — so stop it before it burns more tokens
-          activeRuns.get(key)?.cancel()
+          // best-effort early stop only — an unauthorized/unmentioned editor must not be able to kill another user's run sharing this chat-scoped key
+          if (isAuthorizedMessage(u.edited_message)) activeRuns.get(key)?.cancel()
           chatQueue
             .enqueue(key, () => handleEditedMessage(u.edited_message))
             .catch(e => log('queued handleEditedMessage rejected', e))

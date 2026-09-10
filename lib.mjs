@@ -1240,11 +1240,11 @@ export function findTurnIndexByMessageId(turnList, messageId) {
   return turnList.findIndex(t => String(t?.userMessageId) === needle || (t?.memberMessages ?? []).some(m => String(m?.message_id) === needle))
 }
 
-// rebuilds the full album (not just the edited item) with the just-edited caption winning outright, instead of mergeMediaGroupMessages' "first non-empty" default favoring an untouched sibling
 export function rebuildEditedMediaGroupMessage(memberMessages, editedMsg) {
   const messages = memberMessages.map(m => (String(m.message_id) === String(editedMsg.message_id) ? editedMsg : m))
   const merged = mergeMediaGroupMessages(messages)
-  if (typeof editedMsg.caption === 'string' && editedMsg.caption.trim()) {
+  const editedCaptionIsNonEmpty = typeof editedMsg.caption === 'string' && editedMsg.caption.trim()
+  if (editedCaptionIsNonEmpty) {
     return { ...merged, caption: editedMsg.caption, caption_entities: editedMsg.caption_entities }
   }
   return merged
