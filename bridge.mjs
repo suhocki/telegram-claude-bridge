@@ -1614,6 +1614,7 @@ async function runClaudeTurn(
     workingStatus,
     botMessageIds,
     originMessageId = null,
+    reactionMessageIds = originMessageId != null ? [originMessageId] : [],
     isCompact = false,
     isResume = false,
     checkpointHistory = [],
@@ -1749,9 +1750,10 @@ async function runClaudeTurn(
       }
       if (checkin) scheduleCheckin(key, newSession?.id ?? sessionId, checkin)
     }
-    if (originMessageId != null) {
+    if (reactionMessageIds.length) {
       // on success, clear the 👀 receipt reaction instead of swapping in a 👍 — the reply itself is the signal now
-      await setReaction(chatId, originMessageId, reactionEmoji || (result.is_error ? ERROR_REACTION : null))
+      const outcome = reactionEmoji || (result.is_error ? ERROR_REACTION : null)
+      await Promise.all(reactionMessageIds.map(id => setReaction(chatId, id, outcome)))
     }
   } catch (e) {
     run.finished = true
@@ -1791,7 +1793,7 @@ async function runClaudeTurn(
     } else {
       log('handleMessage error', e)
       botMessageIds.push(...(await sendReply(chatId, `⚠️ bridge error: ${e.message}`, originMessageId, currentPlaceholderId, threadId).catch(() => [])))
-      if (originMessageId != null) await setReaction(chatId, originMessageId, ERROR_REACTION)
+      if (reactionMessageIds.length) await Promise.all(reactionMessageIds.map(id => setReaction(chatId, id, ERROR_REACTION)))
     }
   } finally {
     rootController.statusUpdater.stop()
@@ -1829,7 +1831,8 @@ async function handleMessage(msg) {
   // every authorized message supersedes whatever interrupted turn a Continue button was still offering, regardless of which branch below handles it
   await clearPendingContinue(chatId, key)
   const groupedMessages = msg.mediaGroupMessages ?? null
-  const attachments = groupedMessages ? groupedMessages.map(extractAttachment).filter(Boolean) : [extractAttachment(msg)].filter(Boolean)
+  const memberMessages = groupedMessages ?? [msg]
+  const attachments = memberMessages.map(extractAttachment).filter(Boolean)
   const attachment = attachments[0] ?? null
   const content = msg.text ?? msg.caption ?? null
   if (content == null && !attachment && isServiceMessage(msg)) {
@@ -1911,7 +1914,7 @@ async function handleMessage(msg) {
   if (!promptText && attachment) promptText = buildAttachmentsCaption(attachments)
 
   // every album member gets its own receipt reaction, not just the one whose id anchors this turn
-  await Promise.all((groupedMessages ?? [msg]).map(m => setReaction(chatId, m.message_id, RECEIPT_REACTION)))
+  await Promise.all(memberMessages.map(m => setReaction(chatId, m.message_id, RECEIPT_REACTION)))
 
   const workingStatus = nextWorkingPhrase()
   // every message the bot posts for this turn, so a later rewind past this turn can delete them
@@ -2014,6 +2017,7 @@ async function handleMessage(msg) {
       workingStatus,
       botMessageIds,
       originMessageId: msg.message_id,
+      reactionMessageIds: memberMessages.map(m => m.message_id),
       isCompact: command === 'compact',
       turnMeta: { originMessageId: msg.message_id, anchorMessageId: meta.messageId },
     })
@@ -2446,7 +2450,8 @@ async function poll() {
         if (u.message) {
           const chatId = String(u.message.chat.id)
           if (u.message.media_group_id) {
-            bufferMediaGroupMessage(chatId, u.message)
+            // unauthorized senders are dropped now rather than buffered for a debounce cycle first
+            if (isAuthorizedMessage(u.message)) bufferMediaGroupMessage(chatId, u.message)
           } else {
             const key = threadKey(chatId, u.message)
             const activeRun = activeRuns.get(key)
