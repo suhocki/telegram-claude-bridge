@@ -1090,6 +1090,7 @@ export function isBotMentioned(msg, botUsername, botId) {
 }
 
 export function isReplyToBot(msg, botId) {
+  if (Array.isArray(msg?.mediaGroupMessages)) return msg.mediaGroupMessages.some(m => isReplyToBot(m, botId))
   const replyFromId = msg?.reply_to_message?.from?.id
   return replyFromId != null && botId != null && String(replyFromId) === String(botId)
 }

@@ -2469,6 +2469,13 @@ test('isReplyToBot: false when there is no reply', () => {
   assert.equal(isReplyToBot({}, '111'), false)
 })
 
+test('isReplyToBot: a merged album is a reply-to-bot if any member carries it', () => {
+  const merged = {
+    mediaGroupMessages: [{ reply_to_message: { from: { id: 222 } } }, { reply_to_message: { from: { id: 111 } } }],
+  }
+  assert.equal(isReplyToBot(merged, '111'), true)
+})
+
 test('isMentioned: true via either @mention or reply-to-bot', () => {
   const viaMention = { text: '@mybot hi', entities: [{ type: 'mention', offset: 0, length: 6 }] }
   const viaReply = { text: 'hi', reply_to_message: { from: { id: 111 } } }

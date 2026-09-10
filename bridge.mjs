@@ -876,6 +876,9 @@ async function handleEditedMessage(msg) {
   const turnList = state.turns[key] ?? []
   const turnIndex = findTurnIndexByMessageId(turnList, msg.message_id)
   const turn = turnIndex >= 0 ? turnList[turnIndex] : null
+  // resolved before any side effect below, since a required @mention can land on any album member, not just the edited one
+  const editedMsg = (turn?.memberMessages?.length ?? 0) > 1 ? rebuildEditedMediaGroupMessage(turn.memberMessages, msg) : msg
+  if (!isAuthorizedMessage(editedMsg)) return
   const session = normalizeSession(state.sessions[key])
 
   if (!turn || !session || turn.sessionId !== session.id) {
@@ -903,8 +906,6 @@ async function handleEditedMessage(msg) {
   await clearPendingContinue(chatId, key)
   saveState(state)
 
-  // an edit on a non-first album member must not drop its siblings from the regenerated turn
-  const editedMsg = (turn.memberMessages?.length ?? 0) > 1 ? rebuildEditedMediaGroupMessage(turn.memberMessages, msg) : msg
   await handleMessage(editedMsg)
 }
 
@@ -2476,20 +2477,12 @@ async function poll() {
         } else if (u.edited_message) {
           const chatId = String(u.edited_message.chat.id)
           const key = threadKey(chatId, u.edited_message)
-          const editedTurnList = state.turns[key] ?? []
-          const editedTurn = editedTurnList[findTurnIndexByMessageId(editedTurnList, u.edited_message.message_id)]
-          const editedMsg =
-            (editedTurn?.memberMessages?.length ?? 0) > 1
-              ? rebuildEditedMediaGroupMessage(editedTurn.memberMessages, u.edited_message)
-              : u.edited_message
-          if (isAuthorizedMessage(editedMsg)) {
-            // whatever is running now can only be this turn or a later one, and the rewind
-            // is about to erase both — so stop it before it burns more tokens
-            activeRuns.get(key)?.cancel()
-            chatQueue
-              .enqueue(key, () => handleEditedMessage(u.edited_message))
-              .catch(e => log('queued handleEditedMessage rejected', e))
-          }
+          // whatever is running now can only be this turn or a later one, and the rewind
+          // is about to erase both — so stop it before it burns more tokens
+          activeRuns.get(key)?.cancel()
+          chatQueue
+            .enqueue(key, () => handleEditedMessage(u.edited_message))
+            .catch(e => log('queued handleEditedMessage rejected', e))
         } else if (u.callback_query) {
           handleCallbackQuery(u.callback_query).catch(e => log('callback query handling rejected', e))
         }
