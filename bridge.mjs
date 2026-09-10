@@ -44,6 +44,7 @@ import {
   buildAttachmentsCaption,
   buildMultiAttachmentAttrs,
   mergeMediaGroupMessages,
+  rebuildEditedMediaGroupMessage,
   isServiceMessage,
   exceedsAttachmentLimit,
   buildInboxFilename,
@@ -902,7 +903,9 @@ async function handleEditedMessage(msg) {
   await clearPendingContinue(chatId, key)
   saveState(state)
 
-  await handleMessage(msg)
+  // an edit on a non-first album member must not drop its siblings from the regenerated turn
+  const editedMsg = (turn.memberMessages?.length ?? 0) > 1 ? rebuildEditedMediaGroupMessage(turn.memberMessages, msg) : msg
+  await handleMessage(editedMsg)
 }
 
 function clearCheckinTimer(key) {
@@ -1907,7 +1910,8 @@ async function handleMessage(msg) {
   }
   if (!promptText && attachment) promptText = buildAttachmentsCaption(attachments)
 
-  await setReaction(chatId, msg.message_id, RECEIPT_REACTION)
+  // every album member gets its own receipt reaction, not just the one whose id anchors this turn
+  await Promise.all((groupedMessages ?? [msg]).map(m => setReaction(chatId, m.message_id, RECEIPT_REACTION)))
 
   const workingStatus = nextWorkingPhrase()
   // every message the bot posts for this turn, so a later rewind past this turn can delete them
@@ -2017,7 +2021,7 @@ async function handleMessage(msg) {
 
   state.turns = appendTurn(state.turns, key, {
     userMessageId: msg.message_id,
-    memberMessageIds: groupedMessages?.map(m => m.message_id),
+    memberMessages: groupedMessages ?? undefined,
     anchorMessageId: meta.messageId,
     sessionId: turnResult.sessionId,
     botMessageIds: turnResult.botMessageIds,
@@ -2392,10 +2396,10 @@ async function handleCallbackQuery(cq) {
 const mediaGroupBuffers = new Map()
 const MEDIA_GROUP_DEBOUNCE_MS = 1200
 
-function flushMediaGroup(mediaGroupId) {
-  const buf = mediaGroupBuffers.get(mediaGroupId)
+function flushMediaGroup(bufferKey) {
+  const buf = mediaGroupBuffers.get(bufferKey)
   if (!buf) return
-  mediaGroupBuffers.delete(mediaGroupId)
+  mediaGroupBuffers.delete(bufferKey)
   const messages = buf.messages.sort((a, b) => a.message_id - b.message_id)
   const merged = messages.length > 1 ? mergeMediaGroupMessages(messages) : messages[0]
   const key = threadKey(buf.chatId, merged)
@@ -2403,14 +2407,16 @@ function flushMediaGroup(mediaGroupId) {
 }
 
 function bufferMediaGroupMessage(chatId, msg) {
-  let buf = mediaGroupBuffers.get(msg.media_group_id)
+  // chat-scoped even though media_group_id is already effectively unique platform-wide, so a collision can never merge two chats' albums
+  const bufferKey = `${chatId}:${msg.media_group_id}`
+  let buf = mediaGroupBuffers.get(bufferKey)
   if (!buf) {
     buf = { chatId, messages: [] }
-    mediaGroupBuffers.set(msg.media_group_id, buf)
+    mediaGroupBuffers.set(bufferKey, buf)
   }
   buf.messages.push(msg)
   clearTimeout(buf.timer)
-  buf.timer = setTimeout(() => flushMediaGroup(msg.media_group_id), MEDIA_GROUP_DEBOUNCE_MS)
+  buf.timer = setTimeout(() => flushMediaGroup(bufferKey), MEDIA_GROUP_DEBOUNCE_MS)
 }
 
 async function poll() {

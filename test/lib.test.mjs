@@ -30,6 +30,7 @@ import {
   buildAttachmentsCaption,
   buildMultiAttachmentAttrs,
   mergeMediaGroupMessages,
+  rebuildEditedMediaGroupMessage,
   exceedsAttachmentLimit,
   isServiceMessage,
   resolveAttachmentExtension,
@@ -2965,11 +2966,26 @@ test('findTurnIndexByMessageId: matches across string/number ids and reports -1 
   assert.equal(findTurnIndexByMessageId(undefined, 10), -1)
 })
 
-test('findTurnIndexByMessageId: also matches a merged album turn by any of its memberMessageIds, not just the first', () => {
-  const list = [{ userMessageId: 10, memberMessageIds: [10, 11, 12] }]
+test('findTurnIndexByMessageId: also matches a merged album turn by any of its memberMessages, not just the first', () => {
+  const list = [{ userMessageId: 10, memberMessages: [{ message_id: 10 }, { message_id: 11 }, { message_id: 12 }] }]
   assert.equal(findTurnIndexByMessageId(list, 11), 0)
   assert.equal(findTurnIndexByMessageId(list, 12), 0)
   assert.equal(findTurnIndexByMessageId(list, 13), -1)
+})
+
+test('rebuildEditedMediaGroupMessage: swaps in the edited copy of one member without dropping the others', () => {
+  const memberMessages = [
+    { message_id: 10, photo: [{ file_id: 'p1', file_size: 1 }] },
+    { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }], caption: 'old caption' },
+    { message_id: 12, photo: [{ file_id: 'p3', file_size: 1 }] },
+  ]
+  const editedMsg = { message_id: 11, photo: [{ file_id: 'p2', file_size: 1 }], caption: 'new caption' }
+  const rebuilt = rebuildEditedMediaGroupMessage(memberMessages, editedMsg)
+  assert.equal(rebuilt.caption, 'new caption')
+  assert.equal(rebuilt.mediaGroupMessages.length, 3)
+  assert.equal(rebuilt.mediaGroupMessages[1].caption, 'new caption')
+  assert.deepEqual(rebuilt.mediaGroupMessages[0].photo, memberMessages[0].photo)
+  assert.deepEqual(rebuilt.mediaGroupMessages[2].photo, memberMessages[2].photo)
 })
 
 test('findTurnIndexByBotMessageId: finds the turn owning a given bot message id, across string/number ids', () => {

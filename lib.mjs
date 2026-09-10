@@ -1234,7 +1234,13 @@ export function appendTurn(turns, chatId, turn, maxTurns = MAX_TRACKED_TURNS) {
 export function findTurnIndexByMessageId(turnList, messageId) {
   if (!Array.isArray(turnList)) return -1
   const needle = String(messageId)
-  return turnList.findIndex(t => String(t?.userMessageId) === needle || (t?.memberMessageIds ?? []).some(id => String(id) === needle))
+  return turnList.findIndex(t => String(t?.userMessageId) === needle || (t?.memberMessages ?? []).some(m => String(m?.message_id) === needle))
+}
+
+// editing one item's caption in an album must not silently drop the rest of it from the regenerated turn
+export function rebuildEditedMediaGroupMessage(memberMessages, editedMsg) {
+  const messages = memberMessages.map(m => (String(m.message_id) === String(editedMsg.message_id) ? editedMsg : m))
+  return mergeMediaGroupMessages(messages)
 }
 
 export function findTurnIndexByBotMessageId(turnList, messageId) {
