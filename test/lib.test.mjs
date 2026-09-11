@@ -9,6 +9,8 @@ import {
   resolveThreadId,
   parseThreadKey,
   threadIdParam,
+  queuedMessageKey,
+  isMessageGoneError,
   buildSendMessageCallsFromChunks,
   createKeyedQueue,
   classifyCommand,
@@ -1188,6 +1190,29 @@ test('reaction constants: all fall inside Telegram\'s setMessageReaction whiteli
   for (const emoji of [RECEIPT_REACTION, ERROR_REACTION]) {
     assert.ok(ALLOWED_REACTION_EMOJI.has(emoji), `${emoji} is not in Telegram's reaction whitelist (would 400 as REACTION_INVALID)`)
   }
+})
+
+test('isMessageGoneError: recognizes the exact "message to react not found" text setMessageReaction returns for a deleted message', () => {
+  assert.equal(isMessageGoneError('Bad Request: message to react not found'), true)
+})
+
+test('isMessageGoneError: case-insensitive and tolerant of surrounding text', () => {
+  assert.equal(isMessageGoneError('BAD REQUEST: MESSAGE TO REACT NOT FOUND'), true)
+})
+
+test('isMessageGoneError: an ambiguous or unrelated error is not treated as "gone" (avoid dropping a live message)', () => {
+  assert.equal(isMessageGoneError('Too Many Requests: retry after 5'), false)
+  assert.equal(isMessageGoneError('Bad Request: REACTION_INVALID'), false)
+  assert.equal(isMessageGoneError('Bad Request: message to edit not found'), false)
+  assert.equal(isMessageGoneError('fetch https://api.telegram.org/... timed out after 10000ms'), false)
+  assert.equal(isMessageGoneError(undefined), false)
+})
+
+test('queuedMessageKey: chat-scoped, joins chatId and messageId', () => {
+  assert.equal(queuedMessageKey('123', 42), '123:42')
+  assert.equal(queuedMessageKey('123', 42), queuedMessageKey('123', 42))
+  assert.notEqual(queuedMessageKey('123', 42), queuedMessageKey('456', 42))
+  assert.notEqual(queuedMessageKey('123', 42), queuedMessageKey('123', 43))
 })
 
 test('extractCheckinMarker: no marker leaves text untouched and checkin null', () => {

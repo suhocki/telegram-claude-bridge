@@ -28,6 +28,12 @@ export function threadIdParam(threadId) {
   return threadId != null ? { message_thread_id: threadId } : {}
 }
 
+// chat-scoped, not thread-scoped like threadKey: this identifies one specific Telegram message
+// (for the still-queued-content registry), not the conversation it belongs to.
+export function queuedMessageKey(chatId, messageId) {
+  return `${chatId}:${messageId}`
+}
+
 // Inverse of threadKey, for the few call sites (check-in re-arm/run) that only have the key on hand.
 export function parseThreadKey(key) {
   const s = String(key)
@@ -478,6 +484,18 @@ export function buildSetMessageReactionParams(chatId, messageId, emoji) {
     message_id: messageId,
     reaction: emoji ? [{ type: 'emoji', emoji }] : [],
   }
+}
+
+// Telegram never pushes a "message deleted" update for ordinary chats, so a still-queued message
+// that the user deleted before the bridge got to it can only be caught by probing it — an
+// otherwise-inert setMessageReaction call fails with this specific text if the message is gone.
+// Deliberately narrow (mirrors CONFIG_PIN_GONE_RE's reasoning below): anything else, including a
+// chat with reactions disabled, falls back to "assume it still exists" rather than risk silently
+// dropping a live message.
+const MESSAGE_GONE_RE = /message to react not found/i
+
+export function isMessageGoneError(message) {
+  return MESSAGE_GONE_RE.test(String(message ?? ''))
 }
 
 export function buildReactionMarkerInstructions() {

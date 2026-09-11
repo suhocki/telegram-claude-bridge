@@ -69,6 +69,8 @@ import {
   buildSetMessageReactionParams,
   RECEIPT_REACTION,
   ERROR_REACTION,
+  isMessageGoneError,
+  queuedMessageKey,
   buildChildEnv,
   expandHome,
   DEFAULT_WHISPER_BIN,
@@ -2166,11 +2168,21 @@ function handleJoinTap(chatId, key, run) {
     .catch(e => log('queued joined handleMessage rejected', e))
 }
 
-function runQueuedMessage(key, msg) {
+async function runQueuedMessage(key, chatId, qKey) {
+  const msg = queuedMessageContent.get(qKey)
+  if (!msg) return
+  unregisterQueuedMessage(chatId, msg)
+
   const consumed = consumedByJoin.get(key)
   if (consumed?.delete(msg.message_id)) {
     if (consumed.size === 0) consumedByJoin.delete(key)
-    return Promise.resolve()
+    return
+  }
+  // checked only now, right as this message reaches the front of its queue — not at enqueue
+  // time, when it hasn't had a chance to be deleted yet
+  if (!(await messageStillExists(chatId, msg.message_id))) {
+    log('skipping deleted queued message', key, msg.message_id)
+    return
   }
   return handleMessage(msg)
 }
@@ -2415,6 +2427,41 @@ async function handleCallbackQuery(cq) {
 const mediaGroupBuffers = new Map()
 const MEDIA_GROUP_DEBOUNCE_MS = 1200
 
+// chatId:message_id -> latest known message payload, from the moment a message is registered to
+// process until its own runQueuedMessage task actually starts. A same-message edit landing while
+// it's still sitting here just replaces the entry in place, so the queued task runs the final
+// edited content instead of a stale copy — see registerQueuedMessage/runQueuedMessage below.
+const queuedMessageContent = new Map()
+
+// An album registers every member id under the same merged payload, since an edited caption can
+// land on any member, not just the lowest-id one that anchors the merged message.
+function registerQueuedMessage(chatId, msg) {
+  const members = msg.mediaGroupMessages ?? [msg]
+  for (const m of members) queuedMessageContent.set(queuedMessageKey(chatId, m.message_id), msg)
+  return queuedMessageKey(chatId, msg.message_id)
+}
+
+function unregisterQueuedMessage(chatId, msg) {
+  const members = msg.mediaGroupMessages ?? [msg]
+  for (const m of members) queuedMessageContent.delete(queuedMessageKey(chatId, m.message_id))
+}
+
+// Telegram never pushes a deletion event for ordinary chats, so this is the only way to learn a
+// still-queued message is gone: an otherwise-inert reaction probe (empty reaction = no visible
+// effect) fails with a specific "message to react not found" if it's been deleted. Anything else
+// (rate limit, reactions disabled for this chat, a network hiccup) is treated as "still there" —
+// see isMessageGoneError's reasoning for why this stays narrow.
+async function messageStillExists(chatId, messageId) {
+  try {
+    await tg('setMessageReaction', buildSetMessageReactionParams(chatId, messageId, null))
+    return true
+  } catch (e) {
+    if (isMessageGoneError(e.message)) return false
+    log('deletion probe failed, assuming message still exists', messageId, e.message)
+    return true
+  }
+}
+
 function flushMediaGroup(bufferKey) {
   const buf = mediaGroupBuffers.get(bufferKey)
   if (!buf) return
@@ -2422,7 +2469,8 @@ function flushMediaGroup(bufferKey) {
   const messages = buf.messages.sort((a, b) => a.message_id - b.message_id)
   const merged = messages.length > 1 ? mergeMediaGroupMessages(messages) : messages[0]
   const key = threadKey(buf.chatId, merged)
-  chatQueue.enqueue(key, () => runQueuedMessage(key, merged)).catch(e => log('queued handleMessage rejected', e))
+  const qKey = registerQueuedMessage(buf.chatId, merged)
+  chatQueue.enqueue(key, () => runQueuedMessage(key, buf.chatId, qKey)).catch(e => log('queued handleMessage rejected', e))
 }
 
 function bufferMediaGroupMessage(chatId, msg) {
@@ -2472,16 +2520,29 @@ async function poll() {
             if (activeRun && isAuthorizedMessage(u.message) && isJoinableMessage(u.message, botIdentity.username)) {
               addPendingJoinMessage(chatId, key, activeRun, u.message).catch(e => log('failed to track pending join message', e.message))
             }
-            chatQueue.enqueue(key, () => runQueuedMessage(key, u.message)).catch(e => log('queued handleMessage rejected', e))
+            const qKey = registerQueuedMessage(chatId, u.message)
+            chatQueue.enqueue(key, () => runQueuedMessage(key, chatId, qKey)).catch(e => log('queued handleMessage rejected', e))
           }
         } else if (u.edited_message) {
           const chatId = String(u.edited_message.chat.id)
           const key = threadKey(chatId, u.edited_message)
-          // best-effort early stop only — an unauthorized/unmentioned editor must not be able to kill another user's run sharing this chat-scoped key
-          if (isAuthorizedMessage(u.edited_message)) activeRuns.get(key)?.cancel()
-          chatQueue
-            .enqueue(key, () => handleEditedMessage(u.edited_message))
-            .catch(e => log('queued handleEditedMessage rejected', e))
+          const qKey = queuedMessageKey(chatId, u.edited_message.message_id)
+          const stillQueued = queuedMessageContent.get(qKey)
+          if (stillQueued) {
+            // hasn't started running yet — swap the content in place (runQueuedMessage looks the
+            // entry up fresh, not from a closure) so the queued task runs the final edited text;
+            // nothing has executed with the stale copy yet, so there's no run to cancel and no
+            // turn to rewind
+            const members = stillQueued.mediaGroupMessages ?? [stillQueued]
+            const updated = members.length > 1 ? rebuildEditedMediaGroupMessage(members, u.edited_message) : u.edited_message
+            registerQueuedMessage(chatId, updated)
+          } else {
+            // best-effort early stop only — an unauthorized/unmentioned editor must not be able to kill another user's run sharing this chat-scoped key
+            if (isAuthorizedMessage(u.edited_message)) activeRuns.get(key)?.cancel()
+            chatQueue
+              .enqueue(key, () => handleEditedMessage(u.edited_message))
+              .catch(e => log('queued handleEditedMessage rejected', e))
+          }
         } else if (u.callback_query) {
           handleCallbackQuery(u.callback_query).catch(e => log('callback query handling rejected', e))
         }
