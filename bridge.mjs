@@ -2529,13 +2529,14 @@ async function poll() {
           const chatId = String(u.edited_message.chat.id)
           const key = threadKey(chatId, u.edited_message)
           const qKey = queuedMessageKey(chatId, u.edited_message.message_id)
+          const priorQueued = queuedMessageContent.get(qKey)
+          // rebuilt before the authorization check below, since a required mention can live on any album member's caption, not just the edited one (mirrors handleEditedMessage's own ordering)
+          const members = priorQueued ? mediaGroupMembers(priorQueued) : []
+          const updated = members.length > 1 ? rebuildEditedMediaGroupMessage(members, u.edited_message) : u.edited_message
           // already spliced into a Join tap's own batch (consumedByJoin), so patching the registry here would be a silent no-op — fall through to the cancel/rewind path below for honest feedback instead
           const alreadyJoined = consumedByJoin.get(key)?.has(u.edited_message.message_id)
-          const stillQueued = isAuthorizedMessage(u.edited_message) && !alreadyJoined && queuedMessageContent.get(qKey)
+          const stillQueued = Boolean(priorQueued) && !alreadyJoined && isAuthorizedMessage(updated)
           if (stillQueued) {
-            // nothing has run with the stale copy yet, so swap it in place instead of cancelling/rewinding
-            const members = mediaGroupMembers(stillQueued)
-            const updated = members.length > 1 ? rebuildEditedMediaGroupMessage(members, u.edited_message) : u.edited_message
             registerQueuedMessage(updated)
             // also still sitting in another run's Join batch until that Join tap consumes it, so patch that copy too
             const pending = activeRuns.get(key)?.pending
