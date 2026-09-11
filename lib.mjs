@@ -28,12 +28,10 @@ export function threadIdParam(threadId) {
   return threadId != null ? { message_thread_id: threadId } : {}
 }
 
-// Identifies one specific Telegram message (chat-scoped, unlike threadKey's conversation scope).
 export function queuedMessageKey(chatId, messageId) {
   return `${chatId}:${messageId}`
 }
 
-// An album's members share one merged payload; a plain message is its own sole member.
 export function mediaGroupMembers(msg) {
   return msg?.mediaGroupMessages ?? [msg]
 }

@@ -2535,6 +2535,9 @@ async function poll() {
             const members = mediaGroupMembers(stillQueued)
             const updated = members.length > 1 ? rebuildEditedMediaGroupMessage(members, u.edited_message) : u.edited_message
             registerQueuedMessage(updated)
+            // also still sitting in another run's Join batch until that Join tap consumes it, so patch that copy too
+            const pendingIndex = activeRuns.get(key)?.pending.findIndex(m => m.message_id === u.edited_message.message_id)
+            if (pendingIndex != null && pendingIndex !== -1) activeRuns.get(key).pending[pendingIndex] = updated
           } else {
             // best-effort early stop only — an unauthorized/unmentioned editor must not be able to kill another user's run sharing this chat-scoped key
             if (isAuthorizedMessage(u.edited_message)) activeRuns.get(key)?.cancel()
