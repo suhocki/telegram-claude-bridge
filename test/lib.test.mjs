@@ -9,6 +9,9 @@ import {
   resolveThreadId,
   parseThreadKey,
   threadIdParam,
+  queuedMessageKey,
+  isMessageGoneError,
+  mediaGroupMembers,
   buildSendMessageCallsFromChunks,
   createKeyedQueue,
   classifyCommand,
@@ -1190,6 +1193,35 @@ test('reaction constants: all fall inside Telegram\'s setMessageReaction whiteli
   }
 })
 
+test('isMessageGoneError: recognizes the exact "message to react not found" text setMessageReaction returns for a deleted message', () => {
+  assert.equal(isMessageGoneError('Bad Request: message to react not found'), true)
+})
+
+test('isMessageGoneError: case-insensitive and tolerant of surrounding text', () => {
+  assert.equal(isMessageGoneError('BAD REQUEST: MESSAGE TO REACT NOT FOUND'), true)
+})
+
+test('isMessageGoneError: shares classifyConfigPinSyncError\'s "gone" signals (a blocked/kicked bot or a gone chat means a queued message is unreachable too)', () => {
+  assert.equal(isMessageGoneError('Forbidden: bot was blocked by the user'), true)
+  assert.equal(isMessageGoneError('Forbidden: bot was kicked from the group chat'), true)
+  assert.equal(isMessageGoneError('Bad Request: chat not found'), true)
+})
+
+test('isMessageGoneError: an ambiguous or unrelated error is not treated as "gone" (avoid dropping a live message)', () => {
+  assert.equal(isMessageGoneError('Too Many Requests: retry after 5'), false)
+  assert.equal(isMessageGoneError('Bad Request: REACTION_INVALID'), false)
+  assert.equal(isMessageGoneError("Bad Request: message can't be edited"), false)
+  assert.equal(isMessageGoneError('fetch https://api.telegram.org/... timed out after 10000ms'), false)
+  assert.equal(isMessageGoneError(undefined), false)
+})
+
+test('queuedMessageKey: chat-scoped, joins chatId and messageId', () => {
+  assert.equal(queuedMessageKey('123', 42), '123:42')
+  assert.equal(queuedMessageKey('123', 42), queuedMessageKey('123', 42))
+  assert.notEqual(queuedMessageKey('123', 42), queuedMessageKey('456', 42))
+  assert.notEqual(queuedMessageKey('123', 42), queuedMessageKey('123', 43))
+})
+
 test('extractCheckinMarker: no marker leaves text untouched and checkin null', () => {
   assert.deepEqual(extractCheckinMarker('just a plain reply'), { text: 'just a plain reply', checkin: null })
 })
@@ -1901,6 +1933,22 @@ test('buildCancelKeyboard: a positive joinCount adds a Join button next to Cance
       ],
     ],
   })
+})
+
+test('mediaGroupMembers: a plain message is its own sole member', () => {
+  const msg = { message_id: 5 }
+  assert.deepEqual(mediaGroupMembers(msg), [msg])
+})
+
+test('mediaGroupMembers: a nullish msg has no members, not [undefined]', () => {
+  assert.deepEqual(mediaGroupMembers(null), [])
+  assert.deepEqual(mediaGroupMembers(undefined), [])
+})
+
+test('mediaGroupMembers: an album returns its mediaGroupMessages list', () => {
+  const members = [{ message_id: 10 }, { message_id: 11 }]
+  const merged = { message_id: 10, mediaGroupMessages: members }
+  assert.equal(mediaGroupMembers(merged), members)
 })
 
 test('mergeMediaGroupMessages: keeps chat/from/message_id from the first message', () => {
