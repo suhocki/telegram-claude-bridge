@@ -2529,7 +2529,9 @@ async function poll() {
           const chatId = String(u.edited_message.chat.id)
           const key = threadKey(chatId, u.edited_message)
           const qKey = queuedMessageKey(chatId, u.edited_message.message_id)
-          const stillQueued = queuedMessageContent.get(qKey)
+          // already spliced into a Join tap's own batch (consumedByJoin), so patching the registry here would be a silent no-op — fall through to the cancel/rewind path below for honest feedback instead
+          const alreadyJoined = consumedByJoin.get(key)?.has(u.edited_message.message_id)
+          const stillQueued = isAuthorizedMessage(u.edited_message) && !alreadyJoined && queuedMessageContent.get(qKey)
           if (stillQueued) {
             // nothing has run with the stale copy yet, so swap it in place instead of cancelling/rewinding
             const members = mediaGroupMembers(stillQueued)
