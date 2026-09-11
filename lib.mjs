@@ -33,7 +33,7 @@ export function queuedMessageKey(chatId, messageId) {
 }
 
 export function mediaGroupMembers(msg) {
-  return msg?.mediaGroupMessages ?? [msg]
+  return msg ? msg.mediaGroupMessages ?? [msg] : []
 }
 
 // Inverse of threadKey, for the few call sites (check-in re-arm/run) that only have the key on hand.

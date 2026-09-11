@@ -1940,6 +1940,11 @@ test('mediaGroupMembers: a plain message is its own sole member', () => {
   assert.deepEqual(mediaGroupMembers(msg), [msg])
 })
 
+test('mediaGroupMembers: a nullish msg has no members, not [undefined]', () => {
+  assert.deepEqual(mediaGroupMembers(null), [])
+  assert.deepEqual(mediaGroupMembers(undefined), [])
+})
+
 test('mediaGroupMembers: an album returns its mediaGroupMessages list', () => {
   const members = [{ message_id: 10 }, { message_id: 11 }]
   const merged = { message_id: 10, mediaGroupMessages: members }
