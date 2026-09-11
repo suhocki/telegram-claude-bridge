@@ -2172,19 +2172,19 @@ async function runQueuedMessage(key, qKey) {
   const initial = queuedMessageContent.get(qKey)
   if (!initial) return
 
-  const consumed = consumedByJoin.get(key)
-  if (consumed?.delete(initial.message_id)) {
-    if (consumed.size === 0) consumedByJoin.delete(key)
-    unregisterQueuedMessage(initial)
-    return
-  }
-
   const chatId = String(initial.chat.id)
   // checked only now, at the front of the queue, not at enqueue time when it hasn't had a chance to be deleted yet
   const exists = await queuedMessageStillExists(chatId, initial)
   // re-read after the probe's round-trip, so an edit landing mid-probe isn't lost to the closed registry entry below
   const msg = queuedMessageContent.get(qKey) ?? initial
   unregisterQueuedMessage(msg)
+
+  // checked only now, right before dispatch, since a Join tap runs outside this chat's queue and can land during the await above
+  const consumed = consumedByJoin.get(key)
+  if (consumed?.delete(msg.message_id)) {
+    if (consumed.size === 0) consumedByJoin.delete(key)
+    return
+  }
   if (!exists) {
     log('skipping deleted queued message', key, msg.message_id)
     return
@@ -2536,8 +2536,9 @@ async function poll() {
             const updated = members.length > 1 ? rebuildEditedMediaGroupMessage(members, u.edited_message) : u.edited_message
             registerQueuedMessage(updated)
             // also still sitting in another run's Join batch until that Join tap consumes it, so patch that copy too
-            const pendingIndex = activeRuns.get(key)?.pending.findIndex(m => m.message_id === u.edited_message.message_id)
-            if (pendingIndex != null && pendingIndex !== -1) activeRuns.get(key).pending[pendingIndex] = updated
+            const pending = activeRuns.get(key)?.pending
+            const pendingIndex = pending?.findIndex(m => mediaGroupMembers(m).some(x => x.message_id === u.edited_message.message_id))
+            if (pendingIndex != null && pendingIndex !== -1) pending[pendingIndex] = updated
           } else {
             // best-effort early stop only — an unauthorized/unmentioned editor must not be able to kill another user's run sharing this chat-scoped key
             if (isAuthorizedMessage(u.edited_message)) activeRuns.get(key)?.cancel()
