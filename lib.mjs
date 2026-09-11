@@ -28,10 +28,14 @@ export function threadIdParam(threadId) {
   return threadId != null ? { message_thread_id: threadId } : {}
 }
 
-// chat-scoped, not thread-scoped like threadKey: this identifies one specific Telegram message
-// (for the still-queued-content registry), not the conversation it belongs to.
+// Identifies one specific Telegram message (chat-scoped, unlike threadKey's conversation scope).
 export function queuedMessageKey(chatId, messageId) {
   return `${chatId}:${messageId}`
+}
+
+// An album's members share one merged payload; a plain message is its own sole member.
+export function mediaGroupMembers(msg) {
+  return msg?.mediaGroupMessages ?? [msg]
 }
 
 // Inverse of threadKey, for the few call sites (check-in re-arm/run) that only have the key on hand.
@@ -486,18 +490,6 @@ export function buildSetMessageReactionParams(chatId, messageId, emoji) {
   }
 }
 
-// Telegram never pushes a "message deleted" update for ordinary chats, so a still-queued message
-// that the user deleted before the bridge got to it can only be caught by probing it — an
-// otherwise-inert setMessageReaction call fails with this specific text if the message is gone.
-// Deliberately narrow (mirrors CONFIG_PIN_GONE_RE's reasoning below): anything else, including a
-// chat with reactions disabled, falls back to "assume it still exists" rather than risk silently
-// dropping a live message.
-const MESSAGE_GONE_RE = /message to react not found/i
-
-export function isMessageGoneError(message) {
-  return MESSAGE_GONE_RE.test(String(message ?? ''))
-}
-
 export function buildReactionMarkerInstructions() {
   return [
     "You can put an emoji reaction on the user's triggering Telegram message.",
@@ -763,14 +755,18 @@ export function buildConfigPinText(session) {
   return `session cost: $${cost}`
 }
 
-// Deliberately narrow to unambiguous "this thread is permanently unreachable" signals — "message can't be edited" also covers ambiguous, non-deletion causes (e.g. a lost permission), so it's left to the 'retry' default rather than risk unpinning a message that's still perfectly fine.
-const CONFIG_PIN_GONE_RE = /message to (edit|pin) not found|chat not found|bot was (blocked|kicked)|bot is not a member/i
+// Deliberately narrow to unambiguous "this thread is permanently unreachable" signals — "message can't be edited" also covers ambiguous, non-deletion causes (e.g. a lost permission), so it's left to the 'retry' default rather than risk unpinning a message that's still perfectly fine. Shared with isMessageGoneError below, which reuses it to probe a queued message via an inert setMessageReaction call instead.
+const TELEGRAM_MESSAGE_GONE_RE = /message to (edit|pin|react) not found|chat not found|bot was (blocked|kicked)|bot is not a member/i
 
 export function classifyConfigPinSyncError(message) {
   const text = String(message ?? '')
   if (/message is not modified/i.test(text)) return 'unmodified'
-  if (CONFIG_PIN_GONE_RE.test(text)) return 'gone'
+  if (TELEGRAM_MESSAGE_GONE_RE.test(text)) return 'gone'
   return 'retry'
+}
+
+export function isMessageGoneError(message) {
+  return TELEGRAM_MESSAGE_GONE_RE.test(String(message ?? ''))
 }
 
 export function buildConfigKeyboard(chatId, entry, authMode, fishVoiceLabel = null) {

@@ -71,6 +71,7 @@ import {
   ERROR_REACTION,
   isMessageGoneError,
   queuedMessageKey,
+  mediaGroupMembers,
   buildChildEnv,
   expandHome,
   DEFAULT_WHISPER_BIN,
@@ -1833,10 +1834,9 @@ async function handleMessage(msg) {
   if (!isAuthorizedMessage(msg)) return
   // every authorized message supersedes whatever interrupted turn a Continue button was still offering, regardless of which branch below handles it
   await clearPendingContinue(chatId, key)
-  const groupedMessages = msg.mediaGroupMessages ?? null
-  const memberMessages = groupedMessages ?? [msg]
+  const memberMessages = mediaGroupMembers(msg)
   const reactionMessageIds = memberMessages.map(m => m.message_id)
-  const albumMemberMessages = groupedMessages ?? undefined
+  const albumMemberMessages = msg.mediaGroupMessages ?? undefined
   const attachments = memberMessages.map(extractAttachment).filter(Boolean)
   const attachment = attachments[0] ?? null
   const content = msg.text ?? msg.caption ?? null
@@ -2168,19 +2168,24 @@ function handleJoinTap(chatId, key, run) {
     .catch(e => log('queued joined handleMessage rejected', e))
 }
 
-async function runQueuedMessage(key, chatId, qKey) {
-  const msg = queuedMessageContent.get(qKey)
-  if (!msg) return
-  unregisterQueuedMessage(chatId, msg)
+async function runQueuedMessage(key, qKey) {
+  const initial = queuedMessageContent.get(qKey)
+  if (!initial) return
 
   const consumed = consumedByJoin.get(key)
-  if (consumed?.delete(msg.message_id)) {
+  if (consumed?.delete(initial.message_id)) {
     if (consumed.size === 0) consumedByJoin.delete(key)
+    unregisterQueuedMessage(initial)
     return
   }
-  // checked only now, right as this message reaches the front of its queue — not at enqueue
-  // time, when it hasn't had a chance to be deleted yet
-  if (!(await messageStillExists(chatId, msg.message_id))) {
+
+  const chatId = String(initial.chat.id)
+  // checked only now, at the front of the queue, not at enqueue time when it hasn't had a chance to be deleted yet
+  const exists = await queuedMessageStillExists(chatId, initial)
+  // re-read after the probe's round-trip, so an edit landing mid-probe isn't lost to the closed registry entry below
+  const msg = queuedMessageContent.get(qKey) ?? initial
+  unregisterQueuedMessage(msg)
+  if (!exists) {
     log('skipping deleted queued message', key, msg.message_id)
     return
   }
@@ -2427,30 +2432,21 @@ async function handleCallbackQuery(cq) {
 const mediaGroupBuffers = new Map()
 const MEDIA_GROUP_DEBOUNCE_MS = 1200
 
-// chatId:message_id -> latest known message payload, from the moment a message is registered to
-// process until its own runQueuedMessage task actually starts. A same-message edit landing while
-// it's still sitting here just replaces the entry in place, so the queued task runs the final
-// edited content instead of a stale copy — see registerQueuedMessage/runQueuedMessage below.
+// chatId:message_id -> latest payload for a message not yet picked up by its own runQueuedMessage task; see registerQueuedMessage/runQueuedMessage.
 const queuedMessageContent = new Map()
 
-// An album registers every member id under the same merged payload, since an edited caption can
-// land on any member, not just the lowest-id one that anchors the merged message.
-function registerQueuedMessage(chatId, msg) {
-  const members = msg.mediaGroupMessages ?? [msg]
-  for (const m of members) queuedMessageContent.set(queuedMessageKey(chatId, m.message_id), msg)
+function registerQueuedMessage(msg) {
+  const chatId = String(msg.chat.id)
+  for (const m of mediaGroupMembers(msg)) queuedMessageContent.set(queuedMessageKey(chatId, m.message_id), msg)
   return queuedMessageKey(chatId, msg.message_id)
 }
 
-function unregisterQueuedMessage(chatId, msg) {
-  const members = msg.mediaGroupMessages ?? [msg]
-  for (const m of members) queuedMessageContent.delete(queuedMessageKey(chatId, m.message_id))
+function unregisterQueuedMessage(msg) {
+  const chatId = String(msg.chat.id)
+  for (const m of mediaGroupMembers(msg)) queuedMessageContent.delete(queuedMessageKey(chatId, m.message_id))
 }
 
-// Telegram never pushes a deletion event for ordinary chats, so this is the only way to learn a
-// still-queued message is gone: an otherwise-inert reaction probe (empty reaction = no visible
-// effect) fails with a specific "message to react not found" if it's been deleted. Anything else
-// (rate limit, reactions disabled for this chat, a network hiccup) is treated as "still there" —
-// see isMessageGoneError's reasoning for why this stays narrow.
+// Telegram never pushes a deletion event for ordinary chats, so this inert reaction probe (empty reaction = no visible effect) is the only way to learn a still-queued message is gone.
 async function messageStillExists(chatId, messageId) {
   try {
     await tg('setMessageReaction', buildSetMessageReactionParams(chatId, messageId, null))
@@ -2462,6 +2458,12 @@ async function messageStillExists(chatId, messageId) {
   }
 }
 
+// An album survives as long as any one member does — a deleted non-anchor member just degrades to the existing "attachment not found" handling.
+async function queuedMessageStillExists(chatId, msg) {
+  const results = await Promise.all(mediaGroupMembers(msg).map(m => messageStillExists(chatId, m.message_id)))
+  return results.some(Boolean)
+}
+
 function flushMediaGroup(bufferKey) {
   const buf = mediaGroupBuffers.get(bufferKey)
   if (!buf) return
@@ -2469,8 +2471,8 @@ function flushMediaGroup(bufferKey) {
   const messages = buf.messages.sort((a, b) => a.message_id - b.message_id)
   const merged = messages.length > 1 ? mergeMediaGroupMessages(messages) : messages[0]
   const key = threadKey(buf.chatId, merged)
-  const qKey = registerQueuedMessage(buf.chatId, merged)
-  chatQueue.enqueue(key, () => runQueuedMessage(key, buf.chatId, qKey)).catch(e => log('queued handleMessage rejected', e))
+  const qKey = registerQueuedMessage(merged)
+  chatQueue.enqueue(key, () => runQueuedMessage(key, qKey)).catch(e => log('queued handleMessage rejected', e))
 }
 
 function bufferMediaGroupMessage(chatId, msg) {
@@ -2520,8 +2522,8 @@ async function poll() {
             if (activeRun && isAuthorizedMessage(u.message) && isJoinableMessage(u.message, botIdentity.username)) {
               addPendingJoinMessage(chatId, key, activeRun, u.message).catch(e => log('failed to track pending join message', e.message))
             }
-            const qKey = registerQueuedMessage(chatId, u.message)
-            chatQueue.enqueue(key, () => runQueuedMessage(key, chatId, qKey)).catch(e => log('queued handleMessage rejected', e))
+            const qKey = registerQueuedMessage(u.message)
+            chatQueue.enqueue(key, () => runQueuedMessage(key, qKey)).catch(e => log('queued handleMessage rejected', e))
           }
         } else if (u.edited_message) {
           const chatId = String(u.edited_message.chat.id)
@@ -2529,13 +2531,10 @@ async function poll() {
           const qKey = queuedMessageKey(chatId, u.edited_message.message_id)
           const stillQueued = queuedMessageContent.get(qKey)
           if (stillQueued) {
-            // hasn't started running yet — swap the content in place (runQueuedMessage looks the
-            // entry up fresh, not from a closure) so the queued task runs the final edited text;
-            // nothing has executed with the stale copy yet, so there's no run to cancel and no
-            // turn to rewind
-            const members = stillQueued.mediaGroupMessages ?? [stillQueued]
+            // nothing has run with the stale copy yet, so swap it in place instead of cancelling/rewinding
+            const members = mediaGroupMembers(stillQueued)
             const updated = members.length > 1 ? rebuildEditedMediaGroupMessage(members, u.edited_message) : u.edited_message
-            registerQueuedMessage(chatId, updated)
+            registerQueuedMessage(updated)
           } else {
             // best-effort early stop only — an unauthorized/unmentioned editor must not be able to kill another user's run sharing this chat-scoped key
             if (isAuthorizedMessage(u.edited_message)) activeRuns.get(key)?.cancel()

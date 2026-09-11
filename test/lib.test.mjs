@@ -11,6 +11,7 @@ import {
   threadIdParam,
   queuedMessageKey,
   isMessageGoneError,
+  mediaGroupMembers,
   buildSendMessageCallsFromChunks,
   createKeyedQueue,
   classifyCommand,
@@ -1200,10 +1201,16 @@ test('isMessageGoneError: case-insensitive and tolerant of surrounding text', ()
   assert.equal(isMessageGoneError('BAD REQUEST: MESSAGE TO REACT NOT FOUND'), true)
 })
 
+test('isMessageGoneError: shares classifyConfigPinSyncError\'s "gone" signals (a blocked/kicked bot or a gone chat means a queued message is unreachable too)', () => {
+  assert.equal(isMessageGoneError('Forbidden: bot was blocked by the user'), true)
+  assert.equal(isMessageGoneError('Forbidden: bot was kicked from the group chat'), true)
+  assert.equal(isMessageGoneError('Bad Request: chat not found'), true)
+})
+
 test('isMessageGoneError: an ambiguous or unrelated error is not treated as "gone" (avoid dropping a live message)', () => {
   assert.equal(isMessageGoneError('Too Many Requests: retry after 5'), false)
   assert.equal(isMessageGoneError('Bad Request: REACTION_INVALID'), false)
-  assert.equal(isMessageGoneError('Bad Request: message to edit not found'), false)
+  assert.equal(isMessageGoneError("Bad Request: message can't be edited"), false)
   assert.equal(isMessageGoneError('fetch https://api.telegram.org/... timed out after 10000ms'), false)
   assert.equal(isMessageGoneError(undefined), false)
 })
@@ -1926,6 +1933,17 @@ test('buildCancelKeyboard: a positive joinCount adds a Join button next to Cance
       ],
     ],
   })
+})
+
+test('mediaGroupMembers: a plain message is its own sole member', () => {
+  const msg = { message_id: 5 }
+  assert.deepEqual(mediaGroupMembers(msg), [msg])
+})
+
+test('mediaGroupMembers: an album returns its mediaGroupMessages list', () => {
+  const members = [{ message_id: 10 }, { message_id: 11 }]
+  const merged = { message_id: 10, mediaGroupMessages: members }
+  assert.equal(mediaGroupMembers(merged), members)
 })
 
 test('mergeMediaGroupMessages: keeps chat/from/message_id from the first message', () => {
