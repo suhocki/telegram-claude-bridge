@@ -187,9 +187,15 @@ export function extractReplyToMessageId(msg) {
   return msg?.reply_to_message?.message_id ?? null
 }
 
-// the run-starting message's own reply wins over the last joined fragment's, so a deliberate reply isn't lost behind a later non-reply fragment
-export function resolveJoinedReplyToMessage(runReplyToMessage, lastFragmentReplyToMessage) {
-  return runReplyToMessage ?? lastFragmentReplyToMessage ?? null
+// only set for a quote-reply (a selected excerpt), not a plain reply
+export function extractQuotedText(msg) {
+  return msg?.quote?.text ?? null
+}
+
+// resolved as a pair so a Join batch never attaches one message's quoted excerpt to another's reply target
+export function resolveJoinedReplyContext(run, last) {
+  if (run?.replyToMessage != null) return { replyToMessage: run.replyToMessage, quotedText: run.quotedText ?? null }
+  return { replyToMessage: last?.reply_to_message ?? null, quotedText: extractQuotedText(last) }
 }
 
 export function buildAttachmentCaption(attachment) {
@@ -356,7 +362,13 @@ export function evaluateRiskyGuard(text, pending) {
 
 export function resolveMessageMeta(decision, pendingEntry, fallbackMeta) {
   const meta = decision.action === 'confirmed' && pendingEntry ? pendingEntry : fallbackMeta
-  return { messageId: meta.messageId, user: meta.user, ts: meta.ts, replyToMessageId: meta.replyToMessageId ?? null }
+  return {
+    messageId: meta.messageId,
+    user: meta.user,
+    ts: meta.ts,
+    replyToMessageId: meta.replyToMessageId ?? null,
+    quotedText: meta.quotedText ?? null,
+  }
 }
 
 const ATTACH_LINE_RE = /^ATTACH:\s*(.+?)\s*$/

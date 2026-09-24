@@ -39,7 +39,8 @@ import {
   resolveMessageMeta,
   extractAttachment,
   extractReplyToMessageId,
-  resolveJoinedReplyToMessage,
+  extractQuotedText,
+  resolveJoinedReplyContext,
   buildAttachmentCaption,
   buildAttachmentsCaption,
   buildMultiAttachmentAttrs,
@@ -1896,6 +1897,7 @@ async function handleMessage(msg) {
     user: sanitizeAttr(msg.from?.username ?? userId),
     ts: new Date((msg.date ?? 0) * 1000).toISOString(),
     replyToMessageId: extractReplyToMessageId(msg),
+    quotedText: extractQuotedText(msg),
   }
 
   let promptText = content ?? ''
@@ -1932,6 +1934,7 @@ async function handleMessage(msg) {
     promptText,
     // built from meta, not msg directly, so a CONFIRMed run's Join still threads to the original message, not the CONFIRM reply
     replyToMessage: meta.replyToMessageId != null ? { message_id: meta.replyToMessageId } : undefined,
+    quotedText: meta.quotedText,
     placeholderId: null,
     pending: [],
     finished: false,
@@ -2006,6 +2009,7 @@ async function handleMessage(msg) {
       ...attachmentAttrs,
       // meta, not msg directly, so a CONFIRMed risky command keeps the original message's reply target
       reply_to_message_id: meta.replyToMessageId,
+      quoted_text: meta.quotedText,
     }
 
     const prompt =
@@ -2150,7 +2154,7 @@ function handleJoinTap(chatId, key, run) {
         if (quoteHtml) quoteMessageId = await sendTranscriptQuote(chatId, quoteHtml, last.message_id, resolveThreadId(last))
       }
       const joinedText = buildJoinedPromptText([run.promptText, ...fragments])
-      const replyToMessage = resolveJoinedReplyToMessage(run.replyToMessage, last.reply_to_message)
+      const { replyToMessage, quotedText } = resolveJoinedReplyContext(run, last)
       // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText
       const syntheticMsg = {
         ...last,
@@ -2160,6 +2164,7 @@ function handleJoinTap(chatId, key, run) {
         caption_entities: undefined,
         voice: undefined,
         reply_to_message: replyToMessage,
+        quote: quotedText != null ? { text: quotedText } : undefined,
         joinedFromActiveRun: true,
         extraBotMessageIds: quoteMessageId != null ? [quoteMessageId] : [],
       }

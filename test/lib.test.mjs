@@ -28,7 +28,8 @@ import {
   resolveMessageMeta,
   extractAttachment,
   extractReplyToMessageId,
-  resolveJoinedReplyToMessage,
+  extractQuotedText,
+  resolveJoinedReplyContext,
   buildAttachmentCaption,
   buildAttachmentsCaption,
   buildMultiAttachmentAttrs,
@@ -561,19 +562,36 @@ test('extractReplyToMessageId: a message with no reply_to_message returns null',
   assert.equal(extractReplyToMessageId(msg), null)
 })
 
-test('resolveJoinedReplyToMessage: the run-starting message\'s own reply target wins over the last fragment\'s (Wave 36 bugfix) — replying to answer a question, then quickly sending more before tapping Join, must not lose that reply', () => {
-  const runReply = { message_id: 42 }
-  const lastFragmentReply = { message_id: 7 }
-  assert.deepEqual(resolveJoinedReplyToMessage(runReply, lastFragmentReply), runReply)
+test('extractQuotedText: a quote-reply to a specific excerpt returns just that excerpt', () => {
+  const msg = { message_id: 99, reply_to_message: { message_id: 17, text: 'a long original message with several sentences' }, quote: { text: 'several sentences' } }
+  assert.equal(extractQuotedText(msg), 'several sentences')
 })
 
-test('resolveJoinedReplyToMessage: falls back to the last fragment\'s own reply target when the run itself did not start as a reply', () => {
-  const lastFragmentReply = { message_id: 7 }
-  assert.deepEqual(resolveJoinedReplyToMessage(undefined, lastFragmentReply), lastFragmentReply)
+test('extractQuotedText: a plain reply with no selected excerpt returns null', () => {
+  const msg = { message_id: 99, reply_to_message: { message_id: 17, text: 'a long original message' } }
+  assert.equal(extractQuotedText(msg), null)
 })
 
-test('resolveJoinedReplyToMessage: neither the run nor the last fragment is a reply, returns null', () => {
-  assert.equal(resolveJoinedReplyToMessage(undefined, undefined), null)
+test('resolveJoinedReplyContext: the run-starting message\'s own reply target wins over the last fragment\'s (Wave 36 bugfix) — replying to answer a question, then quickly sending more before tapping Join, must not lose that reply', () => {
+  const run = { replyToMessage: { message_id: 42 }, quotedText: null }
+  const last = { reply_to_message: { message_id: 7 } }
+  assert.deepEqual(resolveJoinedReplyContext(run, last), { replyToMessage: { message_id: 42 }, quotedText: null })
+})
+
+test('resolveJoinedReplyContext: falls back to the last fragment\'s own reply target (and its quoted excerpt) when the run itself did not start as a reply', () => {
+  const run = { replyToMessage: undefined, quotedText: null }
+  const last = { reply_to_message: { message_id: 7 }, quote: { text: 'second excerpt' } }
+  assert.deepEqual(resolveJoinedReplyContext(run, last), { replyToMessage: { message_id: 7 }, quotedText: 'second excerpt' })
+})
+
+test('resolveJoinedReplyContext: neither the run nor the last fragment is a reply, returns nulls', () => {
+  assert.deepEqual(resolveJoinedReplyContext({ replyToMessage: undefined, quotedText: null }, {}), { replyToMessage: null, quotedText: null })
+})
+
+test('resolveJoinedReplyContext: the run\'s reply target and quoted excerpt are picked together, never paired with the last fragment\'s excerpt — a plain reply to message A followed by a quote-reply to unrelated message B must not claim B\'s excerpt came from A', () => {
+  const run = { replyToMessage: { message_id: 1 }, quotedText: null }
+  const last = { reply_to_message: { message_id: 2 }, quote: { text: 'bar' } }
+  assert.deepEqual(resolveJoinedReplyContext(run, last), { replyToMessage: { message_id: 1 }, quotedText: null })
 })
 
 test('extractAttachment: photo message picks the largest size (last in the array)', () => {
@@ -866,6 +884,7 @@ test('resolveMessageMeta: confirmed action replays the stashed pending entry\'s 
     user: 'alice',
     ts: 'T1',
     replyToMessageId: null,
+    quotedText: null,
   })
 })
 
@@ -874,6 +893,13 @@ test('resolveMessageMeta: confirmed action also replays the stashed pending entr
   const fallbackMeta = { messageId: 101, user: 'alice', ts: 'T1', replyToMessageId: 999 }
   const decision = evaluateRiskyGuard('CONFIRM', pendingEntry)
   assert.equal(resolveMessageMeta(decision, pendingEntry, fallbackMeta).replyToMessageId, 42)
+})
+
+test('resolveMessageMeta: confirmed action also replays the stashed pending entry\'s quotedText, not the CONFIRM message\'s own — the quoted excerpt is what the risky command was actually attached to', () => {
+  const pendingEntry = { text: 'rm -rf /tmp/foo', messageId: 100, user: 'alice', ts: 'T1', replyToMessageId: 42, quotedText: 'the risky bit' }
+  const fallbackMeta = { messageId: 101, user: 'alice', ts: 'T1', replyToMessageId: 999, quotedText: 'unrelated CONFIRM quote' }
+  const decision = evaluateRiskyGuard('CONFIRM', pendingEntry)
+  assert.equal(resolveMessageMeta(decision, pendingEntry, fallbackMeta).quotedText, 'the risky bit')
 })
 
 test('resolveMessageMeta: cancelling a pending risky command uses the new message\'s own attribution, not the stashed one', () => {
@@ -886,11 +912,12 @@ test('resolveMessageMeta: cancelling a pending risky command uses the new messag
     user: 'bob',
     ts: 'T2',
     replyToMessageId: 999,
+    quotedText: null,
   })
 })
 
 test('resolveMessageMeta: no pending entry always uses the fallback attribution', () => {
-  const fallbackMeta = { messageId: 5, user: 'carol', ts: 'T3', replyToMessageId: null }
+  const fallbackMeta = { messageId: 5, user: 'carol', ts: 'T3', replyToMessageId: null, quotedText: null }
   const decision = evaluateRiskyGuard('hello there', undefined)
   assert.deepEqual(resolveMessageMeta(decision, undefined, fallbackMeta), fallbackMeta)
 })
