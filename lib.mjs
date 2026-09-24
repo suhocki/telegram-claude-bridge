@@ -187,20 +187,17 @@ export function extractReplyToMessageId(msg) {
   return msg?.reply_to_message?.message_id ?? null
 }
 
-// set only when the user long-pressed and selected a specific excerpt to reply to ("quote reply"),
-// as opposed to a plain reply which quotes nothing and leaves the whole original message implicit
+// only set for a quote-reply (a selected excerpt), not a plain reply
 export function extractQuotedText(msg) {
   return msg?.quote?.text ?? null
 }
 
-// the run-starting message's own reply wins over the last joined fragment's, so a deliberate reply isn't lost behind a later non-reply fragment
-export function resolveJoinedReplyToMessage(runReplyToMessage, lastFragmentReplyToMessage) {
-  return runReplyToMessage ?? lastFragmentReplyToMessage ?? null
-}
-
-// mirrors resolveJoinedReplyToMessage: the run-starting message's own quoted excerpt wins over the last joined fragment's
-export function resolveJoinedQuotedText(runQuotedText, lastFragmentQuotedText) {
-  return runQuotedText ?? lastFragmentQuotedText ?? null
+// the run-starting message's own reply (and whatever excerpt it quoted) wins over the last joined
+// fragment's as a pair, so a Join batch never attaches one message's quoted excerpt to another
+// message's reply target
+export function resolveJoinedReplyContext(run, last) {
+  if (run?.replyToMessage != null) return { replyToMessage: run.replyToMessage, quotedText: run.quotedText ?? null }
+  return { replyToMessage: last?.reply_to_message ?? null, quotedText: extractQuotedText(last) }
 }
 
 export function buildAttachmentCaption(attachment) {

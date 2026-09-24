@@ -29,8 +29,7 @@ import {
   extractAttachment,
   extractReplyToMessageId,
   extractQuotedText,
-  resolveJoinedReplyToMessage,
-  resolveJoinedQuotedText,
+  resolveJoinedReplyContext,
   buildAttachmentCaption,
   buildAttachmentsCaption,
   buildMultiAttachmentAttrs,
@@ -573,31 +572,26 @@ test('extractQuotedText: a plain reply with no selected excerpt returns null', (
   assert.equal(extractQuotedText(msg), null)
 })
 
-test('resolveJoinedReplyToMessage: the run-starting message\'s own reply target wins over the last fragment\'s (Wave 36 bugfix) — replying to answer a question, then quickly sending more before tapping Join, must not lose that reply', () => {
-  const runReply = { message_id: 42 }
-  const lastFragmentReply = { message_id: 7 }
-  assert.deepEqual(resolveJoinedReplyToMessage(runReply, lastFragmentReply), runReply)
+test('resolveJoinedReplyContext: the run-starting message\'s own reply target wins over the last fragment\'s (Wave 36 bugfix) — replying to answer a question, then quickly sending more before tapping Join, must not lose that reply', () => {
+  const run = { replyToMessage: { message_id: 42 }, quotedText: null }
+  const last = { reply_to_message: { message_id: 7 } }
+  assert.deepEqual(resolveJoinedReplyContext(run, last), { replyToMessage: { message_id: 42 }, quotedText: null })
 })
 
-test('resolveJoinedReplyToMessage: falls back to the last fragment\'s own reply target when the run itself did not start as a reply', () => {
-  const lastFragmentReply = { message_id: 7 }
-  assert.deepEqual(resolveJoinedReplyToMessage(undefined, lastFragmentReply), lastFragmentReply)
+test('resolveJoinedReplyContext: falls back to the last fragment\'s own reply target (and its quoted excerpt) when the run itself did not start as a reply', () => {
+  const run = { replyToMessage: undefined, quotedText: null }
+  const last = { reply_to_message: { message_id: 7 }, quote: { text: 'second excerpt' } }
+  assert.deepEqual(resolveJoinedReplyContext(run, last), { replyToMessage: { message_id: 7 }, quotedText: 'second excerpt' })
 })
 
-test('resolveJoinedReplyToMessage: neither the run nor the last fragment is a reply, returns null', () => {
-  assert.equal(resolveJoinedReplyToMessage(undefined, undefined), null)
+test('resolveJoinedReplyContext: neither the run nor the last fragment is a reply, returns nulls', () => {
+  assert.deepEqual(resolveJoinedReplyContext({ replyToMessage: undefined, quotedText: null }, {}), { replyToMessage: null, quotedText: null })
 })
 
-test('resolveJoinedQuotedText: the run-starting message\'s own quoted excerpt wins over the last fragment\'s', () => {
-  assert.equal(resolveJoinedQuotedText('first excerpt', 'second excerpt'), 'first excerpt')
-})
-
-test('resolveJoinedQuotedText: falls back to the last fragment\'s quoted excerpt when the run itself did not start as a quote-reply', () => {
-  assert.equal(resolveJoinedQuotedText(null, 'second excerpt'), 'second excerpt')
-})
-
-test('resolveJoinedQuotedText: neither the run nor the last fragment quoted anything, returns null', () => {
-  assert.equal(resolveJoinedQuotedText(null, null), null)
+test('resolveJoinedReplyContext: the run\'s reply target and quoted excerpt are picked together, never paired with the last fragment\'s excerpt — a plain reply to message A followed by a quote-reply to unrelated message B must not claim B\'s excerpt came from A', () => {
+  const run = { replyToMessage: { message_id: 1 }, quotedText: null }
+  const last = { reply_to_message: { message_id: 2 }, quote: { text: 'bar' } }
+  assert.deepEqual(resolveJoinedReplyContext(run, last), { replyToMessage: { message_id: 1 }, quotedText: null })
 })
 
 test('extractAttachment: photo message picks the largest size (last in the array)', () => {

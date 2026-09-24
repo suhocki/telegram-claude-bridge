@@ -40,8 +40,7 @@ import {
   extractAttachment,
   extractReplyToMessageId,
   extractQuotedText,
-  resolveJoinedReplyToMessage,
-  resolveJoinedQuotedText,
+  resolveJoinedReplyContext,
   buildAttachmentCaption,
   buildAttachmentsCaption,
   buildMultiAttachmentAttrs,
@@ -2155,8 +2154,7 @@ function handleJoinTap(chatId, key, run) {
         if (quoteHtml) quoteMessageId = await sendTranscriptQuote(chatId, quoteHtml, last.message_id, resolveThreadId(last))
       }
       const joinedText = buildJoinedPromptText([run.promptText, ...fragments])
-      const replyToMessage = resolveJoinedReplyToMessage(run.replyToMessage, last.reply_to_message)
-      const quotedText = resolveJoinedQuotedText(run.quotedText, extractQuotedText(last))
+      const { replyToMessage, quotedText } = resolveJoinedReplyContext(run, last)
       // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText
       const syntheticMsg = {
         ...last,
