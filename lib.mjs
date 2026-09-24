@@ -192,9 +192,7 @@ export function extractQuotedText(msg) {
   return msg?.quote?.text ?? null
 }
 
-// the run-starting message's own reply (and whatever excerpt it quoted) wins over the last joined
-// fragment's as a pair, so a Join batch never attaches one message's quoted excerpt to another
-// message's reply target
+// resolved as a pair so a Join batch never attaches one message's quoted excerpt to another's reply target
 export function resolveJoinedReplyContext(run, last) {
   if (run?.replyToMessage != null) return { replyToMessage: run.replyToMessage, quotedText: run.quotedText ?? null }
   return { replyToMessage: last?.reply_to_message ?? null, quotedText: extractQuotedText(last) }
