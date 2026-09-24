@@ -28,7 +28,9 @@ import {
   resolveMessageMeta,
   extractAttachment,
   extractReplyToMessageId,
+  extractQuotedText,
   resolveJoinedReplyToMessage,
+  resolveJoinedQuotedText,
   buildAttachmentCaption,
   buildAttachmentsCaption,
   buildMultiAttachmentAttrs,
@@ -561,6 +563,16 @@ test('extractReplyToMessageId: a message with no reply_to_message returns null',
   assert.equal(extractReplyToMessageId(msg), null)
 })
 
+test('extractQuotedText: a quote-reply to a specific excerpt returns just that excerpt', () => {
+  const msg = { message_id: 99, reply_to_message: { message_id: 17, text: 'a long original message with several sentences' }, quote: { text: 'several sentences' } }
+  assert.equal(extractQuotedText(msg), 'several sentences')
+})
+
+test('extractQuotedText: a plain reply with no selected excerpt returns null', () => {
+  const msg = { message_id: 99, reply_to_message: { message_id: 17, text: 'a long original message' } }
+  assert.equal(extractQuotedText(msg), null)
+})
+
 test('resolveJoinedReplyToMessage: the run-starting message\'s own reply target wins over the last fragment\'s (Wave 36 bugfix) — replying to answer a question, then quickly sending more before tapping Join, must not lose that reply', () => {
   const runReply = { message_id: 42 }
   const lastFragmentReply = { message_id: 7 }
@@ -574,6 +586,18 @@ test('resolveJoinedReplyToMessage: falls back to the last fragment\'s own reply 
 
 test('resolveJoinedReplyToMessage: neither the run nor the last fragment is a reply, returns null', () => {
   assert.equal(resolveJoinedReplyToMessage(undefined, undefined), null)
+})
+
+test('resolveJoinedQuotedText: the run-starting message\'s own quoted excerpt wins over the last fragment\'s', () => {
+  assert.equal(resolveJoinedQuotedText('first excerpt', 'second excerpt'), 'first excerpt')
+})
+
+test('resolveJoinedQuotedText: falls back to the last fragment\'s quoted excerpt when the run itself did not start as a quote-reply', () => {
+  assert.equal(resolveJoinedQuotedText(null, 'second excerpt'), 'second excerpt')
+})
+
+test('resolveJoinedQuotedText: neither the run nor the last fragment quoted anything, returns null', () => {
+  assert.equal(resolveJoinedQuotedText(null, null), null)
 })
 
 test('extractAttachment: photo message picks the largest size (last in the array)', () => {
@@ -866,6 +890,7 @@ test('resolveMessageMeta: confirmed action replays the stashed pending entry\'s 
     user: 'alice',
     ts: 'T1',
     replyToMessageId: null,
+    quotedText: null,
   })
 })
 
@@ -874,6 +899,13 @@ test('resolveMessageMeta: confirmed action also replays the stashed pending entr
   const fallbackMeta = { messageId: 101, user: 'alice', ts: 'T1', replyToMessageId: 999 }
   const decision = evaluateRiskyGuard('CONFIRM', pendingEntry)
   assert.equal(resolveMessageMeta(decision, pendingEntry, fallbackMeta).replyToMessageId, 42)
+})
+
+test('resolveMessageMeta: confirmed action also replays the stashed pending entry\'s quotedText, not the CONFIRM message\'s own — the quoted excerpt is what the risky command was actually attached to', () => {
+  const pendingEntry = { text: 'rm -rf /tmp/foo', messageId: 100, user: 'alice', ts: 'T1', replyToMessageId: 42, quotedText: 'the risky bit' }
+  const fallbackMeta = { messageId: 101, user: 'alice', ts: 'T1', replyToMessageId: 999, quotedText: 'unrelated CONFIRM quote' }
+  const decision = evaluateRiskyGuard('CONFIRM', pendingEntry)
+  assert.equal(resolveMessageMeta(decision, pendingEntry, fallbackMeta).quotedText, 'the risky bit')
 })
 
 test('resolveMessageMeta: cancelling a pending risky command uses the new message\'s own attribution, not the stashed one', () => {
@@ -886,11 +918,12 @@ test('resolveMessageMeta: cancelling a pending risky command uses the new messag
     user: 'bob',
     ts: 'T2',
     replyToMessageId: 999,
+    quotedText: null,
   })
 })
 
 test('resolveMessageMeta: no pending entry always uses the fallback attribution', () => {
-  const fallbackMeta = { messageId: 5, user: 'carol', ts: 'T3', replyToMessageId: null }
+  const fallbackMeta = { messageId: 5, user: 'carol', ts: 'T3', replyToMessageId: null, quotedText: null }
   const decision = evaluateRiskyGuard('hello there', undefined)
   assert.deepEqual(resolveMessageMeta(decision, undefined, fallbackMeta), fallbackMeta)
 })
