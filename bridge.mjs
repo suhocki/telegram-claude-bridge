@@ -1531,13 +1531,27 @@ function createDraftPlaceholderController(chatId, draftId, initialStatus, shared
     renderTranscript: (historyLines, liveText) => renderDraftMarkdown(historyLines, liveText),
   })
   let fellBack = false
+  // no ordering guarantee across independent requests, so overlapping sends could flash stale content back onto the draft — serialize them instead.
+  let sending = false
+  let resendPending = false
 
   async function editPlaceholder({ text }) {
     if (fellBack) return
+    if (sending) {
+      resendPending = true
+      return
+    }
+    sending = true
     try {
       const { method, params } = buildSendRichMessageDraftCall(chatId, draftId, text)
       await tg(method, params)
+      sending = false
+      if (resendPending) {
+        resendPending = false
+        await editPlaceholder(tracker.snapshot())
+      }
     } catch (e) {
+      sending = false
       if (fellBack) return
       const { notModified, retryAfterMs } = parseTelegramEditError(e.message)
       if (notModified) return
@@ -1571,6 +1585,11 @@ function createDraftPlaceholderController(chatId, draftId, initialStatus, shared
       tracker.ingest(event)
     },
     setKeyboard() {}, // sendRichMessageDraft has no reply_markup slot
+    // called by fallbackToClassicPlaceholder once it has successfully superseded this controller, so a late, already-in-flight failure can't trigger a second, duplicate fallback.
+    retire() {
+      fellBack = true
+      statusUpdater.stop()
+    },
   }
 }
 
@@ -1642,6 +1661,7 @@ function createPlaceholderController(
     setKeyboard(kb) {
       currentKeyboard = kb
     },
+    retire() {}, // a classic placeholder is never superseded the way a draft can be — nothing to retire, kept only for shape parity
   }
 }
 
@@ -1723,7 +1743,8 @@ async function runClaudeTurn(
     if (turnSettled || fallbackInFlight) return
     fallbackInFlight = true
     try {
-      rootController?.statusUpdater.stop()
+      const oldController = rootController
+      oldController?.statusUpdater.stop()
       // recomputed here, not reused from turn start: joins folded into run.pending while streaming never had a keyboard to show them on until now.
       const liveCancelKeyboard = buildCancelKeyboard(chatId, run.pending.length)
       const placeholder = await tg('sendMessage', buildWorkingPlaceholderParams(chatId, workingStatus, originMessageId, liveCancelKeyboard, threadId))
@@ -1732,8 +1753,10 @@ async function runClaudeTurn(
         await tg('deleteMessage', { chat_id: chatId, message_id: placeholder.message_id }).catch(() => {})
         return
       }
+      // retired only once we're committed to using this new placeholder — a stale, still-pending failure on oldController can no longer trigger a second fallback.
+      oldController?.retire()
       // snapshotted only now, not before the await above: events ingested into the still-live draft tracker during that round-trip must not be lost.
-      const seededHistory = rootController?.tracker.historySnapshot() ?? []
+      const seededHistory = oldController?.tracker.historySnapshot() ?? []
       currentPlaceholderId = placeholder.message_id
       run.placeholderId = currentPlaceholderId
       botMessageIds.push(currentPlaceholderId)
