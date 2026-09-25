@@ -1529,51 +1529,44 @@ function createDraftPlaceholderController(chatId, draftId, initialStatus, shared
   const tracker = createProgressTracker(initialStatus, {
     renderTranscript: (historyLines, liveText) => renderDraftMarkdown(historyLines, liveText),
   })
-  let alive = true
   let fellBack = false
 
   async function editPlaceholder({ text }) {
-    if (!alive || fellBack) return
+    if (fellBack) return
     const markdown = text ?? initialStatus
     try {
       const { method, params } = buildSendRichMessageDraftCall(chatId, draftId, markdown)
       await tg(method, params)
     } catch (e) {
-      if (!alive || fellBack) return
+      if (fellBack) return
       if (/message is not modified/i.test(e.message)) return
       const retryAfterMatch = e.message.match(/retry after (\d+)/i)
       if (retryAfterMatch) {
-        sharedGate.pauseFor(Number(retryAfterMatch[1]) * 1000)
+        statusUpdater.pauseFor(Number(retryAfterMatch[1]) * 1000)
         log('sendRichMessageDraft rate-limited, pausing streaming updates', e.message)
         return
       }
       fellBack = true
       log('sendRichMessageDraft failed, falling back to a classic placeholder', e.message)
-      stop()
+      statusUpdater.stop()
       await onFallback()
     }
   }
 
-  // Unlike a real message, a draft self-expires ~30s after its last refresh, so this must resend on every tick regardless of content change.
-  const timer = setInterval(() => {
-    if (alive && !sharedGate.isPaused()) editPlaceholder(tracker.snapshot())
-  }, STREAM_EDIT_INTERVAL_MS)
-
-  function stop() {
-    if (!alive) return
-    alive = false
-    clearInterval(timer)
-  }
+  // alwaysSend: unlike a real message, a draft self-expires ~30s after its last refresh, so this must resend every tick regardless of content change.
+  const statusUpdater = createStatusUpdater({
+    getStatus: () => tracker.snapshot(),
+    onUpdate: latestStatus => editPlaceholder(latestStatus),
+    initialStatus: tracker.snapshot(),
+    intervalMs: STREAM_EDIT_INTERVAL_MS,
+    sharedGate,
+    alwaysSend: true,
+  })
 
   return {
     tracker,
     editPlaceholder,
-    statusUpdater: {
-      stop,
-      get alive() {
-        return alive
-      },
-    },
+    statusUpdater,
     ingest(event) {
       tracker.ingest(event)
     },
@@ -1721,11 +1714,14 @@ async function runClaudeTurn(
   const chatRateGate = createChatRateGate()
   // guards fallbackToClassicPlaceholder against firing after this turn's own cleanup already ran (a late, in-flight draft tick failing post-turn)
   let turnSettled = false
+  // a draft tick failing and a cancel/timeout landing the same instant can both try to trigger this — only the first one should ever run.
+  let fallbackAttempted = false
 
   // optional-chained defensively: rootController is always assigned before this can run today, but it's a handed-off callback.
   let rootController
   async function fallbackToClassicPlaceholder() {
-    if (turnSettled) return
+    if (turnSettled || fallbackAttempted) return
+    fallbackAttempted = true
     rootController?.statusUpdater.stop()
     const seededHistory = rootController?.tracker.historySnapshot() ?? []
     // recomputed here, not reused from turn start: joins folded into run.pending while streaming never had a keyboard to show them on until now.
