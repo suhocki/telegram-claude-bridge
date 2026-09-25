@@ -642,6 +642,14 @@ export function extractResponseMarkers(text) {
   return { text: cleanedText, attachPaths, reactionEmoji, checkin, noReply }
 }
 
+// A success exit with completely empty text is a flaky/incomplete completion, not a real answer — worth one retry before falling back to an error-shaped message instead of a fake-looking empty reply.
+export const MAX_EMPTY_RESULT_RETRIES = 1
+
+// /compact and NO_REPLY-suppressed turns are expected to come back with no text — only a genuinely unclassified empty completion should be retried.
+export function shouldRetryEmptyResult(result, markers, isCompact = false) {
+  return !result.is_error && !isCompact && !markers.noReply && !markers.text
+}
+
 export function combineSystemPrompts(...parts) {
   return parts.filter(p => p != null && p !== '').join('\n\n')
 }

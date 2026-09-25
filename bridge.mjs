@@ -65,6 +65,8 @@ import {
   buildJobMarkerInstructions,
   buildCheckinFollowupPrompt,
   extractResponseMarkers,
+  shouldRetryEmptyResult,
+  MAX_EMPTY_RESULT_RETRIES,
   checkinChainExceeded,
   CHECKIN_MAX_CHAINED_HOPS,
   mergePendingCheckin,
@@ -955,8 +957,15 @@ function cancelCheckin(key) {
   delete state.pendingCheckins[key]
 }
 
-// A success exit with completely empty text is a flaky/incomplete completion, not a real answer — worth one retry before falling back to an error-shaped message instead of a fake-looking empty reply.
-const MAX_EMPTY_RESULT_RETRIES = 1
+// Accumulates one attempt's cost immediately (not just the surviving attempt after a retry loop), so a discarded empty-retry attempt's real spend is never dropped from the tracked session cost.
+function accumulateAttemptCost(newSession, key, result) {
+  if (!result.session_id) return newSession
+  const updated = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
+  state.sessions[key] = updated
+  saveState(state)
+  syncConfigPin(key)
+  return updated
+}
 
 async function runCheckin(key) {
   const pending = state.pendingCheckins[key]
@@ -965,7 +974,8 @@ async function runCheckin(key) {
   saveState(state)
 
   const { chatId, threadId } = parseThreadKey(key)
-  const sessionId = normalizeSession(state.sessions[key])?.id ?? pending.sessionId
+  const priorSession = normalizeSession(state.sessions[key])
+  const sessionId = priorSession?.id ?? pending.sessionId
   if (!sessionId) {
     log('skipping check-in, no session to resume', key)
     return
@@ -973,22 +983,15 @@ async function runCheckin(key) {
 
   try {
     const checkinPrompt = buildCheckinFollowupPrompt(pending.instruction)
-    const priorSession = normalizeSession(state.sessions[key])
     let result
     let markers
     let resumeSessionId = sessionId
     let newSession = priorSession
     for (let attempt = 0; ; attempt++) {
       result = await runClaude(checkinPrompt, resumeSessionId, undefined, currentAuthMode(), currentModelConfig(key), key).promise
-      // accumulated per attempt, not just the surviving one, so a discarded empty-retry attempt's spend is never dropped from the tracked session cost
-      if (result.session_id) {
-        newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
-        state.sessions[key] = newSession
-        saveState(state)
-        syncConfigPin(key)
-      }
+      newSession = accumulateAttemptCost(newSession, key, result)
       markers = extractResponseMarkers(result.result)
-      if (result.is_error || markers.noReply || markers.text || attempt >= MAX_EMPTY_RESULT_RETRIES) break
+      if (!shouldRetryEmptyResult(result, markers) || attempt >= MAX_EMPTY_RESULT_RETRIES) break
       log('check-in returned an empty result with no error, retrying', key, `attempt ${attempt + 1}`)
       resumeSessionId = result.session_id ?? resumeSessionId
     }
@@ -1726,16 +1729,9 @@ async function runClaudeTurn(
         err.cancelledResult = result
         throw err
       }
-      // accumulated per attempt, not just the surviving one, so a discarded empty-retry attempt's spend is never dropped from the tracked session cost
-      if (result.session_id) {
-        newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
-        state.sessions[key] = newSession
-        saveState(state)
-        syncConfigPin(key)
-      }
+      newSession = accumulateAttemptCost(newSession, key, result)
       markers = extractResponseMarkers(result.result)
-      // /compact and NO_REPLY-suppressed turns are expected to come back with no text — only a genuinely unclassified empty completion gets retried
-      if (result.is_error || isCompact || markers.noReply || markers.text || attempt >= MAX_EMPTY_RESULT_RETRIES) break
+      if (!shouldRetryEmptyResult(result, markers, isCompact) || attempt >= MAX_EMPTY_RESULT_RETRIES) break
       log('claude returned an empty result with no error, retrying the turn', key, `attempt ${attempt + 1}`)
       resumeSessionId = result.session_id ?? resumeSessionId
     }

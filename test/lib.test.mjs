@@ -62,6 +62,7 @@ import {
   buildCheckinMarkerInstructions,
   buildCheckinFollowupPrompt,
   extractResponseMarkers,
+  shouldRetryEmptyResult,
   extractNoReplyMarker,
   buildNoReplyMarkerInstructions,
   buildJobMarkerInstructions,
@@ -1481,6 +1482,27 @@ test('extractResponseMarkers: no markers leaves text untouched with empty/null/f
     checkin: null,
     noReply: false,
   })
+})
+
+test('shouldRetryEmptyResult: retries only a genuinely empty, non-error, non-compact, non-NO_REPLY completion', () => {
+  const emptyMarkers = { text: '', noReply: false }
+  assert.equal(shouldRetryEmptyResult({ is_error: false }, emptyMarkers), true)
+})
+
+test('shouldRetryEmptyResult: an error result is never retried, even with empty text', () => {
+  assert.equal(shouldRetryEmptyResult({ is_error: true }, { text: '', noReply: false }), false)
+})
+
+test('shouldRetryEmptyResult: a /compact turn is never retried, since its result text is normally empty', () => {
+  assert.equal(shouldRetryEmptyResult({ is_error: false }, { text: '', noReply: false }, true), false)
+})
+
+test('shouldRetryEmptyResult: an intentional NO_REPLY-suppressed turn is never retried', () => {
+  assert.equal(shouldRetryEmptyResult({ is_error: false }, { text: '', noReply: true }), false)
+})
+
+test('shouldRetryEmptyResult: a completion with real text is never retried', () => {
+  assert.equal(shouldRetryEmptyResult({ is_error: false }, { text: 'a real answer', noReply: false }), false)
 })
 
 test('expandHome: expands a leading ~/ using the given home dir', () => {
