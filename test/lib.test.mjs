@@ -2255,6 +2255,13 @@ test('buildSpeechText: null/undefined becomes an empty string', () => {
   assert.equal(buildSpeechText(null), '')
 })
 
+test('buildSpeechText: a markdown table becomes a short spoken placeholder instead of raw pipes/dashes', () => {
+  assert.equal(
+    buildSpeechText('Summary:\n\n| Name | Age |\n|------|-----|\n| Alice | 30 |\n\nDone.'),
+    'Summary:\n\ntable data\n\nDone.',
+  )
+})
+
 test('truncateForSpeech: text at or under the limit is unchanged', () => {
   assert.equal(truncateForSpeech('hello', 10), 'hello')
 })

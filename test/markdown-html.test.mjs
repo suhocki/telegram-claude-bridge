@@ -1,6 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { markdownToTelegramHtml, markdownToTelegramHtmlChunks, htmlToPlainFallback, renderStreamingTail, renderTranscriptHtml } from '../markdown-html.mjs'
+import {
+  markdownToTelegramHtml,
+  markdownToTelegramHtmlChunks,
+  htmlToPlainFallback,
+  renderStreamingTail,
+  renderTranscriptHtml,
+  stripRenderedTableGridsForSpeech,
+} from '../markdown-html.mjs'
 
 test('markdownToTelegramHtml: escapes bare &, <, > outside any markdown construct', () => {
   assert.equal(markdownToTelegramHtml('1 < 2 && 3 > 1'), '1 &lt; 2 &amp;&amp; 3 &gt; 1')
@@ -94,6 +101,91 @@ test('markdownToTelegramHtml: combines multiple constructs in one message', () =
   )
 })
 
+test('markdownToTelegramHtml: renders a GFM pipe table as an aligned <pre> grid', () => {
+  assert.equal(
+    markdownToTelegramHtml('| Name | Age |\n|------|-----|\n| Alice | 30 |\n| Bob | 5 |'),
+    '<pre>Name  | Age\n------+----\nAlice | 30 \nBob   | 5  </pre>',
+  )
+})
+
+test('markdownToTelegramHtml: table separator with alignment colons is still recognized', () => {
+  assert.equal(
+    markdownToTelegramHtml('| A | B |\n|:---|---:|\n| x | y |'),
+    '<pre>A | B\n--+--\nx | y</pre>',
+  )
+})
+
+test('markdownToTelegramHtml: escapes HTML-sensitive characters inside table cells', () => {
+  assert.equal(
+    markdownToTelegramHtml('| Tag |\n|-----|\n| <b> & 1 < 2 |'),
+    '<pre>Tag        \n-----------\n&lt;b&gt; &amp; 1 &lt; 2</pre>',
+  )
+})
+
+test('markdownToTelegramHtml: a short row of dashes with no preceding pipe line is left as plain text', () => {
+  assert.equal(markdownToTelegramHtml('above\n---\nbelow'), 'above\n---\nbelow')
+})
+
+test('markdownToTelegramHtml: prose containing a literal "|" followed by an unrelated "---" divider is not misread as a table', () => {
+  assert.equal(
+    markdownToTelegramHtml('Use a pipe (|) between commands\n---\nThis section explains further.'),
+    'Use a pipe (|) between commands\n---\nThis section explains further.',
+  )
+})
+
+test('markdownToTelegramHtml: a separator whose column count does not match the header is not a table', () => {
+  assert.equal(markdownToTelegramHtml('| A | B |\n|---|\nnext'), '| A | B |\n|---|\nnext')
+})
+
+test('markdownToTelegramHtml: markdown syntax inside table cells is not converted (rendered as literal text)', () => {
+  assert.equal(
+    markdownToTelegramHtml('| Col |\n|-----|\n| **bold** `code` |'),
+    '<pre>Col            \n---------------\n**bold** `code`</pre>',
+  )
+})
+
+test('markdownToTelegramHtml: a table followed by more text keeps both', () => {
+  assert.equal(
+    markdownToTelegramHtml('| A |\n|---|\n| 1 |\nafter'),
+    '<pre>A\n-\n1</pre>\nafter',
+  )
+})
+
+test('markdownToTelegramHtml: an emoji cell is measured as 2 display columns wide, not 1 code point or 2 UTF-16 units', () => {
+  assert.equal(
+    markdownToTelegramHtml('| Status | Task |\n|--------|------|\n| 😀 | build |\n| ok | deploy |'),
+    '<pre>Status | Task  \n-------+-------\n😀     | build \nok     | deploy</pre>',
+  )
+})
+
+test('markdownToTelegramHtml: a CJK (double-width) cell aligns against ASCII cells in the same column', () => {
+  assert.equal(
+    markdownToTelegramHtml('| Name | Note |\n|------|------|\n| 张三 | ok |\n| Bob | fine |'),
+    '<pre>Name | Note\n-----+-----\n张三 | ok  \nBob  | fine</pre>',
+  )
+})
+
+test('markdownToTelegramHtml: a row with more cells than the header has the excess dropped, per GFM', () => {
+  assert.equal(
+    markdownToTelegramHtml('| A | B |\n|---|---|\n| 1 | 2 | 3 |'),
+    '<pre>A | B\n--+--\n1 | 2</pre>',
+  )
+})
+
+test('markdownToTelegramHtml: an emoji from the misc-symbols/dingbats block (e.g. checkmarks) is also measured as 2 columns wide', () => {
+  assert.equal(
+    markdownToTelegramHtml('| Status | Icon |\n|--------|------|\n| ok | ✅ |\n| bad | ❌ |'),
+    '<pre>Status | Icon\n-------+-----\nok     | ✅  \nbad    | ❌  </pre>',
+  )
+})
+
+test('markdownToTelegramHtml: a header with only an escaped pipe (no real column separator) followed by an unrelated "---" divider is not misread as a table', () => {
+  assert.equal(
+    markdownToTelegramHtml('To show a literal pipe use `a\\|b`.\n---\nThis section explains further.'),
+    'To show a literal pipe use <code>a\\|b</code>.\n---\nThis section explains further.',
+  )
+})
+
 test('markdownToTelegramHtml: empty/null/undefined input becomes an empty string', () => {
   assert.equal(markdownToTelegramHtml(''), '')
   assert.equal(markdownToTelegramHtml(null), '')
@@ -155,6 +247,41 @@ test('markdownToTelegramHtmlChunks: reassembling the code content across chunks 
   const chunks = markdownToTelegramHtmlChunks(md, 500)
   const combined = chunks.join('')
   for (let i = 0; i < 300; i++) assert.ok(combined.includes(`const line${i} = ${i};`), `missing line${i}`)
+})
+
+test('markdownToTelegramHtmlChunks: a table is kept as one atomic block instead of being split mid-row across chunks', () => {
+  const filler = 'x'.repeat(150)
+  const rows = Array.from({ length: 5 }, (_, i) => `| Item ${i} | value-${i} |`).join('\n')
+  const md = `${filler}\n\n| Name | Value |\n|------|-------|\n${rows}`
+  const chunks = markdownToTelegramHtmlChunks(md, 200)
+  assert.ok(chunks.length > 1)
+  for (const c of chunks) assert.ok(c.length <= 200)
+  const tableChunk = chunks.find(c => c.includes('<pre>'))
+  assert.ok(tableChunk, 'no chunk contains the rendered table')
+  for (let i = 0; i < 5; i++) assert.ok(tableChunk.includes(`Item ${i}`), `row ${i} missing from the table chunk`)
+  const preOpens = (tableChunk.match(/<pre>/g) || []).length
+  const preCloses = (tableChunk.match(/<\/pre>/g) || []).length
+  assert.equal(preOpens, preCloses, `unbalanced <pre> in table chunk: ${tableChunk}`)
+})
+
+test('markdownToTelegramHtmlChunks: a table too big for one chunk is split by whole rows, repeating the header on each piece, instead of leaking raw pipe text', () => {
+  const rows = Array.from({ length: 50 }, (_, i) => `| Item ${i} | value-${i} |`).join('\n')
+  const md = `| Name | Value |\n|------|-------|\n${rows}`
+  const chunks = markdownToTelegramHtmlChunks(md, 300)
+  assert.ok(chunks.length > 1)
+  for (const c of chunks) {
+    assert.ok(c.length <= 300)
+    assert.ok(c.startsWith('<pre>Name'), `piece lost its table header: ${c}`)
+    const withoutPre = c.replace(/<pre>[\s\S]*?<\/pre>/g, '')
+    assert.ok(!withoutPre.includes('|'), `raw unrendered pipe text leaked outside <pre>: ${c}`)
+  }
+  const combined = chunks.join('')
+  for (let i = 0; i < 50; i++) assert.ok(combined.includes(`Item ${i}`), `missing row ${i}`)
+})
+
+test('markdownToTelegramHtmlChunks: a table inside a fenced code block is left as literal code, not parsed as a real table', () => {
+  const md = '```\n| a | b |\n|---|---|\n| 1 | 2 |\n```'
+  assert.equal(markdownToTelegramHtmlChunks(md, 4096)[0], markdownToTelegramHtml(md))
 })
 
 test('markdownToTelegramHtmlChunks: content split at a plain-text boundary matches chunk-then-render behavior', () => {
@@ -317,4 +444,13 @@ test('renderTranscriptHtml: when history alone already fills the limit, it is ta
   assert.ok(result.length <= 200, `result length ${result.length} exceeds the 200 limit`)
   assert.ok(!result.includes('this should not appear'), 'live text should be dropped when there is no budget left for it')
   assert.ok(result.includes('number 49'), 'the tail should keep the most recent history lines')
+})
+
+test('stripRenderedTableGridsForSpeech: replaces an already-rendered table grid (Telegram\'s own plain message.text, used by the Listen button) with a spoken placeholder', () => {
+  const rendered = htmlToPlainFallback(markdownToTelegramHtml('Summary:\n\n| Name | Age |\n|------|-----|\n| Alice | 30 |\n\nDone.'))
+  assert.equal(stripRenderedTableGridsForSpeech(rendered), 'Summary:\n\ntable data\n\nDone.')
+})
+
+test('stripRenderedTableGridsForSpeech: text with no table grid is left unchanged', () => {
+  assert.equal(stripRenderedTableGridsForSpeech('no table here at all'), 'no table here at all')
 })

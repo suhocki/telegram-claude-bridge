@@ -3,7 +3,7 @@
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { writeFileSync, renameSync } from 'node:fs'
-import { markdownToTelegramHtml, htmlToPlainFallback, escapeHtml } from './markdown-html.mjs'
+import { markdownToTelegramHtml, htmlToPlainFallback, escapeHtml, stripMarkdownTablesForSpeech } from './markdown-html.mjs'
 import { truncateStatus } from './stream-progress.mjs'
 
 // pid-suffixed so two processes writing the same path (e.g. auth-mode.json, shared across every bot) never share one tmp file.
@@ -860,7 +860,7 @@ export function buildVoiceToggleReply(enabled) {
 }
 
 export function buildSpeechText(text) {
-  return htmlToPlainFallback(markdownToTelegramHtml(text ?? '')).trim()
+  return htmlToPlainFallback(markdownToTelegramHtml(stripMarkdownTablesForSpeech(text ?? ''))).trim()
 }
 
 export function truncateForSpeech(text, maxChars) {
