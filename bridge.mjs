@@ -177,7 +177,7 @@ import {
 } from './jobs.mjs'
 import { loadGlobalAuthMode, saveGlobalAuthMode, seedGlobalAuthModeIfMissing, collectLegacyAuthModeValues } from './auth-mode.mjs'
 import { loadGlobalFishVoice, saveGlobalFishVoice } from './fish-voice.mjs'
-import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml, stripRenderedTableGridsForSpeech } from './markdown-html.mjs'
+import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml, stripRenderedTableGridsForSpeech, richMessageToSpeechText } from './markdown-html.mjs'
 import {
   DEFAULT_WORKING_STATUS,
   createLineSplitter,
@@ -1447,11 +1447,12 @@ function supportsFishProsodyTags(voiceReplyConfig) {
   return voiceReplyConfig.provider === 'fish' && String(voiceReplyConfig.modelId ?? '').startsWith('s2')
 }
 
-async function sendVoiceReply(chatId, text, replyToMessageId, threadId, { alreadyPlain = false } = {}) {
-  // alreadyPlain: the Listen button passes Telegram's own already-rendered message.text, which must skip the markdown pass buildSpeechText applies for raw model output
+async function sendVoiceReply(chatId, text, replyToMessageId, threadId, { alreadyPlain = false, richMessage = null } = {}) {
+  // alreadyPlain: the Listen button passes Telegram's own already-rendered message content, which must skip the markdown pass buildSpeechText applies for raw model output
   // Annotated after truncateForSpeech (below), not before: truncating an already-tagged string risks slicing a tag in half and reading a stray literal "[" aloud.
+  const plainSource = richMessage ? richMessageToSpeechText(richMessage) : stripRenderedTableGridsForSpeech(String(text ?? '').trim())
   let speechText = truncateForSpeech(
-    alreadyPlain ? stripRenderedTableGridsForSpeech(String(text ?? '').trim()) : buildSpeechText(text),
+    alreadyPlain ? plainSource : buildSpeechText(text),
     voiceReplyConfig.maxTtsChars,
   )
   if (!speechText) return { ok: false, messageIds: [], error: 'nothing to say' }
@@ -2395,7 +2396,10 @@ async function handleCallbackQuery(cq) {
             return
           }
           // vocalizes only the bubble the button is on, not the full turn — a multi-chunk reply's button only ever lives on its last chunk
-          const { ok, messageIds, error } = await sendVoiceReply(chatId, cq.message?.text ?? '', messageId, threadId, { alreadyPlain: true })
+          const { ok, messageIds, error } = await sendVoiceReply(chatId, cq.message?.text ?? '', messageId, threadId, {
+            alreadyPlain: true,
+            richMessage: cq.message?.rich_message ?? null,
+          })
           if (ok) {
             trackBotMessages(key, messageIds, messageId)
             await tg('deleteMessage', { chat_id: chatId, message_id: statusId }).catch(() => {})

@@ -7,6 +7,7 @@ import {
   renderStreamingTail,
   renderTranscriptHtml,
   stripRenderedTableGridsForSpeech,
+  richMessageToSpeechText,
 } from '../markdown-html.mjs'
 
 test('markdownToTelegramHtml: escapes bare &, <, > outside any markdown construct', () => {
@@ -453,4 +454,77 @@ test('stripRenderedTableGridsForSpeech: replaces an already-rendered table grid 
 
 test('stripRenderedTableGridsForSpeech: text with no table grid is left unchanged', () => {
   assert.equal(stripRenderedTableGridsForSpeech('no table here at all'), 'no table here at all')
+})
+
+// Shapes below are captured verbatim from a real sendRichMessage response (Bot API 10.1) — a
+// message sent that way has no `text` field at all, only `rich_message.blocks`, which broke the
+// Listen button's `alreadyPlain` path (it read `message.text` and got "nothing to say").
+test('richMessageToSpeechText: a table block becomes the same short spoken placeholder regardless of cell content', () => {
+  const richMessage = {
+    blocks: [
+      {
+        type: 'table',
+        cells: [
+          [{ text: 'Company', is_header: true, align: 'center', valign: 'middle' }, { text: 'Match', is_header: true, align: 'center', valign: 'middle' }],
+          [{ text: 'TradingView', align: 'left', valign: 'middle' }, { text: '90%', align: 'left', valign: 'middle' }],
+        ],
+        is_bordered: true,
+        is_striped: true,
+      },
+    ],
+  }
+  assert.equal(richMessageToSpeechText(richMessage), 'table data')
+})
+
+test('richMessageToSpeechText: a paragraph with mixed plain-string and typed RichText entries (bold/code) flattens to plain words', () => {
+  const richMessage = {
+    blocks: [
+      {
+        type: 'paragraph',
+        text: [{ type: 'bold', text: 'Итог:' }, ' протестировал ', { type: 'code', text: 'sendRichMessage' }, ' напрямую.'],
+      },
+    ],
+  }
+  assert.equal(richMessageToSpeechText(richMessage), 'Итог: протестировал sendRichMessage напрямую.')
+})
+
+test('richMessageToSpeechText: a blockquote unwraps its nested paragraph blocks', () => {
+  const richMessage = { blocks: [{ type: 'blockquote', blocks: [{ type: 'paragraph', text: 'цитата для проверки' }] }] }
+  assert.equal(richMessageToSpeechText(richMessage), 'цитата для проверки')
+})
+
+test('richMessageToSpeechText: a pre (code) block reads its plain text', () => {
+  const richMessage = { blocks: [{ type: 'pre', text: 'const x = 1;', language: 'js' }] }
+  assert.equal(richMessageToSpeechText(richMessage), 'const x = 1;')
+})
+
+test('richMessageToSpeechText: a list joins each item\'s blocks, one per line', () => {
+  const richMessage = {
+    blocks: [
+      {
+        type: 'list',
+        items: [
+          { label: '•', blocks: [{ type: 'paragraph', text: 'пункт 1' }] },
+          { label: '•', blocks: [{ type: 'paragraph', text: 'пункт 2' }] },
+        ],
+      },
+    ],
+  }
+  assert.equal(richMessageToSpeechText(richMessage), 'пункт 1\nпункт 2')
+})
+
+test('richMessageToSpeechText: a link RichText (object with url + nested text) reads its label', () => {
+  const richMessage = { blocks: [{ type: 'paragraph', text: { type: 'url', text: 'link', url: 'https://example.com/' } }] }
+  assert.equal(richMessageToSpeechText(richMessage), 'link')
+})
+
+test('richMessageToSpeechText: multiple blocks join with a blank line between them', () => {
+  const richMessage = { blocks: [{ type: 'paragraph', text: 'first' }, { type: 'paragraph', text: 'second' }] }
+  assert.equal(richMessageToSpeechText(richMessage), 'first\n\nsecond')
+})
+
+test('richMessageToSpeechText: no blocks (or no rich_message at all) yields an empty string', () => {
+  assert.equal(richMessageToSpeechText({ blocks: [] }), '')
+  assert.equal(richMessageToSpeechText(null), '')
+  assert.equal(richMessageToSpeechText(undefined), '')
 })

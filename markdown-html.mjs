@@ -173,6 +173,32 @@ export function stripRenderedTableGridsForSpeech(text) {
   return out.join('\n')
 }
 
+function richTextToPlain(richText) {
+  if (richText == null) return ''
+  if (typeof richText === 'string') return richText
+  if (Array.isArray(richText)) return richText.map(richTextToPlain).join('')
+  return richTextToPlain(richText.text)
+}
+
+function richBlockToPlain(block) {
+  switch (block?.type) {
+    case 'table':
+      return 'table data'
+    case 'blockquote':
+    case 'details':
+      return (block.blocks ?? []).map(richBlockToPlain).join('\n')
+    case 'list':
+      return (block.items ?? []).map(item => (item.blocks ?? []).map(richBlockToPlain).join('\n')).join('\n')
+    default:
+      return richTextToPlain(block?.text)
+  }
+}
+
+// A message sent via sendRichMessage carries its content in rich_message.blocks instead of the classic text field, so the Listen button (which reads back Telegram's own message object) needs this instead of a plain string.
+export function richMessageToSpeechText(richMessage) {
+  return (richMessage?.blocks ?? []).map(richBlockToPlain).filter(Boolean).join('\n\n')
+}
+
 export function markdownToTelegramHtml(text) {
   const stash = []
   const stashHtml = html => {
