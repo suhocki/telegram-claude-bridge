@@ -65,6 +65,8 @@ import {
   buildJobMarkerInstructions,
   buildCheckinFollowupPrompt,
   extractResponseMarkers,
+  shouldRetryEmptyResult,
+  MAX_EMPTY_RESULT_RETRIES,
   checkinChainExceeded,
   CHECKIN_MAX_CHAINED_HOPS,
   mergePendingCheckin,
@@ -457,7 +459,7 @@ const loadButtonsModule = createButtonsModuleLoader(resolveButtonsModulePath(but
 // Returns the ids of the messages it created (empty for an edit of an existing one) so a
 // caller can remember them and delete them later on a rewind.
 async function sendReply(chatId, text, replyToMessageId, editMessageId, threadId, keyboard) {
-  const content = text || '(empty response)'
+  const content = text || '⚠️ empty response'
   const { method: richMethod, params: richParams } = buildRichReplyCall(chatId, content, replyToMessageId, editMessageId, threadId, keyboard)
   try {
     const sent = await tg(richMethod, richParams)
@@ -955,6 +957,16 @@ function cancelCheckin(key) {
   delete state.pendingCheckins[key]
 }
 
+// Accumulates one attempt's cost immediately (not just the surviving attempt after a retry loop), so a discarded empty-retry attempt's real spend is never dropped from the tracked session cost.
+function accumulateAttemptCost(newSession, key, result) {
+  if (!result.session_id) return newSession
+  const updated = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
+  state.sessions[key] = updated
+  saveState(state)
+  syncConfigPin(key)
+  return updated
+}
+
 async function runCheckin(key) {
   const pending = state.pendingCheckins[key]
   if (!pending) return
@@ -962,34 +974,33 @@ async function runCheckin(key) {
   saveState(state)
 
   const { chatId, threadId } = parseThreadKey(key)
-  const sessionId = normalizeSession(state.sessions[key])?.id ?? pending.sessionId
+  const priorSession = normalizeSession(state.sessions[key])
+  const sessionId = priorSession?.id ?? pending.sessionId
   if (!sessionId) {
     log('skipping check-in, no session to resume', key)
     return
   }
 
   try {
-    const { promise: checkinPromise } = runClaude(
-      buildCheckinFollowupPrompt(pending.instruction),
-      sessionId,
-      undefined,
-      currentAuthMode(),
-      currentModelConfig(key),
-      key
-    )
-    const result = await checkinPromise
-    const priorSession = normalizeSession(state.sessions[key])
+    const checkinPrompt = buildCheckinFollowupPrompt(pending.instruction)
+    let result
+    let markers
+    let resumeSessionId = sessionId
     let newSession = priorSession
-    if (result.session_id) {
-      newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
-      state.sessions[key] = newSession
-      saveState(state)
-      syncConfigPin(key)
+    for (let attempt = 0; ; attempt++) {
+      result = await runClaude(checkinPrompt, resumeSessionId, undefined, currentAuthMode(), currentModelConfig(key), key).promise
+      newSession = accumulateAttemptCost(newSession, key, result)
+      markers = extractResponseMarkers(result.result)
+      if (!shouldRetryEmptyResult(result, markers) || attempt >= MAX_EMPTY_RESULT_RETRIES) break
+      log('check-in returned an empty result with no error, retrying', key, `attempt ${attempt + 1}`)
+      resumeSessionId = result.session_id ?? resumeSessionId
     }
-    const { text: cleanedResult, attachPaths, checkin: nextCheckin, noReply } = extractResponseMarkers(result.result)
+    const { text: cleanedResult, attachPaths, checkin: nextCheckin, noReply } = markers
     const costWarningCrossed = newSession && crossedCostThreshold(priorSession?.costUsd ?? 0, newSession.costUsd, costWarnUsd)
     const suppressReply = noReply && !cleanedResult && !result.is_error && !costWarningCrossed
-    let replyText = result.is_error ? `⚠️ ${cleanedResult || 'check-in error'}` : cleanedResult || '(empty check-in response)'
+    let replyText = result.is_error
+      ? `⚠️ ${cleanedResult || 'check-in error'}`
+      : cleanedResult || '⚠️ empty check-in response, even after a retry.'
     if (costWarningCrossed) {
       replyText = `${buildCostWarning(newSession.costUsd, costWarnUsd)}\n\n${replyText}`
     }
@@ -1698,32 +1709,36 @@ async function runClaudeTurn(
   let getSessionId = () => null
   try {
     if (run.finished) throw new Error('cancelled before the run could start')
-    const claude = runClaude(prompt, sessionId, event => routeEvent(event), authMode, modelConfig, key)
-    getSessionId = claude.getSessionId
-    run.cancel = () => {
-      if (cancelled) return
-      cancelled = true
-      run.finished = true
-      claude.cancel()
-    }
-    const result = await claude.promise
-    // claude can catch SIGTERM and still emit a result event before exiting, so a resolved promise doesn't rule out a cancel
-    if (cancelled) {
-      const err = new Error('cancelled after the run had already produced a result')
-      err.cancelledResult = result
-      throw err
+    let result
+    let markers
+    let resumeSessionId = sessionId
+    let newSession = priorSession
+    for (let attempt = 0; ; attempt++) {
+      const claude = runClaude(prompt, resumeSessionId, event => routeEvent(event), authMode, modelConfig, key)
+      getSessionId = claude.getSessionId
+      run.cancel = () => {
+        if (cancelled) return
+        cancelled = true
+        run.finished = true
+        claude.cancel()
+      }
+      result = await claude.promise
+      // claude can catch SIGTERM and still emit a result event before exiting, so a resolved promise doesn't rule out a cancel
+      if (cancelled) {
+        const err = new Error('cancelled after the run had already produced a result')
+        err.cancelledResult = result
+        throw err
+      }
+      newSession = accumulateAttemptCost(newSession, key, result)
+      markers = extractResponseMarkers(result.result)
+      if (!shouldRetryEmptyResult(result, markers, isCompact) || attempt >= MAX_EMPTY_RESULT_RETRIES) break
+      log('claude returned an empty result with no error, retrying the turn', key, `attempt ${attempt + 1}`)
+      resumeSessionId = result.session_id ?? resumeSessionId
     }
     run.finished = true
     // no finalStatus edit: the placeholder gets deleted outright below, once the real reply is sent
     rootController.statusUpdater.stop()
-    let newSession = priorSession
-    if (result.session_id) {
-      newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
-      state.sessions[key] = newSession
-      saveState(state)
-      syncConfigPin(key)
-    }
-    const { text: cleanedResult, attachPaths, reactionEmoji, checkin, noReply } = extractResponseMarkers(result.result)
+    const { text: cleanedResult, attachPaths, reactionEmoji, checkin, noReply } = markers
     const costWarningCrossed = newSession && crossedCostThreshold(priorSession?.costUsd ?? 0, newSession.costUsd, costWarnUsd)
     // NO_REPLY only ever suppresses an otherwise-empty, otherwise-unremarkable turn — an error, /compact, or a cost warning always still gets sent
     const suppressReply = noReply && !cleanedResult && !result.is_error && !isCompact && !costWarningCrossed
@@ -1731,7 +1746,7 @@ async function runClaudeTurn(
       ? `⚠️ ${cleanedResult || 'error'}`
       : isCompact
         ? `✅ conversation compacted.${cleanedResult ? `\n\n${cleanedResult}` : ''}`
-        : (cleanedResult || '(empty response)')
+        : (cleanedResult || '⚠️ empty response, even after a retry — please try rephrasing.')
     if (costWarningCrossed) {
       replyText = `${buildCostWarning(newSession.costUsd, costWarnUsd)}\n\n${replyText}`
     }
