@@ -448,6 +448,18 @@ export function buildOutboundAttachmentInstructions() {
   ].join('\n')
 }
 
+// Bot API 10.1's sendRichMessage parses raw markdown into native blocks itself, one call, no chunking (its 32768-char limit dwarfs sendMessage's 4096).
+export function buildRichReplyCall(chatId, text, replyToMessageId, editMessageId, threadId, keyboard) {
+  const params = { chat_id: chatId, rich_message: { markdown: text } }
+  if (editMessageId != null) {
+    return { method: 'editMessageText', params: { ...params, message_id: editMessageId, ...(keyboard ? { reply_markup: keyboard } : {}) } }
+  }
+  Object.assign(params, threadIdParam(threadId))
+  if (replyToMessageId != null) params.reply_parameters = { message_id: replyToMessageId, allow_sending_without_reply: true }
+  if (keyboard) params.reply_markup = keyboard
+  return { method: 'sendRichMessage', params }
+}
+
 export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, parseMode, editMessageId, threadId, keyboard) {
   return chunks.map((part, i) => {
     const params = { chat_id: chatId, text: part }

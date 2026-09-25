@@ -51,6 +51,7 @@ import {
   buildOutboundAttachmentInstructions,
   combineSystemPrompts,
   buildReplyCallsFromChunks,
+  buildRichReplyCall,
   extractReactionMarker,
   buildSetMessageReactionParams,
   buildReactionMarkerInstructions,
@@ -1069,6 +1070,40 @@ test('combineSystemPrompts: skips null/undefined/empty parts', () => {
 
 test('combineSystemPrompts: a single part is returned as-is', () => {
   assert.equal(combineSystemPrompts('only'), 'only')
+})
+
+test('buildRichReplyCall: no editMessageId produces a sendRichMessage call with reply_parameters', () => {
+  const call = buildRichReplyCall('123', '| A | B |\n|---|---|\n| 1 | 2 |', 99, undefined, undefined, undefined)
+  assert.deepEqual(call, {
+    method: 'sendRichMessage',
+    params: { chat_id: '123', rich_message: { markdown: '| A | B |\n|---|---|\n| 1 | 2 |' }, reply_parameters: { message_id: 99, allow_sending_without_reply: true } },
+  })
+})
+
+test('buildRichReplyCall: an editMessageId produces an editMessageText call carrying rich_message, no reply_parameters/thread', () => {
+  const call = buildRichReplyCall('123', 'edited text', 99, 777, 55, undefined)
+  assert.deepEqual(call, {
+    method: 'editMessageText',
+    params: { chat_id: '123', rich_message: { markdown: 'edited text' }, message_id: 777 },
+  })
+})
+
+test('buildRichReplyCall: a threadId is attached on a fresh send but not on an edit', () => {
+  const sendCall = buildRichReplyCall('123', 'hi', undefined, undefined, 55, undefined)
+  assert.equal(sendCall.params.message_thread_id, 55)
+  const editCall = buildRichReplyCall('123', 'hi', undefined, 777, 55, undefined)
+  assert.equal(editCall.params.message_thread_id, undefined)
+})
+
+test('buildRichReplyCall: a keyboard is attached on both a fresh send and an edit', () => {
+  const keyboard = { inline_keyboard: [[{ text: '🎵 Прослушать', callback_data: 'listen:123' }]] }
+  assert.deepEqual(buildRichReplyCall('123', 'hi', undefined, undefined, undefined, keyboard).params.reply_markup, keyboard)
+  assert.deepEqual(buildRichReplyCall('123', 'hi', undefined, 777, undefined, keyboard).params.reply_markup, keyboard)
+})
+
+test('buildRichReplyCall: a falsy keyboard adds no reply_markup', () => {
+  const call = buildRichReplyCall('123', 'hi', undefined, undefined, undefined, null)
+  assert.equal(call.params.reply_markup, undefined)
 })
 
 test('buildReplyCallsFromChunks: no editMessageId behaves like a plain sendMessage, unchanged across chunks', () => {

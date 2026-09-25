@@ -58,6 +58,7 @@ import {
   buildOutboundAttachmentInstructions,
   combineSystemPrompts,
   buildReplyCallsFromChunks,
+  buildRichReplyCall,
   buildReactionMarkerInstructions,
   buildCheckinMarkerInstructions,
   buildNoReplyMarkerInstructions,
@@ -456,7 +457,16 @@ const loadButtonsModule = createButtonsModuleLoader(resolveButtonsModulePath(but
 // Returns the ids of the messages it created (empty for an edit of an existing one) so a
 // caller can remember them and delete them later on a rewind.
 async function sendReply(chatId, text, replyToMessageId, editMessageId, threadId, keyboard) {
-  const chunks = markdownToTelegramHtmlChunks(text || '(empty response)')
+  const content = text || '(empty response)'
+  const { method: richMethod, params: richParams } = buildRichReplyCall(chatId, content, replyToMessageId, editMessageId, threadId, keyboard)
+  try {
+    const sent = await tg(richMethod, richParams)
+    return richMethod === 'sendRichMessage' && sent?.message_id != null ? [sent.message_id] : []
+  } catch (e) {
+    log(`${richMethod} failed, falling back to classic sendMessage/editMessageText`, e.message)
+  }
+
+  const chunks = markdownToTelegramHtmlChunks(content)
   const sentIds = []
   for (const { method, params } of buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, 'HTML', editMessageId, threadId, keyboard)) {
     let sent = null
