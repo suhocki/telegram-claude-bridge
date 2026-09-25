@@ -467,6 +467,35 @@ export function buildRichReplyCall(chatId, text, replyToMessageId, editMessageId
   return { method: 'sendRichMessage', params }
 }
 
+// sendRichMessageDraft's chat_id is documented as private-chat-only (Bot API 10.1, Aug 2026) — every other chat type keeps the classic placeholder flow untouched.
+export function shouldUseDraftStreaming(chat) {
+  return chat?.type === 'private'
+}
+
+// draft_id only needs to be unique within a chat (each sendRichMessageDraft call also carries chat_id), and stable across refreshes
+// of one run but different for the next — a per-chat counter is enough. State is immutable-update style to match setVoiceReplyPreference etc.
+export function nextDraftId(draftIdState, chatId) {
+  const draftId = (draftIdState?.[chatId] ?? 0) + 1
+  return { draftId, nextState: { ...draftIdState, [chatId]: draftId } }
+}
+
+// can_stop/keep_on_stop are always on: the native Stop button is this feature's whole point, and keep_on_stop just
+// avoids the draft vanishing out from under the user the instant they tap it (see the stopped_message_generation handler).
+export function buildSendRichMessageDraftCall(chatId, draftId, markdownText) {
+  return {
+    method: 'sendRichMessageDraft',
+    params: { chat_id: chatId, draft_id: draftId, rich_message: { markdown: markdownText }, can_stop: true, keep_on_stop: true },
+  }
+}
+
+// Mirrors parseCallbackData's split: this only parses the update into a lookup key + draftId; the caller does the
+// activeRuns lookup and decides whether to actually cancel (so a stale draft_id from an already-superseded run is a no-op).
+export function parseStoppedMessageGeneration(update) {
+  const chatId = update?.chat?.id
+  if (chatId == null || update?.draft_id == null) return null
+  return { key: String(chatId), draftId: update.draft_id }
+}
+
 export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, parseMode, editMessageId, threadId, keyboard) {
   return chunks.map((part, i) => {
     const params = { chat_id: chatId, text: part }
@@ -1257,8 +1286,8 @@ export function buildBotIdentity(getMeResult) {
 
 // Passed explicitly on every getUpdates call: the token may carry an allowed_updates
 // whitelist left over from an earlier bot setup, and edited_message missing from it would
-// silently disable rewind-on-edit.
-export const TELEGRAM_ALLOWED_UPDATES = ['message', 'edited_message', 'callback_query']
+// silently disable rewind-on-edit. stopped_message_generation is the draft Stop button's update.
+export const TELEGRAM_ALLOWED_UPDATES = ['message', 'edited_message', 'callback_query', 'stopped_message_generation']
 
 export function buildBotCommands() {
   return [

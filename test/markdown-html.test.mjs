@@ -6,6 +6,7 @@ import {
   htmlToPlainFallback,
   renderStreamingTail,
   renderTranscriptHtml,
+  renderDraftMarkdown,
   stripRenderedTableGridsForSpeech,
   richMessageToSpeechText,
 } from '../markdown-html.mjs'
@@ -445,6 +446,69 @@ test('renderTranscriptHtml: when history alone already fills the limit, it is ta
   assert.ok(result.length <= 200, `result length ${result.length} exceeds the 200 limit`)
   assert.ok(!result.includes('this should not appear'), 'live text should be dropped when there is no budget left for it')
   assert.ok(result.includes('number 49'), 'the tail should keep the most recent history lines')
+})
+
+test('renderDraftMarkdown: no history, just returns the trimmed live text raw (Telegram parses the markdown itself)', () => {
+  assert.equal(renderDraftMarkdown([], '**hi**', 30000), '**hi**')
+  assert.equal(renderDraftMarkdown([], '  hi  ', 30000), 'hi')
+})
+
+test('renderDraftMarkdown: no history and no live text returns null', () => {
+  assert.equal(renderDraftMarkdown([], '', 30000), null)
+  assert.equal(renderDraftMarkdown(undefined, undefined, 30000), null)
+})
+
+test('renderDraftMarkdown: history is wrapped in a collapsed <details> with a step-count summary, fenced so markdown chars are not interpreted', () => {
+  const result = renderDraftMarkdown(['⏳ Bash: echo **not bold**…', '✅ Read: foo.py…'], '', 30000)
+  assert.equal(
+    result,
+    '<details><summary>🔧 2 steps</summary>\n\n````\n⏳ Bash: echo **not bold**…\n✅ Read: foo.py…\n````\n\n</details>'
+  )
+  assert.ok(!result.includes('open'), 'draft history defaults to collapsed, not <details open>')
+})
+
+test('renderDraftMarkdown: singular "step" for exactly one history line', () => {
+  const result = renderDraftMarkdown(['⏳ Bash: npm test…'], '', 30000)
+  assert.match(result, /<summary>🔧 1 step<\/summary>/)
+})
+
+test('renderDraftMarkdown: live text is appended outside (after) the collapsed details block', () => {
+  const result = renderDraftMarkdown(['⏳ Bash: npm test…'], '**done**', 30000)
+  assert.equal(result, '<details><summary>🔧 1 step</summary>\n\n````\n⏳ Bash: npm test…\n````\n\n</details>\n\n**done**')
+})
+
+test('renderDraftMarkdown: falsy history entries are filtered out', () => {
+  const result = renderDraftMarkdown(['⏳ Bash: npm test…', '', null, undefined], '', 30000)
+  assert.match(result, /<summary>🔧 1 step<\/summary>/)
+})
+
+test('renderDraftMarkdown: a stray triple-backtick run in a history line cannot prematurely close the 4-backtick fence', () => {
+  const result = renderDraftMarkdown(['⏳ Bash: grep \'```\' file.js…'], '', 30000)
+  assert.equal(result.match(/````/g).length, 2, 'exactly the opening and closing fence, nothing closed early')
+})
+
+test('regression: renderDraftMarkdown with limit 0 (or negative) returns null rather than a string that violates the limit', () => {
+  const history = ['a very long history line that would normally need truncating down to size']
+  for (const limit of [0, -1, -100]) {
+    const result = renderDraftMarkdown(history, 'some live text too', limit)
+    assert.equal(result, null, `limit ${limit}: expected null (the <details> wrapper alone can't fit), got ${JSON.stringify(result)}`)
+  }
+})
+
+test('regression: renderDraftMarkdown never returns text longer than a limit that at least fits the empty wrapper', () => {
+  const history = Array.from({ length: 50 }, (_, i) => `⏳ Bash: a fairly long step description number ${i}…`)
+  for (const limit of [80, 200, 1000, 30000]) {
+    const result = renderDraftMarkdown(history, 'some live text too', limit)
+    assert.ok(result === null || result.length <= limit, `limit ${limit}: got length ${result?.length}`)
+  }
+})
+
+test('renderDraftMarkdown: under a tight limit, the live text (shown outside the collapsed block) is always kept in full, and history is tail-truncated by whole lines to make room', () => {
+  const history = Array.from({ length: 50 }, (_, i) => `⏳ Bash: a fairly long step description number ${i}…`)
+  const result = renderDraftMarkdown(history, 'this must always appear', 400)
+  assert.ok(result.length <= 400, `result length ${result.length} exceeds the 400 limit`)
+  assert.ok(result.includes('this must always appear'), 'the live tail is the "front line" of activity and is never dropped')
+  assert.ok(result.includes('number 49'), 'the history tail should keep the most recent lines, dropping older ones instead')
 })
 
 test('stripRenderedTableGridsForSpeech: replaces an already-rendered table grid (Telegram\'s own plain message.text, used by the Listen button) with a spoken placeholder', () => {

@@ -52,6 +52,10 @@ import {
   combineSystemPrompts,
   buildReplyCallsFromChunks,
   buildRichReplyCall,
+  shouldUseDraftStreaming,
+  nextDraftId,
+  buildSendRichMessageDraftCall,
+  parseStoppedMessageGeneration,
   extractReactionMarker,
   buildSetMessageReactionParams,
   buildReactionMarkerInstructions,
@@ -1106,6 +1110,55 @@ test('buildRichReplyCall: a keyboard is attached on both a fresh send and an edi
 test('buildRichReplyCall: a falsy keyboard adds no reply_markup', () => {
   const call = buildRichReplyCall('123', 'hi', undefined, undefined, undefined, null)
   assert.equal(call.params.reply_markup, undefined)
+})
+
+test('shouldUseDraftStreaming: true only for a private chat', () => {
+  assert.equal(shouldUseDraftStreaming({ type: 'private' }), true)
+  assert.equal(shouldUseDraftStreaming({ type: 'group' }), false)
+  assert.equal(shouldUseDraftStreaming({ type: 'supergroup' }), false)
+  assert.equal(shouldUseDraftStreaming({ type: 'channel' }), false)
+  assert.equal(shouldUseDraftStreaming(undefined), false)
+})
+
+test('nextDraftId: starts at 1 and increments per chat, independently of other chats', () => {
+  const first = nextDraftId({}, '123')
+  assert.deepEqual(first, { draftId: 1, nextState: { 123: 1 } })
+  const second = nextDraftId(first.nextState, '123')
+  assert.deepEqual(second, { draftId: 2, nextState: { 123: 2 } })
+  const otherChat = nextDraftId(second.nextState, '456')
+  assert.deepEqual(otherChat, { draftId: 1, nextState: { 123: 2, 456: 1 } })
+})
+
+test('nextDraftId: never returns zero and does not mutate the input state', () => {
+  const state = { 123: 0 }
+  const { draftId, nextState } = nextDraftId(state, '123')
+  assert.notEqual(draftId, 0)
+  assert.deepEqual(state, { 123: 0 })
+  assert.notEqual(nextState, state)
+})
+
+test('buildSendRichMessageDraftCall: builds a sendRichMessageDraft call with can_stop/keep_on_stop always on', () => {
+  const call = buildSendRichMessageDraftCall('123', 7, '⏳ working…')
+  assert.deepEqual(call, {
+    method: 'sendRichMessageDraft',
+    params: {
+      chat_id: '123',
+      draft_id: 7,
+      rich_message: { markdown: '⏳ working…' },
+      can_stop: true,
+      keep_on_stop: true,
+    },
+  })
+})
+
+test('parseStoppedMessageGeneration: extracts the activeRuns-style key and draft_id', () => {
+  assert.deepEqual(parseStoppedMessageGeneration({ chat: { id: 123 }, draft_id: 7 }), { key: '123', draftId: 7 })
+})
+
+test('parseStoppedMessageGeneration: returns null when chat or draft_id is missing', () => {
+  assert.equal(parseStoppedMessageGeneration({ draft_id: 7 }), null)
+  assert.equal(parseStoppedMessageGeneration({ chat: { id: 123 } }), null)
+  assert.equal(parseStoppedMessageGeneration(null), null)
 })
 
 test('buildReplyCallsFromChunks: no editMessageId behaves like a plain sendMessage, unchanged across chunks', () => {
@@ -3265,5 +3318,5 @@ test('buildRewindUnavailableNotice: tells the user the edit could not be rewound
 })
 
 test('TELEGRAM_ALLOWED_UPDATES: covers every update type the bridge acts on', () => {
-  assert.deepEqual(TELEGRAM_ALLOWED_UPDATES, ['message', 'edited_message', 'callback_query'])
+  assert.deepEqual(TELEGRAM_ALLOWED_UPDATES, ['message', 'edited_message', 'callback_query', 'stopped_message_generation'])
 })

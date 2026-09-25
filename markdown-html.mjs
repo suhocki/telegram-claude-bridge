@@ -432,6 +432,27 @@ export function renderTranscriptHtml(historyLines, liveText, limit = 4096) {
   return liveHtml ? `${historyText}\n${liveHtml}` : historyText
 }
 
+// Rich Markdown parses GFM *inside* <details> (unlike other block HTML tags), so an arbitrary tool
+// command/path in the history could be misread as formatting there just like in the HTML path above.
+// A 4-backtick fence is the guard here instead of escapeHtml: fenced code isn't markdown-parsed, and a
+// stray run of 3 backticks in the content (the realistic case) can't prematurely close a 4-backtick fence.
+const DRAFT_DETAILS_FENCE = '````'
+
+export function renderDraftMarkdown(historyLines, liveText, limit = 30000) {
+  const lines = (historyLines ?? []).filter(Boolean)
+  const live = String(liveText ?? '').trim()
+  if (!lines.length) return live || null
+
+  const summary = `🔧 ${lines.length} step${lines.length === 1 ? '' : 's'}`
+  const liveSuffix = live ? `\n\n${live}` : ''
+  const wrap = body => `<details><summary>${summary}</summary>\n\n${DRAFT_DETAILS_FENCE}\n${body}\n${DRAFT_DETAILS_FENCE}\n\n</details>${liveSuffix}`
+  // unlike renderTranscriptHtml, this wrapper has a non-negotiable fixed cost (the <details>/fence tags)
+  // that doesn't shrink with the budget — if even an empty body doesn't fit, there's nothing safe to send.
+  const emptyWrapped = wrap('')
+  if (emptyWrapped.length > limit) return null
+  return wrap(tailPlainTextLines(lines.join('\n'), limit - emptyWrapped.length))
+}
+
 export function htmlToPlainFallback(html) {
   return String(html ?? '')
     .replace(/<[^>]*>/g, '')

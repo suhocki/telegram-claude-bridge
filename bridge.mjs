@@ -90,6 +90,10 @@ import {
   buildContinueKeyboard,
   buildListenKeyboard,
   parseCallbackData,
+  shouldUseDraftStreaming,
+  nextDraftId,
+  buildSendRichMessageDraftCall,
+  parseStoppedMessageGeneration,
   getModelConfig,
   setModelConfigField,
   isValidModelConfigValue,
@@ -179,7 +183,7 @@ import {
 } from './jobs.mjs'
 import { loadGlobalAuthMode, saveGlobalAuthMode, seedGlobalAuthModeIfMissing, collectLegacyAuthModeValues } from './auth-mode.mjs'
 import { loadGlobalFishVoice, saveGlobalFishVoice } from './fish-voice.mjs'
-import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml } from './markdown-html.mjs'
+import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml, renderDraftMarkdown } from './markdown-html.mjs'
 import {
   DEFAULT_WORKING_STATUS,
   createLineSplitter,
@@ -441,8 +445,10 @@ function nextWorkingPhrase() {
 
 const state = loadState()
 const chatQueue = createKeyedQueue()
-// thread key -> single in-flight run { cancel(), promptText, placeholderId, pending, finished, setKeyboard() }; chatQueue guarantees only one at a time.
+// thread key -> single in-flight run { cancel(), promptText, placeholderId, draftId, pending, finished, setKeyboard() }; chatQueue guarantees only one at a time.
 const activeRuns = new Map()
+// chatId -> last-issued draft_id (see nextDraftId); in-memory only, same lifetime as activeRuns — a restart drops every in-flight run anyway.
+let draftIdState = {}
 // thread key -> Set<messageId> already folded into a join tap, so runQueuedMessage below no-ops their own already-queued run.
 const consumedByJoin = new Map()
 // serializes the join-count editMessageReplyMarkup calls per chat so back-to-back joins can't land out of order at Telegram
@@ -1518,6 +1524,53 @@ async function fetchFishVoicesPage(pageNumber) {
   }
 }
 
+// Private-chat counterpart to createPlaceholderController below: same progress tracker, but each tick
+// streams a sendRichMessageDraft instead of editing a real message (there is none — see runClaudeTurn's
+// skip of the classic placeholder send for private chats). onFallback is called at most once, the first
+// time a draft call fails, so the caller can create a real placeholder and take over from there.
+function createDraftPlaceholderController(chatId, draftId, initialStatus, onFallback) {
+  const tracker = createProgressTracker(initialStatus, {
+    renderTranscript: (historyLines, liveText) => renderDraftMarkdown(historyLines, liveText),
+  })
+  let fellBack = false
+
+  async function editPlaceholder({ text }) {
+    if (fellBack) return
+    const markdown = text ?? initialStatus
+    try {
+      const { method, params } = buildSendRichMessageDraftCall(chatId, draftId, markdown)
+      await tg(method, params)
+    } catch (e) {
+      if (fellBack) return
+      fellBack = true
+      log('sendRichMessageDraft failed, falling back to a classic placeholder', e.message)
+      statusUpdater.stop()
+      await onFallback(markdown)
+    }
+  }
+
+  const statusUpdater = createStatusUpdater({
+    getStatus: () => tracker.snapshot(),
+    onUpdate: latestStatus => editPlaceholder(latestStatus),
+    initialStatus: tracker.snapshot(),
+    intervalMs: STREAM_EDIT_INTERVAL_MS,
+  })
+
+  // Eager first draft: createStatusUpdater only calls onUpdate on a *change*, but unlike the classic
+  // placeholder (sent immediately by its own caller), nothing has been sent yet at all.
+  editPlaceholder(tracker.snapshot()).catch(() => {})
+
+  return {
+    tracker,
+    editPlaceholder,
+    statusUpdater,
+    ingest(event) {
+      tracker.ingest(event)
+    },
+    setKeyboard() {}, // sendRichMessageDraft has no reply_markup slot — the native Stop button is the only control
+  }
+}
+
 // Drives one Telegram message's live "⏳ working…" placeholder: a progress tracker plus
 // the periodic editMessageText loop that renders it. Used both for the root placeholder
 // of a run and for each parallel subagent (Agent tool) placeholder spawned during it.
@@ -1644,6 +1697,7 @@ async function runClaudeTurn(
     isResume = false,
     checkpointHistory = [],
     turnMeta = {},
+    usingDraftStreaming = false,
   }
 ) {
   const cancelKeyboard = buildCancelKeyboard(chatId, run.pending.length)
@@ -1656,7 +1710,37 @@ async function runClaudeTurn(
   // shared by root + every subagent placeholder below, so a 429 on any one of them
   // backs off every concurrent edit loop writing to this same chat
   const chatRateGate = createChatRateGate()
-  const rootController = createPlaceholderController(chatId, currentPlaceholderId, chatRateGate, cancelKeyboard, workingStatus, checkpointHistory)
+
+  let rootController
+  // Runs at most once, the first time sendRichMessageDraft fails: creates the real classic placeholder
+  // this run never sent, seeds a normal controller from the draft tracker's history, and hands off —
+  // every later reference to rootController (routeEvent, run.setKeyboard, the end-of-turn cleanup below)
+  // reads the `let` fresh each time, so reassigning it here is all the handoff needs.
+  async function fallbackToClassicPlaceholder(currentMarkdown) {
+    rootController.statusUpdater.stop()
+    try {
+      const placeholder = await tg(
+        'sendMessage',
+        buildWorkingPlaceholderParams(chatId, currentMarkdown || workingStatus, originMessageId, cancelKeyboard, threadId)
+      )
+      currentPlaceholderId = placeholder.message_id
+      run.placeholderId = currentPlaceholderId
+      botMessageIds.push(currentPlaceholderId)
+      rootController = createPlaceholderController(
+        chatId,
+        currentPlaceholderId,
+        chatRateGate,
+        cancelKeyboard,
+        currentMarkdown || workingStatus,
+        rootController.tracker.historySnapshot()
+      )
+    } catch (e) {
+      log('failed to create fallback placeholder after sendRichMessageDraft failure', e.message)
+    }
+  }
+  rootController = usingDraftStreaming
+    ? createDraftPlaceholderController(chatId, run.draftId, workingStatus, fallbackToClassicPlaceholder)
+    : createPlaceholderController(chatId, currentPlaceholderId, chatRateGate, cancelKeyboard, workingStatus, checkpointHistory)
   run.setKeyboard = kb => rootController.setKeyboard(kb)
 
   // one placeholder message per parallel subagent (Agent tool call), keyed by that
@@ -1961,6 +2045,7 @@ async function handleMessage(msg) {
     replyToMessage: meta.replyToMessageId != null ? { message_id: meta.replyToMessageId } : undefined,
     quotedText: meta.quotedText,
     placeholderId: null,
+    draftId: null,
     pending: [],
     finished: false,
     setKeyboard: () => {},
@@ -1968,16 +2053,25 @@ async function handleMessage(msg) {
   // registered before the placeholder exists so a slow attachment download/transcription doesn't hide the Join button
   activeRuns.set(key, run)
 
+  const usingDraftStreaming = shouldUseDraftStreaming(msg.chat)
+  if (usingDraftStreaming) {
+    const next = nextDraftId(draftIdState, chatId)
+    draftIdState = next.nextState
+    run.draftId = next.draftId
+  }
+
   const turnResult = await withTypingIndicator(chatId, threadId, async () => {
-    try {
-      const placeholder = await tg(
-        'sendMessage',
-        buildWorkingPlaceholderParams(chatId, workingStatus, msg.message_id, buildCancelKeyboard(chatId, run.pending.length), threadId)
-      )
-      run.placeholderId = placeholder.message_id
-      botMessageIds.push(run.placeholderId)
-    } catch (e) {
-      log('failed to send working placeholder', e.message)
+    if (!usingDraftStreaming) {
+      try {
+        const placeholder = await tg(
+          'sendMessage',
+          buildWorkingPlaceholderParams(chatId, workingStatus, msg.message_id, buildCancelKeyboard(chatId, run.pending.length), threadId)
+        )
+        run.placeholderId = placeholder.message_id
+        botMessageIds.push(run.placeholderId)
+      } catch (e) {
+        log('failed to send working placeholder', e.message)
+      }
     }
 
     const attachmentResults = attachments.length ? await Promise.all(attachments.map(downloadAttachmentLogged)) : []
@@ -2053,6 +2147,7 @@ async function handleMessage(msg) {
       originMessageId: msg.message_id,
       reactionMessageIds,
       isCompact: command === 'compact',
+      usingDraftStreaming,
       turnMeta: {
         originMessageId: msg.message_id,
         anchorMessageId: meta.messageId,
@@ -2584,6 +2679,11 @@ async function poll() {
           }
         } else if (u.callback_query) {
           handleCallbackQuery(u.callback_query).catch(e => log('callback query handling rejected', e))
+        } else if (u.stopped_message_generation) {
+          // native Stop button on a streamed draft — same cancel path the classic inline Cancel button uses
+          const parsed = parseStoppedMessageGeneration(u.stopped_message_generation)
+          const run = parsed && activeRuns.get(parsed.key)
+          if (run && !run.finished && run.draftId === parsed.draftId) run.cancel()
         }
       }
     } catch (e) {
