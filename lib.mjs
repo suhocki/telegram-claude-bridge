@@ -500,6 +500,11 @@ export function parseStoppedMessageGeneration(update) {
   return { chatId: String(chatId), draftId: update.draft_id }
 }
 
+// draft_id is unique per chatId only (see nextDraftId), so the caller scans activeRuns for this instead of a direct key lookup.
+export function isTargetRunForStoppedGeneration(run, parsed) {
+  return !run.finished && run.draftId === parsed.draftId && run.chatId === parsed.chatId
+}
+
 export const MAX_PERSISTED_FULL_TEXT_CHARS = 4000
 
 export function capCheckpointHistoryFullText(checkpointHistory, maxChars = MAX_PERSISTED_FULL_TEXT_CHARS) {

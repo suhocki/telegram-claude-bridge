@@ -152,14 +152,18 @@ For a turn running in a **private chat** (`msg.chat.type === 'private'`):
      of plain text
    - `can_stop: true`, `keep_on_stop: true`
 3. Wire the Stop button: add `'stopped_message_generation'` to `TELEGRAM_ALLOWED_UPDATES`, handle
-   `u.stopped_message_generation` in the poll loop, resolve it to the right `activeRuns` entry
-   (you'll need your own `chatId(+draftId) -> run` bookkeeping, parallel to how `activeRuns` is
-   already keyed — ~~reuse `threadKey`-style keying~~ **correction, PR #107: don't.**
-   `MessageGenerationStopped` has no `is_topic_message` to disambiguate `message_thread_id` the way
-   a real `Message` does, so a reconstructed thread key can't be trusted to match `activeRuns`' own
-   key. Match by `chatId`+`draft_id` instead — `draft_id` is already unique per chat, see
-   `parseStoppedMessageGeneration`.), and call the same cancel path the existing inline Cancel
-   button uses today.
+   `u.stopped_message_generation` in the poll loop, resolve it to the right `activeRuns` entry.
+   **Correction, PR #107:** the original version of this step said to build a separate
+   `chatId(+draftId) -> run` index "parallel to how `activeRuns` is already keyed," reusing
+   `threadKey`-style keying — don't. `MessageGenerationStopped` has no `is_topic_message` to
+   disambiguate `message_thread_id` the way a real `Message` does, so a reconstructed thread key
+   can't be trusted to match `activeRuns`' own key, and no second index is needed anyway: scan the
+   existing `activeRuns` Map directly for a run whose own `chatId`+`draftId` match (see
+   `isTargetRunForStoppedGeneration`/`parseStoppedMessageGeneration` in `lib.mjs`). This only works
+   because `draft_id` is unique per `chatId` — **keep `nextDraftId`'s counter keyed by `chatId`
+   alone, never by thread**; making it per-thread would let two different threads in the same chat
+   collide on the same `draft_id` and silently cancel the wrong one. Call the same cancel path the
+   existing inline Cancel button uses today.
 4. When the run finishes normally, do **not** try to "delete" or "finalize" the draft — it's not
    a real message, there's nothing to delete. Just send the real final answer the normal way
    (`sendReply`, already implemented, already tries `sendRichMessage` first). The draft

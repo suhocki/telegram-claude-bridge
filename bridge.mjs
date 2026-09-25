@@ -94,6 +94,7 @@ import {
   nextDraftId,
   buildSendRichMessageDraftCall,
   parseStoppedMessageGeneration,
+  isTargetRunForStoppedGeneration,
   getModelConfig,
   setModelConfigField,
   isValidModelConfigValue,
@@ -2080,6 +2081,7 @@ async function handleMessage(msg) {
       if (run.finished) return
       run.finished = true
     },
+    chatId,
     promptText,
     // built from meta, not msg directly, so a CONFIRMed run's Join still threads to the original message, not the CONFIRM reply
     replyToMessage: meta.replyToMessageId != null ? { message_id: meta.replyToMessageId } : undefined,
@@ -2215,6 +2217,7 @@ async function handleContinue(chatId, key, threadId, pending) {
       if (run.finished) return
       run.finished = true
     },
+    chatId,
     promptText: buildContinuePrompt(),
     // a Continue tap has no originating message of its own to reply-thread from
     replyToMessage: undefined,
@@ -2722,8 +2725,8 @@ async function poll() {
           // native Stop button on a streamed draft: scans by chatId+draftId (unique per chat) rather than Map.get on a reconstructed key.
           const parsed = parseStoppedMessageGeneration(u.stopped_message_generation)
           if (parsed) {
-            for (const [key, run] of activeRuns) {
-              if (!run.finished && run.draftId === parsed.draftId && parseThreadKey(key).chatId === parsed.chatId) {
+            for (const run of activeRuns.values()) {
+              if (isTargetRunForStoppedGeneration(run, parsed)) {
                 run.cancel()
                 break
               }
