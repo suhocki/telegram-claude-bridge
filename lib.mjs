@@ -467,6 +467,32 @@ export function buildRichReplyCall(chatId, text, replyToMessageId, editMessageId
   return { method: 'sendRichMessage', params }
 }
 
+// sendRichMessageDraft's chat_id is documented as private-chat-only (Bot API 10.1, Aug 2026) — every other chat type keeps the classic placeholder flow untouched.
+export function shouldUseDraftStreaming(chat) {
+  return chat?.type === 'private'
+}
+
+// draft_id only needs to be unique per chat, so a per-chat counter is enough; immutable-update style to match setVoiceReplyPreference etc.
+export function nextDraftId(draftIdState, chatId) {
+  const draftId = (draftIdState?.[chatId] ?? 0) + 1
+  return { draftId, nextState: { ...draftIdState, [chatId]: draftId } }
+}
+
+// keep_on_stop avoids the draft vanishing the instant Stop is tapped, before stopped_message_generation is even handled.
+export function buildSendRichMessageDraftCall(chatId, draftId, markdownText) {
+  return {
+    method: 'sendRichMessageDraft',
+    params: { chat_id: chatId, draft_id: draftId, rich_message: { markdown: markdownText }, can_stop: true, keep_on_stop: true },
+  }
+}
+
+// Mirrors parseCallbackData's split: only parses the update, the caller does the activeRuns lookup and cancel decision.
+export function parseStoppedMessageGeneration(update) {
+  const chatId = update?.chat?.id
+  if (chatId == null || update?.draft_id == null) return null
+  return { key: threadKey(chatId, null), draftId: update.draft_id }
+}
+
 export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, parseMode, editMessageId, threadId, keyboard) {
   return chunks.map((part, i) => {
     const params = { chat_id: chatId, text: part }
@@ -858,6 +884,14 @@ export function buildPlaceholderEditParams(chatId, messageId, status, isHtml = f
 export function buildWorkingPlaceholderParams(chatId, text, replyToMessageId, keyboard, threadId) {
   const base = { chat_id: chatId, text, reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true }, ...threadIdParam(threadId) }
   return keyboard ? { ...base, reply_markup: keyboard } : base
+}
+
+// Shared by every placeholder-style controller's editPlaceholder (classic and draft alike) so their error handling can't silently drift apart.
+export function parseTelegramEditError(message) {
+  const text = String(message ?? '')
+  if (/message is not modified/i.test(text)) return { notModified: true, retryAfterMs: null }
+  const match = text.match(/retry after (\d+)/i)
+  return { notModified: false, retryAfterMs: match ? Number(match[1]) * 1000 : null }
 }
 
 const VOICE_TOGGLE_ARG_RE = /^\s+(on|off)$/i
@@ -1257,8 +1291,8 @@ export function buildBotIdentity(getMeResult) {
 
 // Passed explicitly on every getUpdates call: the token may carry an allowed_updates
 // whitelist left over from an earlier bot setup, and edited_message missing from it would
-// silently disable rewind-on-edit.
-export const TELEGRAM_ALLOWED_UPDATES = ['message', 'edited_message', 'callback_query']
+// silently disable rewind-on-edit. stopped_message_generation is the draft Stop button's update.
+export const TELEGRAM_ALLOWED_UPDATES = ['message', 'edited_message', 'callback_query', 'stopped_message_generation']
 
 export function buildBotCommands() {
   return [

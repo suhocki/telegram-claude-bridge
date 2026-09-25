@@ -432,6 +432,32 @@ export function renderTranscriptHtml(historyLines, liveText, limit = 4096) {
   return liveHtml ? `${historyText}\n${liveHtml}` : historyText
 }
 
+// Fenced code isn't markdown/HTML-parsed even inside <details> (the one place Rich Markdown does parse both), so this — not escapeHtml — is the guard here; sized past any backtick run already in the text.
+function backtickFenceFor(text) {
+  const runs = text.match(/`+/g)
+  const longest = runs ? runs.reduce((max, r) => Math.max(max, r.length), 0) : 0
+  return '`'.repeat(Math.max(4, longest + 1))
+}
+
+export function renderDraftMarkdown(historyLines, liveText, limit = 30000) {
+  const lines = (historyLines ?? []).filter(Boolean)
+  const live = String(liveText ?? '').trim()
+  if (!lines.length) return (live && tailPlainTextLines(live, limit)) || null
+
+  const historyFull = lines.join('\n')
+  const fence = backtickFenceFor(historyFull)
+  const summary = `🔧 ${lines.length} step${lines.length === 1 ? '' : 's'}`
+  const wrap = (body, liveSuffix) => `<details><summary>${summary}</summary>\n\n${fence}\n${body}\n${fence}\n\n</details>${liveSuffix}`
+  // this wrapper (unlike renderTranscriptHtml's) has a fixed cost that doesn't shrink with the budget — bail to null if even an empty body/live can't fit.
+  const emptyBudget = limit - wrap('', '').length
+  if (emptyBudget < 0) return null
+
+  // live gets first claim on the budget (it's the visible "front line"), capped so its own "\n\n" separator can never push the total over emptyBudget.
+  const cappedLive = live ? tailPlainTextLines(live, Math.max(0, emptyBudget - 2)) : ''
+  const liveSuffix = cappedLive ? `\n\n${cappedLive}` : ''
+  return wrap(tailPlainTextLines(historyFull, emptyBudget - liveSuffix.length), liveSuffix)
+}
+
 export function htmlToPlainFallback(html) {
   return String(html ?? '')
     .replace(/<[^>]*>/g, '')
