@@ -465,13 +465,10 @@ test('regression: renderDraftMarkdown truncates live-only text (no history yet) 
   assert.ok(live.endsWith(result), 'the kept text is the tail of the live text, not something else')
 })
 
-test('renderDraftMarkdown: history is wrapped in a collapsed <details> with a step-count summary, fenced so markdown chars are not interpreted', () => {
+test('renderDraftMarkdown: history (no full text) is wrapped in a collapsed <details>, each line inline-code-wrapped so markdown chars are not interpreted', () => {
   const result = renderDraftMarkdown(['⏳ Bash: echo **not bold**…', '✅ Read: foo.py…'], '', 30000)
-  assert.equal(
-    result,
-    '<details><summary>🔧 2 steps</summary>\n\n````\n⏳ Bash: echo **not bold**…\n✅ Read: foo.py…\n````\n\n</details>'
-  )
-  assert.ok(!result.includes('open'), 'draft history defaults to collapsed, not <details open>')
+  assert.equal(result, '<details><summary>🔧 2 steps</summary>\n\n`⏳ Bash: echo **not bold**…`\n`✅ Read: foo.py…`\n\n</details>')
+  assert.ok(!result.includes('<details open'), 'draft history defaults to collapsed, not <details open>')
 })
 
 test('renderDraftMarkdown: singular "step" for exactly one history line', () => {
@@ -481,7 +478,7 @@ test('renderDraftMarkdown: singular "step" for exactly one history line', () => 
 
 test('renderDraftMarkdown: live text is appended outside (after) the collapsed details block', () => {
   const result = renderDraftMarkdown(['⏳ Bash: npm test…'], '**done**', 30000)
-  assert.equal(result, '<details><summary>🔧 1 step</summary>\n\n````\n⏳ Bash: npm test…\n````\n\n</details>\n\n**done**')
+  assert.equal(result, '<details><summary>🔧 1 step</summary>\n\n`⏳ Bash: npm test…`\n\n</details>\n\n**done**')
 })
 
 test('renderDraftMarkdown: falsy history entries are filtered out', () => {
@@ -489,17 +486,125 @@ test('renderDraftMarkdown: falsy history entries are filtered out', () => {
   assert.match(result, /<summary>🔧 1 step<\/summary>/)
 })
 
-test('renderDraftMarkdown: a stray triple-backtick run in a history line cannot prematurely close the 4-backtick fence', () => {
+test('renderDraftMarkdown: a history line (no full text) with a stray triple-backtick run gets a 4-backtick inline wrap instead of a 1-backtick one', () => {
   const result = renderDraftMarkdown(['⏳ Bash: grep \'```\' file.js…'], '', 30000)
-  assert.equal(result.match(/````/g).length, 2, 'exactly the opening and closing fence, nothing closed early')
+  assert.equal(result.match(/````/g).length, 2, 'exactly the opening and closing span, nothing closed early')
 })
 
-test('regression: a history line with 4+ consecutive backticks grows the fence instead of letting it close early', () => {
+test('regression: a history line with 4+ consecutive backticks grows the inline wrap instead of letting it close early', () => {
   const result = renderDraftMarkdown(['⏳ Bash: grep \'````\' file.js…'], '', 30000)
   const fiveBacktickRuns = result.match(/`{5,}/g)
-  assert.equal(fiveBacktickRuns?.length, 2, 'the fence must be longer than the embedded 4-backtick run, and only the real fences should match')
-  assert.ok(result.includes('````'), 'the embedded 4-backtick run itself must still be present, unbroken, inside the fence')
-  assert.equal(result.match(/<\/details>/g).length, 1, 'the closing tag appears exactly once, proving the fence was not closed early')
+  assert.equal(fiveBacktickRuns?.length, 2, 'the wrap must be longer than the embedded 4-backtick run, and only the real wrap ticks should match')
+  assert.ok(result.includes('````'), 'the embedded 4-backtick run itself must still be present, unbroken, inside the wrap')
+  assert.equal(result.match(/<\/details>/g).length, 1, 'the closing tag appears exactly once, proving nothing closed early')
+})
+
+test('renderDraftMarkdown: a history line with a full-text counterpart becomes its own expandable <details>, summary inline-wrapped, full body markdown intact', () => {
+  const result = renderDraftMarkdown(['🤔 a short preview…'], '', 30000, ['the full, unabridged thinking with **markdown** intact'])
+  assert.equal(
+    result,
+    '<details><summary>🔧 1 step</summary>\n\n<details><summary>`🤔 a short preview…`</summary>\n\nthe full, unabridged thinking with **markdown** intact\n\n</details>\n\n</details>'
+  )
+})
+
+test('regression: a summary line truncated mid-markdown-token (e.g. an unclosed **) is neutralized by the inline wrap, not left to bleed past </summary>', () => {
+  const result = renderDraftMarkdown(['🤔 an unclosed **bold marker cut off…'], '', 30000, ['the full text here'])
+  assert.ok(result.includes('<summary>`🤔 an unclosed **bold marker cut off…`</summary>'), 'the lone ** stays literal, inside the safe inline span')
+})
+
+test('regression: a summary line with an embedded newline (e.g. a multi-line tool command) is collapsed to one line before being inline-wrapped', () => {
+  const result = renderDraftMarkdown(['⏳ Bash: line one\nline two…'], '', 30000)
+  assert.ok(!result.includes('\nline two'), 'no literal newline survives inside the inline span')
+  assert.ok(result.includes('line one line two'))
+})
+
+test('regression: a summary line containing a literal HTML tag (e.g. a grep pattern for "</details>") is escaped, not left able to close the surrounding tag', () => {
+  const result = renderDraftMarkdown(['⏳ Bash: grep "</details><b>x</b>" file.js…'], '', 30000)
+  assert.equal(result.match(/<\/details>/g).length, 1, 'only the real, outer closing tag — the literal one in the line must not count as a second')
+  assert.ok(result.includes('&lt;/details&gt;&lt;b&gt;x&lt;/b&gt;'), 'the literal tag text is escaped, not left as real markup')
+})
+
+test('regression: a full-text entry whose short summary line also contains a literal HTML tag is escaped the same way', () => {
+  const result = renderDraftMarkdown(['🤔 discussing </details> tags…'], '', 30000, ['the full reasoning'])
+  assert.equal(result.match(/<\/details>/g).length, 2, 'exactly the inner and outer real closing tags')
+  assert.ok(result.includes('&lt;/details&gt;'), 'the literal sequence in the summary is escaped too, not just in the full body')
+})
+
+test('regression: a line ending in a literal backtick gets a padding space, so it cannot fuse with the closing delimiter into a longer, mismatched run', () => {
+  const line = '🤔 open the file`'
+  const result = renderDraftMarkdown([line], '', 30000)
+  assert.equal(result, `<details><summary>🔧 1 step</summary>\n\n\`\` ${line} \`\`\n\n</details>`)
+  assert.ok(!result.includes('file````'), 'the trailing backtick must not fuse with the closing delimiter into one longer run')
+})
+
+test('regression: a line starting with a literal backtick also gets a padding space on both sides', () => {
+  const line = '`ls -la'
+  const result = renderDraftMarkdown([line], '', 30000)
+  const opening = result.match(/^<details><summary>🔧 1 step<\/summary>\n\n(`+)/)[1]
+  assert.ok(result.includes(`${opening} ${line} ${opening}`))
+})
+
+test('regression: a literal "</details>" inside the model\'s own full text cannot close the wrapper tag early', () => {
+  const result = renderDraftMarkdown(['🤔 discussing html…'], '', 30000, ['as in </details><b>injected</b>, see?'])
+  assert.equal(result.match(/<\/details>/g).length, 2, 'exactly the inner and outer closing tags — the literal one in the text must not count as a third')
+  assert.ok(result.includes('&lt;/details&gt;'), 'the literal sequence is escaped, not left as real markup')
+  assert.ok(!result.includes('<b>injected</b>'), 'content after the literal sequence must not turn into real, unescaped HTML')
+})
+
+test('renderDraftMarkdown: a mix of tool-call lines (no full text) and a thinking line (with full text) renders each appropriately', () => {
+  const result = renderDraftMarkdown(
+    ['⏳ Bash: npm test…', '🤔 short…', '✅ Read: foo.py…'],
+    '',
+    30000,
+    [null, 'the full thinking text', undefined]
+  )
+  assert.ok(result.includes('`⏳ Bash: npm test…`'), 'tool line stays inline-wrapped, no expansion')
+  assert.ok(result.includes('<details><summary>`🤔 short…`</summary>\n\nthe full thinking text\n\n</details>'), 'thinking line becomes its own nested expandable section')
+  assert.ok(result.includes('`✅ Read: foo.py…`'), 'tool line stays inline-wrapped, no expansion')
+})
+
+test('regression: falsy entries in fullTexts (missing index, null, undefined, empty string) all fall back to the safe inline wrap, not an empty expandable body', () => {
+  const result = renderDraftMarkdown(['💬 said something…'], '', 30000, [''])
+  assert.ok(!result.includes('<details><summary>💬'), 'an empty full text must not produce a pointless nested expandable section')
+  assert.ok(result.includes('`💬 said something…`'))
+})
+
+test('regression: oldest whole entries drop first under a tight budget, keeping the most recent ones (with their expansion) intact', () => {
+  const history = Array.from({ length: 20 }, (_, i) => `⏳ Bash: step ${i}…`)
+  const fullTexts = history.map((_, i) => (i === 19 ? 'the full text of the most recent step' : null))
+  const result = renderDraftMarkdown(history, '', 300, fullTexts)
+  assert.ok(result.length <= 300, `result length ${result.length} exceeds the 300 limit`)
+  assert.ok(result.includes('the full text of the most recent step'), 'the most recent entry, and its expansion, survives')
+  assert.ok(!result.includes('step 0…'), 'the oldest entries are dropped first, as whole entries')
+})
+
+test('regression: the "🔧 N steps" summary reflects how many entries actually survived truncation, not the original pre-drop count', () => {
+  const history = Array.from({ length: 20 }, (_, i) => `⏳ Bash: step ${i}…`)
+  const result = renderDraftMarkdown(history, '', 300)
+  const survivingCount = result.split('\n').filter(line => line.startsWith('`⏳')).length
+  assert.ok(survivingCount < 20, 'sanity check: this limit must actually force some entries to drop')
+  assert.match(result, new RegExp(`<summary>🔧 ${survivingCount} steps</summary>`), 'the header must count what is actually shown, not the original 20')
+})
+
+test('regression: when even the single most recent entry (with its own expandable body) cannot fit, it degrades to its plain short line instead of vanishing', () => {
+  const result = renderDraftMarkdown(['🤔 a short preview…'], '', 120, ['x'.repeat(500)])
+  assert.notEqual(result, null, 'the entry itself must still show up, just without the expansion')
+  assert.ok(result.length <= 120, `result length ${result?.length} exceeds the 120 limit`)
+  assert.ok(result.includes('`🤔 a short preview…`'), 'degrades to the safe inline-wrapped short line')
+  assert.ok(!result.includes('xxxx'), 'the oversized full text itself must not appear at all')
+})
+
+test('regression: when even the degraded plain short line cannot fit at all, history is dropped entirely instead of showing an empty-bodied "N steps" wrapper', () => {
+  const result = renderDraftMarkdown(['⏳ Bash: npm test…'], '', 55)
+  assert.equal(result, null, 'a misleading "🔧 1 step" header over nothing must not be returned')
+})
+
+test('regression: a large in-flight live answer that leaves no room for even one degraded history line drops history, not just live text', () => {
+  const live = 'x'.repeat(29950)
+  const result = renderDraftMarkdown(['⏳ Bash: npm test…'], live, 30000)
+  assert.ok(!result.includes('<details'), 'no misleading empty-bodied wrapper — this is realistic (a long streaming answer), not a contrived tiny limit')
+  assert.ok(result.length <= 30000)
+  assert.ok(live.endsWith(result))
 })
 
 test('regression: renderDraftMarkdown with limit 0 (or negative) returns null rather than a string that violates the limit', () => {

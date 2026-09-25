@@ -143,6 +143,11 @@ function renderEphemeral(entry) {
   return `${entry.state} ${formatToolBody(entry.name, entry.input)}`
 }
 
+// Parallels renderEphemeral, index-for-index: the untruncated text behind a thinking line, or null for anything else.
+function ephemeralFullText(entry) {
+  return entry.kind === 'thinking' ? entry.full : null
+}
+
 // Only frozen *text* segments (💬, for a human) become permanent checkpointLines; tool calls and frozen thinking are ephemeral and collapse away on the next checkpoint.
 export function createProgressTracker(
   initialStatus = DEFAULT_WORKING_STATUS,
@@ -154,7 +159,7 @@ export function createProgressTracker(
   } = {}
 ) {
   const seenToolIds = new Set()
-  const checkpointLines = []
+  const checkpoints = []
   let ephemeral = []
   let liveText = ''
   let liveKind = null // 'thinking' | 'text' | null
@@ -162,8 +167,9 @@ export function createProgressTracker(
   let statusIsHtml = false
   let snapshotCache = { text: status, html: statusIsHtml }
 
-  for (const line of initialCheckpointLines) pushCheckpoint(line)
-  if (checkpointLines.length) commit()
+  // a seed is a plain string (old persisted state.json data, or the classic path's own checkpointHistory) or a { line, full } entry (this tracker's own historySnapshot()) — both are accepted so nothing crashes on a pre-upgrade persisted turn.
+  for (const seed of initialCheckpointLines) pushCheckpoint(seed?.line ?? seed, seed?.full ?? null)
+  if (checkpoints.length) commit()
 
   function pushBounded(array, maxLen, item) {
     if (array.length >= maxLen) array.shift()
@@ -174,17 +180,17 @@ export function createProgressTracker(
     pushBounded(ephemeral, maxEphemeralLines, entry)
   }
 
-  function pushCheckpoint(line) {
-    pushBounded(checkpointLines, maxCheckpointLines, line)
+  function pushCheckpoint(line, full = null) {
+    pushBounded(checkpoints, maxCheckpointLines, { line, full })
   }
 
   function freezeLive() {
     const trimmed = liveText.trim()
     if (trimmed) {
       if (liveKind === 'thinking') {
-        pushEphemeral({ kind: 'thinking', text: `🤔 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}` })
+        pushEphemeral({ kind: 'thinking', text: `🤔 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, full: trimmed })
       } else {
-        pushCheckpoint(`💬 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`)
+        pushCheckpoint(`💬 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, trimmed)
         ephemeral = [] // a checkpoint is the summary of everything that led to it — collapse the rest
       }
     }
@@ -198,7 +204,12 @@ export function createProgressTracker(
   }
 
   function historyLines() {
-    return [...checkpointLines, ...ephemeral.map(renderEphemeral)]
+    return [...checkpoints.map(c => c.line), ...ephemeral.map(renderEphemeral)]
+  }
+
+  // Index-aligned with historyLines(): the full untruncated text behind a thinking/said line, or null where there is none.
+  function historyFullTexts() {
+    return [...checkpoints.map(c => c.full), ...ephemeral.map(ephemeralFullText)]
   }
 
   function defaultRender() {
@@ -211,7 +222,7 @@ export function createProgressTracker(
   }
 
   function commit() {
-    const rendered = renderTranscript ? renderTranscript(historyLines(), liveDisplayText()) : defaultRender()
+    const rendered = renderTranscript ? renderTranscript(historyLines(), liveDisplayText(), historyFullTexts()) : defaultRender()
     // renderTranscript can legitimately return null (e.g. nothing fits the budget this
     // tick) — treat that the same as "nothing new to report" rather than letting null
     // overwrite a perfectly good prior status (and leak downstream into an edit)
@@ -271,10 +282,10 @@ export function createProgressTracker(
     return snapshotCache
   }
 
-  // freezes any trailing live text first, so a tracker snapshotted right before being discarded doesn't lose whatever was mid-stream
+  // freezes any trailing live text first, so a tracker snapshotted right before being discarded doesn't lose whatever was mid-stream; { line, full } entries, not plain strings, so a seeded fallback/resume can still expand what this tracker already captured.
   function historySnapshot() {
     freezeLive()
-    return [...checkpointLines]
+    return checkpoints.map(c => ({ line: c.line, full: c.full }))
   }
 
   return { ingest, current, snapshot, historySnapshot }

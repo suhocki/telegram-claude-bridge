@@ -56,6 +56,7 @@ import {
   nextDraftId,
   buildSendRichMessageDraftCall,
   parseStoppedMessageGeneration,
+  capCheckpointHistoryFullText,
   extractReactionMarker,
   buildSetMessageReactionParams,
   buildReactionMarkerInstructions,
@@ -1160,6 +1161,44 @@ test('parseStoppedMessageGeneration: returns null when chat or draft_id is missi
   assert.equal(parseStoppedMessageGeneration({ draft_id: 7 }), null)
   assert.equal(parseStoppedMessageGeneration({ chat: { id: 123 } }), null)
   assert.equal(parseStoppedMessageGeneration(null), null)
+})
+
+test('capCheckpointHistoryFullText: leaves a full text under the cap untouched', () => {
+  const history = [{ line: '💬 short…', full: 'short and complete' }]
+  assert.deepEqual(capCheckpointHistoryFullText(history, 100), history)
+})
+
+test('capCheckpointHistoryFullText: truncates a full text over the cap, leaving the line untouched', () => {
+  const history = [{ line: '💬 short…', full: 'x'.repeat(200) }]
+  const result = capCheckpointHistoryFullText(history, 100)
+  assert.equal(result[0].line, '💬 short…')
+  assert.equal(result[0].full.length, 100)
+})
+
+test('capCheckpointHistoryFullText: a null full text (no expansion, e.g. a seeded/tool line) passes through unchanged', () => {
+  const history = [{ line: '⏳ Bash: npm test…', full: null }]
+  assert.deepEqual(capCheckpointHistoryFullText(history, 100), history)
+})
+
+test('capCheckpointHistoryFullText: a missing/empty array is handled without crashing', () => {
+  assert.deepEqual(capCheckpointHistoryFullText(undefined), [])
+  assert.deepEqual(capCheckpointHistoryFullText([]), [])
+})
+
+test('regression: capCheckpointHistoryFullText never splits a surrogate pair (e.g. an emoji) in half, leaving a dangling code unit', () => {
+  const emoji = '😀' // U+1F600, a 2-code-unit surrogate pair in JS UTF-16 strings
+  const full = `ab${emoji}cd`
+  const result = capCheckpointHistoryFullText([{ line: 'x', full }], 3)
+  assert.equal(result[0].full, 'ab', 'backs off to the last complete character instead of a lone high surrogate')
+  const lastCode = result[0].full.charCodeAt(result[0].full.length - 1)
+  assert.ok(lastCode < 0xd800 || lastCode > 0xdbff, 'the result must never end on an unpaired high surrogate')
+})
+
+test('regression: capCheckpointHistoryFullText does not back off when the cut point does not land on a surrogate pair', () => {
+  const emoji = '😀'
+  const full = `ab${emoji}cd`
+  const result = capCheckpointHistoryFullText([{ line: 'x', full }], 4)
+  assert.equal(result[0].full, `ab${emoji}`, 'the complete pair is kept whole, no unnecessary truncation')
 })
 
 test('buildReplyCallsFromChunks: no editMessageId behaves like a plain sendMessage, unchanged across chunks', () => {

@@ -409,6 +409,72 @@ test('createProgressTracker: a tool_use event freezes live text into history (pa
   assert.deepEqual(JSON.parse(snap.text), { history: ['💬 Hello', '⏳ Bash: npm test…'], live: '' })
 })
 
+test('createProgressTracker: renderTranscript receives a 3rd argument (fullTexts) index-aligned with history, null for tool lines', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
+    renderTranscript: (history, live, fullTexts) => JSON.stringify({ history, fullTexts }),
+  })
+  const thinkingDelta = thinking => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking } } })
+  const toolEvent = {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
+  }
+  tracker.ingest(thinkingDelta('a long chain of reasoning about the problem'))
+  tracker.ingest(toolEvent)
+  const { history, fullTexts } = JSON.parse(tracker.snapshot().text)
+  assert.equal(history.length, fullTexts.length)
+  assert.equal(history[0], '🤔 a long chain of reasoning about the problem')
+  assert.equal(fullTexts[0], 'a long chain of reasoning about the problem')
+  assert.equal(history[1], '⏳ Bash: npm test…')
+  assert.equal(fullTexts[1], null)
+})
+
+test('createProgressTracker: a frozen thinking/text line truncated in the display keeps its full text unabridged', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
+    renderTranscript: (history, live, fullTexts) => JSON.stringify({ history, fullTexts }),
+  })
+  const longText = 'x'.repeat(200)
+  const thinkingDelta = thinking => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking } } })
+  const textDelta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
+  tracker.ingest(thinkingDelta(longText))
+  tracker.ingest(textDelta('switching to a text segment freezes the thinking one'))
+  const { history, fullTexts } = JSON.parse(tracker.snapshot().text)
+  assert.ok(history[0].length < longText.length, 'the display line is truncated')
+  assert.equal(fullTexts[0], longText, 'the full text is preserved unabridged')
+})
+
+test('createProgressTracker: a frozen 💬 checkpoint also keeps its full, untruncated text', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
+    renderTranscript: (history, live, fullTexts) => JSON.stringify({ history, fullTexts }),
+  })
+  const longAnswer = 'y'.repeat(200)
+  const textDelta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
+  const toolEvent = {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
+  }
+  tracker.ingest(textDelta(longAnswer))
+  tracker.ingest(toolEvent) // freezes the 💬 checkpoint
+  const { history, fullTexts } = JSON.parse(tracker.snapshot().text)
+  assert.ok(history[0].startsWith('💬 '))
+  assert.ok(history[0].length < longAnswer.length, 'the display line is truncated')
+  assert.equal(fullTexts[0], longAnswer, 'the checkpoint keeps its full, untruncated text')
+})
+
+test('createProgressTracker: initialCheckpointLines (a resumed turn) seed with null full text, not carried over from a discarded tracker', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
+    renderTranscript: (history, live, fullTexts) => JSON.stringify({ history, fullTexts }),
+    initialCheckpointLines: ['💬 seeded from a resumed turn'],
+  })
+  const toolEvent = {
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
+  }
+  tracker.ingest(toolEvent)
+  const { history, fullTexts } = JSON.parse(tracker.snapshot().text)
+  assert.equal(history[0], '💬 seeded from a resumed turn')
+  assert.equal(fullTexts[0], null)
+})
+
 test('createProgressTracker ignores events with nothing new to report', () => {
   const tracker = createProgressTracker()
   assert.equal(tracker.ingest({ type: 'system', subtype: 'init' }), null)
@@ -664,20 +730,37 @@ test('createProgressTracker: a tool_result for a line already evicted by the cap
   assert.equal(tracker.current(), '⏳ Bash: b…\n⏳ Bash: c…')
 })
 
-test('createProgressTracker.historySnapshot freezes any trailing live text into a checkpoint before returning', () => {
+test('createProgressTracker.historySnapshot freezes any trailing live text into a checkpoint before returning, with its full text alongside', () => {
   const tracker = createProgressTracker()
   tracker.ingest({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'still going' } } })
-  assert.deepEqual(tracker.historySnapshot(), ['💬 still going'])
+  assert.deepEqual(tracker.historySnapshot(), [{ line: '💬 still going', full: 'still going' }])
 })
 
-test('createProgressTracker.historySnapshot returns the checkpoint lines seen so far, oldest first', () => {
+test('createProgressTracker.historySnapshot returns the checkpoint lines seen so far, oldest first, each with its full text', () => {
   const tracker = createProgressTracker()
   const tool = (id, name, input) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } })
   const text = t => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: t } } })
   tracker.ingest(text('first'))
   tracker.ingest(tool('toolu_1', 'Bash', { command: 'a' }))
   tracker.ingest(text('second'))
-  assert.deepEqual(tracker.historySnapshot(), ['💬 first', '💬 second'])
+  assert.deepEqual(tracker.historySnapshot(), [
+    { line: '💬 first', full: 'first' },
+    { line: '💬 second', full: 'second' },
+  ])
+})
+
+test('regression: historySnapshot seeded back in via initialCheckpointLines round-trips correctly (fallback/resume from a live tracker keeps its full text)', () => {
+  const tracker = createProgressTracker()
+  tracker.ingest({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'reasoning' } } })
+  tracker.ingest({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'a long enough answer' } } })
+  const snapshot = tracker.historySnapshot()
+  const resumed = createProgressTracker(DEFAULT_WORKING_STATUS, { initialCheckpointLines: snapshot })
+  assert.deepEqual(resumed.historySnapshot(), snapshot)
+})
+
+test('regression: historySnapshot still accepts old, pre-upgrade plain-string initialCheckpointLines without crashing (full text just stays null)', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, { initialCheckpointLines: ['💬 from disk, plain string'] })
+  assert.deepEqual(tracker.historySnapshot(), [{ line: '💬 from disk, plain string', full: null }])
 })
 
 test('createProgressTracker: initialCheckpointLines seeds history immediately, before any event is ingested', () => {

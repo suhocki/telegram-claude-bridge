@@ -110,6 +110,7 @@ import {
   buildPlaceholderEditParams,
   buildWorkingPlaceholderParams,
   parseTelegramEditError,
+  capCheckpointHistoryFullText,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
   isVoiceReplyEnabled,
@@ -866,7 +867,8 @@ async function clearPendingContinue(chatId, key) {
   delete state.pendingContinue[key]
   if (pending.placeholderId != null) {
     // an abandoned Continue offer needs a terminal marker, not just a stripped keyboard, or the last progress line looks like a stuck bot
-    const text = [...(pending.checkpointHistory ?? []), '🚫 cancelled'].join('\n')
+    const lines = (pending.checkpointHistory ?? []).map(entry => entry?.line ?? entry)
+    const text = [...lines, '🚫 cancelled'].join('\n')
     await tg('editMessageText', buildPlaceholderEditParams(chatId, pending.placeholderId, text, false, { inline_keyboard: [] })).catch(() => {})
   }
 }
@@ -1528,7 +1530,8 @@ async function fetchFishVoicesPage(pageNumber) {
 // Private-chat counterpart to createPlaceholderController below, for the same root placeholder role only (never for subagents).
 function createDraftPlaceholderController(chatId, draftId, initialStatus, sharedGate, onFallback) {
   const tracker = createProgressTracker(initialStatus, {
-    renderTranscript: (historyLines, liveText) => renderDraftMarkdown(historyLines, liveText),
+    // the explicit undefined skips renderDraftMarkdown's 3rd positional param (limit) to reach its default, since fullTexts is the 4th.
+    renderTranscript: (historyLines, liveText, fullTexts) => renderDraftMarkdown(historyLines, liveText, undefined, fullTexts),
   })
   let fellBack = false
   // no ordering guarantee across independent requests, so overlapping sends could flash stale content back onto the draft — serialize them instead.
@@ -1924,7 +1927,7 @@ async function runClaudeTurn(
           sessionId: resumableSessionId,
           placeholderId: currentPlaceholderId,
           isCompact,
-          checkpointHistory: rootController.tracker.historySnapshot(),
+          checkpointHistory: capCheckpointHistoryFullText(rootController.tracker.historySnapshot()),
           ...turnMeta,
         }
         continueArmed = true
