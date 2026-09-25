@@ -1728,12 +1728,14 @@ async function runClaudeTurn(
     if (turnSettled) return
     rootController?.statusUpdater.stop()
     const seededHistory = rootController?.tracker.historySnapshot() ?? []
+    // recomputed here, not reused from turn start: joins folded into run.pending while streaming never had a keyboard to show them on until now.
+    const liveCancelKeyboard = buildCancelKeyboard(chatId, run.pending.length)
     try {
-      const placeholder = await tg('sendMessage', buildWorkingPlaceholderParams(chatId, workingStatus, originMessageId, cancelKeyboard, threadId))
+      const placeholder = await tg('sendMessage', buildWorkingPlaceholderParams(chatId, workingStatus, originMessageId, liveCancelKeyboard, threadId))
       currentPlaceholderId = placeholder.message_id
       run.placeholderId = currentPlaceholderId
       botMessageIds.push(currentPlaceholderId)
-      rootController = createPlaceholderController(chatId, currentPlaceholderId, chatRateGate, cancelKeyboard, workingStatus, seededHistory)
+      rootController = createPlaceholderController(chatId, currentPlaceholderId, chatRateGate, liveCancelKeyboard, workingStatus, seededHistory)
       if (seededHistory.length) await rootController.editPlaceholder(rootController.tracker.snapshot())
     } catch (e) {
       log('failed to create fallback placeholder after sendRichMessageDraft failure', e.message)
@@ -1885,8 +1887,8 @@ async function runClaudeTurn(
           e.cancelledResult?.total_cost_usd ?? 0
         )
       }
-      if (currentPlaceholderId == null && usingDraftStreaming && resumableSessionId) {
-        // a draft has no message to attach a Continue button to — materialize the real placeholder Continue needs, same as an actual send failure would
+      if (currentPlaceholderId == null && resumableSessionId) {
+        // covers both a draft (no message to attach Continue to) and the pre-existing case of the turn-start placeholder send itself failing
         await fallbackToClassicPlaceholder()
       }
       if (currentPlaceholderId != null && resumableSessionId) {

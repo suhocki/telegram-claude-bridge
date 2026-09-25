@@ -458,6 +458,13 @@ test('renderDraftMarkdown: no history and no live text returns null', () => {
   assert.equal(renderDraftMarkdown(undefined, undefined, 30000), null)
 })
 
+test('regression: renderDraftMarkdown truncates live-only text (no history yet) to the limit instead of returning it unbounded', () => {
+  const live = 'x'.repeat(500)
+  const result = renderDraftMarkdown([], live, 100)
+  assert.ok(result.length <= 100, `result length ${result.length} exceeds the 100 limit`)
+  assert.ok(live.endsWith(result), 'the kept text is the tail of the live text, not something else')
+})
+
 test('renderDraftMarkdown: history is wrapped in a collapsed <details> with a step-count summary, fenced so markdown chars are not interpreted', () => {
   const result = renderDraftMarkdown(['⏳ Bash: echo **not bold**…', '✅ Read: foo.py…'], '', 30000)
   assert.equal(

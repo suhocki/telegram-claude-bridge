@@ -432,17 +432,17 @@ export function renderTranscriptHtml(historyLines, liveText, limit = 4096) {
   return liveHtml ? `${historyText}\n${liveHtml}` : historyText
 }
 
-// Markdown parses inside <details>, so history needs escapeHtml's guard too — here, a fence longer than any backtick run already in it.
+// Fenced code isn't markdown/HTML-parsed even inside <details> (the one place Rich Markdown does parse both), so this — not escapeHtml — is the guard here; sized past any backtick run already in the text.
 function backtickFenceFor(text) {
   const runs = text.match(/`+/g)
-  const longest = runs ? Math.max(...runs.map(r => r.length)) : 0
+  const longest = runs ? runs.reduce((max, r) => Math.max(max, r.length), 0) : 0
   return '`'.repeat(Math.max(4, longest + 1))
 }
 
 export function renderDraftMarkdown(historyLines, liveText, limit = 30000) {
   const lines = (historyLines ?? []).filter(Boolean)
   const live = String(liveText ?? '').trim()
-  if (!lines.length) return live || null
+  if (!lines.length) return (live && tailPlainTextLines(live, limit)) || null
 
   const historyFull = lines.join('\n')
   const fence = backtickFenceFor(historyFull)
