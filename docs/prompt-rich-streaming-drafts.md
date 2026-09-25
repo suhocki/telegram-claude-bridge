@@ -69,6 +69,16 @@ business-account feature — it is not the forum-topics feature this repo's `is_
 `resolveThreadId` gate on, which only exists in groups. Don't worry about interaction with this
 repo's own thread/topic mode — they're mutually exclusive by construction.)
 
+**Erratum (PR #107, live-tested after #105/#106 shipped): the paragraph above is wrong.** This
+repo's own [Threaded Mode](forum-topics/OVERVIEW.md) feature extends `is_topic_message`/
+`message_thread_id` to private chats too (BotFather's per-chat "Threaded Mode" toggle) — private
+chats and this repo's own thread/topic mode are not mutually exclusive at all, that was never
+verified against a real bot before being asserted here. `sendRichMessageDraft` needs `threadId`
+wired through exactly like every other outbound call in this codebase, via
+`resolveThreadId`/`threadIdParam`. `stopped_message_generation` (step 3 below) does **not** — see
+the correction right there, don't key it by thread. If you're pasting this file as a prompt, read
+PR #107 first.
+
 ### The Stop button's update
 
 ```
@@ -142,10 +152,18 @@ For a turn running in a **private chat** (`msg.chat.type === 'private'`):
      of plain text
    - `can_stop: true`, `keep_on_stop: true`
 3. Wire the Stop button: add `'stopped_message_generation'` to `TELEGRAM_ALLOWED_UPDATES`, handle
-   `u.stopped_message_generation` in the poll loop, resolve it to the right `activeRuns` entry
-   (you'll need your own `chatId(+draftId) -> run` bookkeeping, parallel to how `activeRuns` is
-   already keyed — reuse `threadKey`-style keying), and call the same cancel path the existing
-   inline Cancel button uses today.
+   `u.stopped_message_generation` in the poll loop, resolve it to the right `activeRuns` entry.
+   **Correction, PR #107:** the original version of this step said to build a separate
+   `chatId(+draftId) -> run` index "parallel to how `activeRuns` is already keyed," reusing
+   `threadKey`-style keying — don't. `MessageGenerationStopped` has no `is_topic_message` to
+   disambiguate `message_thread_id` the way a real `Message` does, so a reconstructed thread key
+   can't be trusted to match `activeRuns`' own key, and no second index is needed anyway: scan the
+   existing `activeRuns` Map directly for a run whose own `chatId`+`draftId` match (see
+   `isTargetRunForStoppedGeneration`/`parseStoppedMessageGeneration` in `lib.mjs`). This only works
+   because `draft_id` is unique per `chatId` — **keep `nextDraftId`'s counter keyed by `chatId`
+   alone, never by thread**; making it per-thread would let two different threads in the same chat
+   collide on the same `draft_id` and silently cancel the wrong one. Call the same cancel path the
+   existing inline Cancel button uses today.
 4. When the run finishes normally, do **not** try to "delete" or "finalize" the draft — it's not
    a real message, there's nothing to delete. Just send the real final answer the normal way
    (`sendReply`, already implemented, already tries `sendRichMessage` first). The draft

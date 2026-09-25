@@ -479,18 +479,30 @@ export function nextDraftId(draftIdState, chatId) {
 }
 
 // keep_on_stop avoids the draft vanishing the instant Stop is tapped, before stopped_message_generation is even handled.
-export function buildSendRichMessageDraftCall(chatId, draftId, markdownText) {
+export function buildSendRichMessageDraftCall(chatId, draftId, markdownText, threadId = null) {
   return {
     method: 'sendRichMessageDraft',
-    params: { chat_id: chatId, draft_id: draftId, rich_message: { markdown: markdownText }, can_stop: true, keep_on_stop: true },
+    params: {
+      chat_id: chatId,
+      draft_id: draftId,
+      rich_message: { markdown: markdownText },
+      can_stop: true,
+      keep_on_stop: true,
+      ...threadIdParam(threadId),
+    },
   }
 }
 
-// Mirrors parseCallbackData's split: only parses the update, the caller does the activeRuns lookup and cancel decision.
+// Returns chatId+draftId, not a reconstructed thread key: unlike a real Message, MessageGenerationStopped has no is_topic_message to key off safely.
 export function parseStoppedMessageGeneration(update) {
   const chatId = update?.chat?.id
   if (chatId == null || update?.draft_id == null) return null
-  return { key: threadKey(chatId, null), draftId: update.draft_id }
+  return { chatId: String(chatId), draftId: update.draft_id }
+}
+
+// draft_id is unique per chatId only (see nextDraftId), so the caller scans activeRuns for this instead of a direct key lookup.
+export function isTargetRunForStoppedGeneration(run, parsed) {
+  return !run.finished && run.draftId === parsed.draftId && run.chatId === parsed.chatId
 }
 
 export const MAX_PERSISTED_FULL_TEXT_CHARS = 4000

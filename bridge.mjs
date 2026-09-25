@@ -94,6 +94,7 @@ import {
   nextDraftId,
   buildSendRichMessageDraftCall,
   parseStoppedMessageGeneration,
+  isTargetRunForStoppedGeneration,
   getModelConfig,
   setModelConfigField,
   isValidModelConfigValue,
@@ -1528,7 +1529,7 @@ async function fetchFishVoicesPage(pageNumber) {
 }
 
 // Private-chat counterpart to createPlaceholderController below, for the same root placeholder role only (never for subagents).
-function createDraftPlaceholderController(chatId, draftId, initialStatus, sharedGate, onFallback) {
+function createDraftPlaceholderController(chatId, draftId, threadId, initialStatus, sharedGate, onFallback) {
   const tracker = createProgressTracker(initialStatus, {
     // the explicit undefined skips renderDraftMarkdown's 3rd positional param (limit) to reach its default, since fullTexts is the 4th.
     renderTranscript: (historyLines, liveText, fullTexts) => renderDraftMarkdown(historyLines, liveText, undefined, fullTexts),
@@ -1546,7 +1547,7 @@ function createDraftPlaceholderController(chatId, draftId, initialStatus, shared
     }
     sending = true
     try {
-      const { method, params } = buildSendRichMessageDraftCall(chatId, draftId, text)
+      const { method, params } = buildSendRichMessageDraftCall(chatId, draftId, text, threadId)
       await tg(method, params)
       sending = false
       if (resendPending) {
@@ -1772,7 +1773,7 @@ async function runClaudeTurn(
     }
   }
   rootController = usingDraftStreaming
-    ? createDraftPlaceholderController(chatId, run.draftId, workingStatus, chatRateGate, fallbackToClassicPlaceholder)
+    ? createDraftPlaceholderController(chatId, run.draftId, threadId, workingStatus, chatRateGate, fallbackToClassicPlaceholder)
     : createPlaceholderController(chatId, currentPlaceholderId, chatRateGate, cancelKeyboard, workingStatus, checkpointHistory)
   run.setKeyboard = kb => rootController.setKeyboard(kb)
   // sent only now that rootController is assigned — fallbackToClassicPlaceholder (if this fails) must never run before that assignment exists.
@@ -2080,6 +2081,7 @@ async function handleMessage(msg) {
       if (run.finished) return
       run.finished = true
     },
+    chatId,
     promptText,
     // built from meta, not msg directly, so a CONFIRMed run's Join still threads to the original message, not the CONFIRM reply
     replyToMessage: meta.replyToMessageId != null ? { message_id: meta.replyToMessageId } : undefined,
@@ -2215,6 +2217,7 @@ async function handleContinue(chatId, key, threadId, pending) {
       if (run.finished) return
       run.finished = true
     },
+    chatId,
     promptText: buildContinuePrompt(),
     // a Continue tap has no originating message of its own to reply-thread from
     replyToMessage: undefined,
@@ -2719,10 +2722,16 @@ async function poll() {
         } else if (u.callback_query) {
           handleCallbackQuery(u.callback_query).catch(e => log('callback query handling rejected', e))
         } else if (u.stopped_message_generation) {
-          // native Stop button on a streamed draft — same cancel path the classic inline Cancel button uses
+          // native Stop button on a streamed draft: scans by chatId+draftId (unique per chat) rather than Map.get on a reconstructed key.
           const parsed = parseStoppedMessageGeneration(u.stopped_message_generation)
-          const run = parsed && activeRuns.get(parsed.key)
-          if (run && !run.finished && run.draftId === parsed.draftId) run.cancel()
+          if (parsed) {
+            for (const run of activeRuns.values()) {
+              if (isTargetRunForStoppedGeneration(run, parsed)) {
+                run.cancel()
+                break
+              }
+            }
+          }
         }
       }
     } catch (e) {

@@ -56,6 +56,7 @@ import {
   nextDraftId,
   buildSendRichMessageDraftCall,
   parseStoppedMessageGeneration,
+  isTargetRunForStoppedGeneration,
   capCheckpointHistoryFullText,
   extractReactionMarker,
   buildSetMessageReactionParams,
@@ -1153,14 +1154,56 @@ test('buildSendRichMessageDraftCall: builds a sendRichMessageDraft call with can
   })
 })
 
-test('parseStoppedMessageGeneration: extracts the activeRuns-style key and draft_id', () => {
-  assert.deepEqual(parseStoppedMessageGeneration({ chat: { id: 123 }, draft_id: 7 }), { key: '123', draftId: 7 })
+test('buildSendRichMessageDraftCall: attaches message_thread_id when the draft is running inside a chat topic', () => {
+  const call = buildSendRichMessageDraftCall('123', 7, '⏳ working…', 55)
+  assert.deepEqual(call, {
+    method: 'sendRichMessageDraft',
+    params: {
+      chat_id: '123',
+      draft_id: 7,
+      rich_message: { markdown: '⏳ working…' },
+      can_stop: true,
+      keep_on_stop: true,
+      message_thread_id: 55,
+    },
+  })
+})
+
+test('parseStoppedMessageGeneration: extracts chatId and draft_id for the caller to scan activeRuns by', () => {
+  assert.deepEqual(parseStoppedMessageGeneration({ chat: { id: 123 }, draft_id: 7 }), { chatId: '123', draftId: 7 })
+})
+
+test('parseStoppedMessageGeneration: ignores message_thread_id — the caller matches by draft_id, not a reconstructed key', () => {
+  assert.deepEqual(parseStoppedMessageGeneration({ chat: { id: 123 }, draft_id: 7, message_thread_id: 55 }), {
+    chatId: '123',
+    draftId: 7,
+  })
 })
 
 test('parseStoppedMessageGeneration: returns null when chat or draft_id is missing', () => {
   assert.equal(parseStoppedMessageGeneration({ draft_id: 7 }), null)
   assert.equal(parseStoppedMessageGeneration({ chat: { id: 123 } }), null)
   assert.equal(parseStoppedMessageGeneration(null), null)
+})
+
+test('isTargetRunForStoppedGeneration: matches a live run with the same chatId and draftId', () => {
+  const run = { finished: false, chatId: '123', draftId: 7 }
+  assert.equal(isTargetRunForStoppedGeneration(run, { chatId: '123', draftId: 7 }), true)
+})
+
+test('isTargetRunForStoppedGeneration: rejects a different chat reusing the same draftId number', () => {
+  const run = { finished: false, chatId: '999', draftId: 7 }
+  assert.equal(isTargetRunForStoppedGeneration(run, { chatId: '123', draftId: 7 }), false)
+})
+
+test('isTargetRunForStoppedGeneration: rejects a mismatched draftId in the same chat', () => {
+  const run = { finished: false, chatId: '123', draftId: 3 }
+  assert.equal(isTargetRunForStoppedGeneration(run, { chatId: '123', draftId: 7 }), false)
+})
+
+test('isTargetRunForStoppedGeneration: rejects an already-finished run', () => {
+  const run = { finished: true, chatId: '123', draftId: 7 }
+  assert.equal(isTargetRunForStoppedGeneration(run, { chatId: '123', draftId: 7 }), false)
 })
 
 test('capCheckpointHistoryFullText: leaves a full text under the cap untouched', () => {
