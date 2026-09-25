@@ -30,6 +30,73 @@ function wrapBlockquotes(text) {
   return out.join('\n')
 }
 
+// Telegram's HTML parse mode has no <table> tag, so a GFM pipe table is rendered as a
+// fixed-width monospace grid inside <pre> instead — the closest thing to "a table" it can show.
+const TABLE_SEP_LINE_RE = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/
+
+function splitTableRow(line) {
+  let s = line.trim()
+  if (s.startsWith('|')) s = s.slice(1)
+  if (s.endsWith('|') && !s.endsWith('\\|')) s = s.slice(0, -1)
+  const cells = []
+  let cur = ''
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\' && s[i + 1] === '|') {
+      cur += '|'
+      i++
+      continue
+    }
+    if (s[i] === '|') {
+      cells.push(cur.trim())
+      cur = ''
+      continue
+    }
+    cur += s[i]
+  }
+  cells.push(cur.trim())
+  return cells
+}
+
+function renderTableBlock(headerLine, rowLines) {
+  const header = splitTableRow(headerLine)
+  const rows = rowLines.map(splitTableRow)
+  const colCount = header.length
+  const widths = header.map(c => c.length)
+  for (const row of rows) {
+    for (let c = 0; c < colCount; c++) widths[c] = Math.max(widths[c], (row[c] ?? '').length)
+  }
+  const padRow = row => row.map((c, i) => (c ?? '').padEnd(widths[i])).join(' | ')
+  const sep = widths.map(w => '-'.repeat(w)).join('-+-')
+  const lines = [padRow(header), sep, ...rows.map(padRow)]
+  return `<pre>${escapeHtml(lines.join('\n'))}</pre>`
+}
+
+// Scans line-by-line for `| header |` immediately followed by a `|---|---|` separator, then
+// greedily consumes further pipe-bearing lines as rows until a blank/non-table line ends it.
+function replaceMarkdownTables(text, stashHtml) {
+  const lines = text.split('\n')
+  const out = []
+  let i = 0
+  while (i < lines.length) {
+    const header = lines[i]
+    const sep = lines[i + 1]
+    if (header?.includes('|') && sep !== undefined && TABLE_SEP_LINE_RE.test(sep) && sep.includes('-')) {
+      const rowLines = []
+      let j = i + 2
+      while (j < lines.length && lines[j].trim() !== '' && lines[j].includes('|')) {
+        rowLines.push(lines[j])
+        j++
+      }
+      out.push(stashHtml(renderTableBlock(header, rowLines)))
+      i = j
+      continue
+    }
+    out.push(header)
+    i++
+  }
+  return out.join('\n')
+}
+
 export function markdownToTelegramHtml(text) {
   const stash = []
   const stashHtml = html => {
@@ -43,6 +110,8 @@ export function markdownToTelegramHtml(text) {
     const html = lang ? `<pre><code class="language-${escapeHtml(lang)}">${escaped}</code></pre>` : `<pre>${escaped}</pre>`
     return stashHtml(html)
   })
+
+  work = replaceMarkdownTables(work, stashHtml)
 
   work = work.replace(/`([^`\n]+)`/g, (_, code) => stashHtml(`<code>${escapeHtml(code)}</code>`))
 

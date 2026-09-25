@@ -94,6 +94,45 @@ test('markdownToTelegramHtml: combines multiple constructs in one message', () =
   )
 })
 
+test('markdownToTelegramHtml: renders a GFM pipe table as an aligned <pre> grid', () => {
+  assert.equal(
+    markdownToTelegramHtml('| Name | Age |\n|------|-----|\n| Alice | 30 |\n| Bob | 5 |'),
+    '<pre>Name  | Age\n------+----\nAlice | 30 \nBob   | 5  </pre>',
+  )
+})
+
+test('markdownToTelegramHtml: table separator with alignment colons is still recognized', () => {
+  assert.equal(
+    markdownToTelegramHtml('| A | B |\n|:---|---:|\n| x | y |'),
+    '<pre>A | B\n--+--\nx | y</pre>',
+  )
+})
+
+test('markdownToTelegramHtml: escapes HTML-sensitive characters inside table cells', () => {
+  assert.equal(
+    markdownToTelegramHtml('| Tag |\n|-----|\n| <b> & 1 < 2 |'),
+    '<pre>Tag        \n-----------\n&lt;b&gt; &amp; 1 &lt; 2</pre>',
+  )
+})
+
+test('markdownToTelegramHtml: a short row of dashes with no preceding pipe line is left as plain text', () => {
+  assert.equal(markdownToTelegramHtml('above\n---\nbelow'), 'above\n---\nbelow')
+})
+
+test('markdownToTelegramHtml: markdown syntax inside table cells is not converted (rendered as literal text)', () => {
+  assert.equal(
+    markdownToTelegramHtml('| Col |\n|-----|\n| **bold** `code` |'),
+    '<pre>Col            \n---------------\n**bold** `code`</pre>',
+  )
+})
+
+test('markdownToTelegramHtml: a table followed by more text keeps both', () => {
+  assert.equal(
+    markdownToTelegramHtml('| A |\n|---|\n| 1 |\nafter'),
+    '<pre>A\n-\n1</pre>\nafter',
+  )
+})
+
 test('markdownToTelegramHtml: empty/null/undefined input becomes an empty string', () => {
   assert.equal(markdownToTelegramHtml(''), '')
   assert.equal(markdownToTelegramHtml(null), '')
