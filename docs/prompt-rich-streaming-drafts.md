@@ -69,6 +69,15 @@ business-account feature — it is not the forum-topics feature this repo's `is_
 `resolveThreadId` gate on, which only exists in groups. Don't worry about interaction with this
 repo's own thread/topic mode — they're mutually exclusive by construction.)
 
+**Erratum (PR #107, live-tested after #105/#106 shipped): the paragraph above is wrong.** This
+repo's own [Threaded Mode](forum-topics/OVERVIEW.md) feature extends `is_topic_message`/
+`message_thread_id` to private chats too (BotFather's per-chat "Threaded Mode" toggle) — private
+chats and this repo's own thread/topic mode are not mutually exclusive at all, that was never
+verified against a real bot before being asserted here. `sendRichMessageDraft` and
+`stopped_message_generation` both need `threadId` wired through exactly like every other outbound
+call in this codebase, via `resolveThreadId`/`threadIdParam`. If you're pasting this file as a
+prompt, read PR #107 first.
+
 ### The Stop button's update
 
 ```

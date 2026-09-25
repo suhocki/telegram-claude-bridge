@@ -1528,7 +1528,7 @@ async function fetchFishVoicesPage(pageNumber) {
 }
 
 // Private-chat counterpart to createPlaceholderController below, for the same root placeholder role only (never for subagents).
-function createDraftPlaceholderController(chatId, draftId, threadId, initialStatus, sharedGate, onFallback) {
+function createDraftPlaceholderController(chatId, draftId, threadId = null, initialStatus, sharedGate, onFallback) {
   const tracker = createProgressTracker(initialStatus, {
     // the explicit undefined skips renderDraftMarkdown's 3rd positional param (limit) to reach its default, since fullTexts is the 4th.
     renderTranscript: (historyLines, liveText, fullTexts) => renderDraftMarkdown(historyLines, liveText, undefined, fullTexts),
@@ -2719,10 +2719,16 @@ async function poll() {
         } else if (u.callback_query) {
           handleCallbackQuery(u.callback_query).catch(e => log('callback query handling rejected', e))
         } else if (u.stopped_message_generation) {
-          // native Stop button on a streamed draft — same cancel path the classic inline Cancel button uses
+          // native Stop button on a streamed draft: scans by chatId+draftId (unique per chat) rather than Map.get on a reconstructed key.
           const parsed = parseStoppedMessageGeneration(u.stopped_message_generation)
-          const run = parsed && activeRuns.get(parsed.key)
-          if (run && !run.finished && run.draftId === parsed.draftId) run.cancel()
+          if (parsed) {
+            for (const [key, run] of activeRuns) {
+              if (!run.finished && run.draftId === parsed.draftId && parseThreadKey(key).chatId === parsed.chatId) {
+                run.cancel()
+                break
+              }
+            }
+          }
         }
       }
     } catch (e) {

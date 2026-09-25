@@ -493,13 +493,11 @@ export function buildSendRichMessageDraftCall(chatId, draftId, markdownText, thr
   }
 }
 
-// Mirrors parseCallbackData's split: only parses the update, the caller does the activeRuns lookup and cancel decision.
+// Returns chatId+draftId, not a reconstructed thread key: unlike a real Message, MessageGenerationStopped has no is_topic_message to key off safely.
 export function parseStoppedMessageGeneration(update) {
   const chatId = update?.chat?.id
   if (chatId == null || update?.draft_id == null) return null
-  // MessageGenerationStopped has no is_topic_message to disambiguate like a real Message does, but drafts only exist in private chats, so a present message_thread_id is unambiguous on its own.
-  const threadId = update.message_thread_id
-  return { key: threadId != null ? `${chatId}:${threadId}` : String(chatId), draftId: update.draft_id }
+  return { chatId: String(chatId), draftId: update.draft_id }
 }
 
 export const MAX_PERSISTED_FULL_TEXT_CHARS = 4000
