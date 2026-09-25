@@ -1528,7 +1528,7 @@ async function fetchFishVoicesPage(pageNumber) {
 }
 
 // Private-chat counterpart to createPlaceholderController below, for the same root placeholder role only (never for subagents).
-function createDraftPlaceholderController(chatId, draftId, threadId = null, initialStatus, sharedGate, onFallback) {
+function createDraftPlaceholderController(chatId, draftId, threadId, initialStatus, sharedGate, onFallback) {
   const tracker = createProgressTracker(initialStatus, {
     // the explicit undefined skips renderDraftMarkdown's 3rd positional param (limit) to reach its default, since fullTexts is the 4th.
     renderTranscript: (historyLines, liveText, fullTexts) => renderDraftMarkdown(historyLines, liveText, undefined, fullTexts),
