@@ -159,9 +159,8 @@ export function createProgressTracker(
   } = {}
 ) {
   const seenToolIds = new Set()
-  const checkpointLines = []
-  // Parallel to checkpointLines; never seeded from initialCheckpointLines, so a resumed turn's checkpoints have no expandable full text.
-  const checkpointFullTexts = []
+  // { line, full } — one array, not two kept in lockstep, so nothing can misalign which full text belongs to which line.
+  const checkpoints = []
   let ephemeral = []
   let liveText = ''
   let liveKind = null // 'thinking' | 'text' | null
@@ -170,7 +169,7 @@ export function createProgressTracker(
   let snapshotCache = { text: status, html: statusIsHtml }
 
   for (const line of initialCheckpointLines) pushCheckpoint(line)
-  if (checkpointLines.length) commit()
+  if (checkpoints.length) commit()
 
   function pushBounded(array, maxLen, item) {
     if (array.length >= maxLen) array.shift()
@@ -181,9 +180,9 @@ export function createProgressTracker(
     pushBounded(ephemeral, maxEphemeralLines, entry)
   }
 
+  // full stays null for a line seeded from initialCheckpointLines (a resumed turn) — there is no expandable text left to seed it with.
   function pushCheckpoint(line, full = null) {
-    pushBounded(checkpointLines, maxCheckpointLines, line)
-    pushBounded(checkpointFullTexts, maxCheckpointLines, full)
+    pushBounded(checkpoints, maxCheckpointLines, { line, full })
   }
 
   function freezeLive() {
@@ -206,12 +205,12 @@ export function createProgressTracker(
   }
 
   function historyLines() {
-    return [...checkpointLines, ...ephemeral.map(renderEphemeral)]
+    return [...checkpoints.map(c => c.line), ...ephemeral.map(renderEphemeral)]
   }
 
   // Index-aligned with historyLines(): the full untruncated text behind a thinking/said line, or null where there is none.
   function historyFullTexts() {
-    return [...checkpointFullTexts, ...ephemeral.map(ephemeralFullText)]
+    return [...checkpoints.map(c => c.full), ...ephemeral.map(ephemeralFullText)]
   }
 
   function defaultRender() {
@@ -287,7 +286,7 @@ export function createProgressTracker(
   // freezes any trailing live text first, so a tracker snapshotted right before being discarded doesn't lose whatever was mid-stream
   function historySnapshot() {
     freezeLive()
-    return [...checkpointLines]
+    return checkpoints.map(c => c.line)
   }
 
   return { ingest, current, snapshot, historySnapshot }

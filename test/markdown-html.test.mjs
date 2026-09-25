@@ -518,6 +518,20 @@ test('regression: a summary line with an embedded newline (e.g. a multi-line too
   assert.ok(result.includes('line one line two'))
 })
 
+test('regression: a line ending in a literal backtick gets a padding space, so it cannot fuse with the closing delimiter into a longer, mismatched run', () => {
+  const line = '🤔 open the file`'
+  const result = renderDraftMarkdown([line], '', 30000)
+  assert.equal(result, `<details><summary>🔧 1 step</summary>\n\n\`\` ${line} \`\`\n\n</details>`)
+  assert.ok(!result.includes('file````'), 'the trailing backtick must not fuse with the closing delimiter into one longer run')
+})
+
+test('regression: a line starting with a literal backtick also gets a padding space on both sides', () => {
+  const line = '`ls -la'
+  const result = renderDraftMarkdown([line], '', 30000)
+  const opening = result.match(/^<details><summary>🔧 1 step<\/summary>\n\n(`+)/)[1]
+  assert.ok(result.includes(`${opening} ${line} ${opening}`))
+})
+
 test('regression: a literal "</details>" inside the model\'s own full text cannot close the wrapper tag early', () => {
   const result = renderDraftMarkdown(['🤔 discussing html…'], '', 30000, ['as in </details><b>injected</b>, see?'])
   assert.equal(result.match(/<\/details>/g).length, 2, 'exactly the inner and outer closing tags — the literal one in the text must not count as a third')

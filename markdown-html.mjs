@@ -438,7 +438,9 @@ function wrapSafeInline(line) {
   const runs = singleLine.match(/`+/g)
   const longest = runs ? runs.reduce((max, r) => Math.max(max, r.length), 0) : 0
   const tick = '`'.repeat(longest + 1)
-  return `${tick}${singleLine}${tick}`
+  // a boundary backtick would otherwise fuse with the delimiter into a longer, mismatched closing run — CommonMark's own fix is a padding space.
+  const pad = singleLine.startsWith('`') || singleLine.endsWith('`') ? ' ' : ''
+  return `${tick}${pad}${singleLine}${pad}${tick}`
 }
 
 // The summary is always inline-wrapped, even with a full body: it's a hard 80-char cut of arbitrary model output that can land mid-token (e.g. an unclosed **), which escapeHtml alone wouldn't neutralize.
@@ -447,7 +449,9 @@ function renderHistoryEntry(line, full) {
 }
 
 export function renderDraftMarkdown(historyLines, liveText, limit = 30000, fullTexts = []) {
-  const entries = (historyLines ?? []).map((line, i) => (line ? { line, full: fullTexts[i] || null } : null)).filter(Boolean)
+  // paired by index first (fullTexts isn't filtered the same way historyLines is about to be), then falsy lines dropped.
+  const paired = (historyLines ?? []).map((line, i) => ({ line, full: fullTexts[i] || null }))
+  const entries = paired.filter(entry => entry.line)
   const live = String(liveText ?? '').trim()
   if (!entries.length) return (live && tailPlainTextLines(live, limit)) || null
 
@@ -462,15 +466,16 @@ export function renderDraftMarkdown(historyLines, liveText, limit = 30000, fullT
   const liveSuffix = cappedLive ? `\n\n${cappedLive}` : ''
   const bodyBudget = emptyBudget - liveSuffix.length
 
-  // whole entries drop from the front (oldest first) rather than truncating mid-entry, which could otherwise cut an entry's own <details> tag in half.
-  let kept = entries
-  let body = kept.map(e => renderHistoryEntry(e.line, e.full)).join('\n')
-  while (kept.length > 1 && body.length > bodyBudget) {
-    kept = kept.slice(1)
-    body = kept.map(e => renderHistoryEntry(e.line, e.full)).join('\n')
+  // rendered once per entry, not re-rendered on every drop below — whole entries drop from the front (oldest first) rather than truncating mid-entry, which could otherwise cut an entry's own <details> tag in half.
+  const rendered = entries.map(e => renderHistoryEntry(e.line, e.full))
+  let start = 0
+  let body = rendered.join('\n')
+  while (start < rendered.length - 1 && body.length > bodyBudget) {
+    start++
+    body = rendered.slice(start).join('\n')
   }
   // last resort: even the single most recent entry's own expandable body doesn't fit — show its short line without the expansion instead of nothing.
-  if (body.length > bodyBudget) body = renderHistoryEntry(kept[0].line, null)
+  if (body.length > bodyBudget) body = renderHistoryEntry(entries[start].line, null)
   return body.length <= bodyBudget ? wrap(body, liveSuffix) : wrap('', liveSuffix)
 }
 
