@@ -107,7 +107,7 @@ import {
   setVoiceReplyPreference,
   isVoiceReplyEnabled,
   buildVoiceToggleReply,
-  buildSpeechText,
+  resolveSpeechText,
   truncateForSpeech,
   resolveVoiceReplyConfig,
   buildVoiceReplyRequestOptions,
@@ -177,7 +177,7 @@ import {
 } from './jobs.mjs'
 import { loadGlobalAuthMode, saveGlobalAuthMode, seedGlobalAuthModeIfMissing, collectLegacyAuthModeValues } from './auth-mode.mjs'
 import { loadGlobalFishVoice, saveGlobalFishVoice } from './fish-voice.mjs'
-import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml, stripRenderedTableGridsForSpeech, richMessageToSpeechText } from './markdown-html.mjs'
+import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderTranscriptHtml } from './markdown-html.mjs'
 import {
   DEFAULT_WORKING_STATUS,
   createLineSplitter,
@@ -1448,13 +1448,8 @@ function supportsFishProsodyTags(voiceReplyConfig) {
 }
 
 async function sendVoiceReply(chatId, text, replyToMessageId, threadId, { alreadyPlain = false, richMessage = null } = {}) {
-  // alreadyPlain: the Listen button passes Telegram's own already-rendered message content, which must skip the markdown pass buildSpeechText applies for raw model output
   // Annotated after truncateForSpeech (below), not before: truncating an already-tagged string risks slicing a tag in half and reading a stray literal "[" aloud.
-  const plainSource = richMessage ? richMessageToSpeechText(richMessage) : stripRenderedTableGridsForSpeech(String(text ?? '').trim())
-  let speechText = truncateForSpeech(
-    alreadyPlain ? plainSource : buildSpeechText(text),
-    voiceReplyConfig.maxTtsChars,
-  )
+  let speechText = truncateForSpeech(resolveSpeechText(text, richMessage, alreadyPlain), voiceReplyConfig.maxTtsChars)
   if (!speechText) return { ok: false, messageIds: [], error: 'nothing to say' }
   if (supportsFishProsodyTags(voiceReplyConfig)) {
     const annotated = await annotateProsody(speechText, currentAuthMode())

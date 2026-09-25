@@ -456,9 +456,7 @@ test('stripRenderedTableGridsForSpeech: text with no table grid is left unchange
   assert.equal(stripRenderedTableGridsForSpeech('no table here at all'), 'no table here at all')
 })
 
-// Shapes below are captured verbatim from a real sendRichMessage response (Bot API 10.1) — a
-// message sent that way has no `text` field at all, only `rich_message.blocks`, which broke the
-// Listen button's `alreadyPlain` path (it read `message.text` and got "nothing to say").
+// Shapes below (except heading/expandable_blockquote/custom_emoji) are captured verbatim from a real sendRichMessage response (Bot API 10.1).
 test('richMessageToSpeechText: a table block becomes the same short spoken placeholder regardless of cell content', () => {
   const richMessage = {
     blocks: [
@@ -521,6 +519,28 @@ test('richMessageToSpeechText: a link RichText (object with url + nested text) r
 test('richMessageToSpeechText: multiple blocks join with a blank line between them', () => {
   const richMessage = { blocks: [{ type: 'paragraph', text: 'first' }, { type: 'paragraph', text: 'second' }] }
   assert.equal(richMessageToSpeechText(richMessage), 'first\n\nsecond')
+})
+
+test('richMessageToSpeechText: a heading block reads its text', () => {
+  assert.equal(richMessageToSpeechText({ blocks: [{ type: 'heading', text: 'Section title', size: 2 }] }), 'Section title')
+})
+
+test('richMessageToSpeechText: an expandable_blockquote (collapsed-by-default quote) reads its text field, not a nested blocks array', () => {
+  assert.equal(richMessageToSpeechText({ blocks: [{ type: 'expandable_blockquote', text: 'collapsed quote' }] }), 'collapsed quote')
+})
+
+test('richMessageToSpeechText: a details block reads its always-visible summary plus its nested blocks', () => {
+  const richMessage = { blocks: [{ type: 'details', summary: 'Tool output', blocks: [{ type: 'paragraph', text: 'full log line' }] }] }
+  assert.equal(richMessageToSpeechText(richMessage), 'Tool output\nfull log line')
+})
+
+test('richMessageToSpeechText: a custom_emoji RichText node (no `text` field) falls back to its alternative_text', () => {
+  const richMessage = { blocks: [{ type: 'paragraph', text: { type: 'custom_emoji', custom_emoji_id: '123', alternative_text: '🔥' } }] }
+  assert.equal(richMessageToSpeechText(richMessage), '🔥')
+})
+
+test('richMessageToSpeechText: a mathematical_expression block reads its LaTeX source (stored under expression, not text)', () => {
+  assert.equal(richMessageToSpeechText({ blocks: [{ type: 'mathematical_expression', expression: 'E = mc^2' }] }), 'E = mc^2')
 })
 
 test('richMessageToSpeechText: no blocks (or no rich_message at all) yields an empty string', () => {

@@ -105,6 +105,7 @@ import {
   isVoiceReplyEnabled,
   buildVoiceToggleReply,
   buildSpeechText,
+  resolveSpeechText,
   truncateForSpeech,
   isGroupChatType,
   resolveGroupPolicy,
@@ -2288,6 +2289,23 @@ test('buildSpeechText: unescapes HTML entities produced by the markdown pass', (
 test('buildSpeechText: null/undefined becomes an empty string', () => {
   assert.equal(buildSpeechText(undefined), '')
   assert.equal(buildSpeechText(null), '')
+})
+
+test('resolveSpeechText: richMessage present wins regardless of alreadyPlain, since a rich-sent message has no text field at all', () => {
+  const richMessage = { blocks: [{ type: 'paragraph', text: 'from rich blocks' }] }
+  assert.equal(resolveSpeechText('ignored raw text', richMessage, true), 'from rich blocks')
+  assert.equal(resolveSpeechText('ignored raw text', richMessage, false), 'from rich blocks')
+})
+
+test('resolveSpeechText: no richMessage, alreadyPlain true reads Telegram\'s own already-rendered text (stripping a rendered table grid)', () => {
+  assert.equal(
+    resolveSpeechText('Name  | Age\n------+----\nAlice | 30 ', null, true),
+    'table data',
+  )
+})
+
+test('resolveSpeechText: no richMessage, alreadyPlain false runs the raw-markdown speech pipeline', () => {
+  assert.equal(resolveSpeechText('**hello** `code`', null, false), 'hello code')
 })
 
 test('buildSpeechText: a markdown table becomes a short spoken placeholder instead of raw pipes/dashes', () => {

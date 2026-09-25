@@ -3,7 +3,14 @@
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { writeFileSync, renameSync } from 'node:fs'
-import { markdownToTelegramHtml, htmlToPlainFallback, escapeHtml, stripMarkdownTablesForSpeech } from './markdown-html.mjs'
+import {
+  markdownToTelegramHtml,
+  htmlToPlainFallback,
+  escapeHtml,
+  stripMarkdownTablesForSpeech,
+  stripRenderedTableGridsForSpeech,
+  richMessageToSpeechText,
+} from './markdown-html.mjs'
 import { truncateStatus } from './stream-progress.mjs'
 
 // pid-suffixed so two processes writing the same path (e.g. auth-mode.json, shared across every bot) never share one tmp file.
@@ -873,6 +880,13 @@ export function buildVoiceToggleReply(enabled) {
 
 export function buildSpeechText(text) {
   return htmlToPlainFallback(markdownToTelegramHtml(stripMarkdownTablesForSpeech(text ?? ''))).trim()
+}
+
+// richMessage presence alone decides the source (not the alreadyPlain flag), since a message sent via sendRichMessage has no `text` field at all.
+export function resolveSpeechText(text, richMessage, alreadyPlain) {
+  if (richMessage) return richMessageToSpeechText(richMessage)
+  if (alreadyPlain) return stripRenderedTableGridsForSpeech(String(text ?? '').trim())
+  return buildSpeechText(text)
 }
 
 export function truncateForSpeech(text, maxChars) {
