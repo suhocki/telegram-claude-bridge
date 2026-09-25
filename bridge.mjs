@@ -1528,7 +1528,7 @@ async function fetchFishVoicesPage(pageNumber) {
 }
 
 // Private-chat counterpart to createPlaceholderController below, for the same root placeholder role only (never for subagents).
-function createDraftPlaceholderController(chatId, draftId, initialStatus, sharedGate, onFallback) {
+function createDraftPlaceholderController(chatId, draftId, threadId, initialStatus, sharedGate, onFallback) {
   const tracker = createProgressTracker(initialStatus, {
     // the explicit undefined skips renderDraftMarkdown's 3rd positional param (limit) to reach its default, since fullTexts is the 4th.
     renderTranscript: (historyLines, liveText, fullTexts) => renderDraftMarkdown(historyLines, liveText, undefined, fullTexts),
@@ -1546,7 +1546,7 @@ function createDraftPlaceholderController(chatId, draftId, initialStatus, shared
     }
     sending = true
     try {
-      const { method, params } = buildSendRichMessageDraftCall(chatId, draftId, text)
+      const { method, params } = buildSendRichMessageDraftCall(chatId, draftId, text, threadId)
       await tg(method, params)
       sending = false
       if (resendPending) {
@@ -1772,7 +1772,7 @@ async function runClaudeTurn(
     }
   }
   rootController = usingDraftStreaming
-    ? createDraftPlaceholderController(chatId, run.draftId, workingStatus, chatRateGate, fallbackToClassicPlaceholder)
+    ? createDraftPlaceholderController(chatId, run.draftId, threadId, workingStatus, chatRateGate, fallbackToClassicPlaceholder)
     : createPlaceholderController(chatId, currentPlaceholderId, chatRateGate, cancelKeyboard, workingStatus, checkpointHistory)
   run.setKeyboard = kb => rootController.setKeyboard(kb)
   // sent only now that rootController is assigned — fallbackToClassicPlaceholder (if this fails) must never run before that assignment exists.

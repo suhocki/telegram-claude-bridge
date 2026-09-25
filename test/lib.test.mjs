@@ -1153,8 +1153,27 @@ test('buildSendRichMessageDraftCall: builds a sendRichMessageDraft call with can
   })
 })
 
+test('buildSendRichMessageDraftCall: attaches message_thread_id when the draft is running inside a chat topic', () => {
+  const call = buildSendRichMessageDraftCall('123', 7, '⏳ working…', 55)
+  assert.deepEqual(call.params, {
+    chat_id: '123',
+    draft_id: 7,
+    rich_message: { markdown: '⏳ working…' },
+    can_stop: true,
+    keep_on_stop: true,
+    message_thread_id: 55,
+  })
+})
+
 test('parseStoppedMessageGeneration: extracts the activeRuns-style key and draft_id', () => {
   assert.deepEqual(parseStoppedMessageGeneration({ chat: { id: 123 }, draft_id: 7 }), { key: '123', draftId: 7 })
+})
+
+test('parseStoppedMessageGeneration: threads the key when message_thread_id is present, so a topic-scoped run is actually found', () => {
+  assert.deepEqual(parseStoppedMessageGeneration({ chat: { id: 123 }, draft_id: 7, message_thread_id: 55 }), {
+    key: '123:55',
+    draftId: 7,
+  })
 })
 
 test('parseStoppedMessageGeneration: returns null when chat or draft_id is missing', () => {
