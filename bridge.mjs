@@ -1533,9 +1533,8 @@ function createDraftPlaceholderController(chatId, draftId, initialStatus, shared
 
   async function editPlaceholder({ text }) {
     if (fellBack) return
-    const markdown = text ?? initialStatus
     try {
-      const { method, params } = buildSendRichMessageDraftCall(chatId, draftId, markdown)
+      const { method, params } = buildSendRichMessageDraftCall(chatId, draftId, text)
       await tg(method, params)
     } catch (e) {
       if (fellBack) return
@@ -1728,6 +1727,11 @@ async function runClaudeTurn(
     const liveCancelKeyboard = buildCancelKeyboard(chatId, run.pending.length)
     try {
       const placeholder = await tg('sendMessage', buildWorkingPlaceholderParams(chatId, workingStatus, originMessageId, liveCancelKeyboard, threadId))
+      if (turnSettled) {
+        // the turn already concluded via the other path while this sendMessage was in flight — this placeholder is now orphaned, not useful.
+        await tg('deleteMessage', { chat_id: chatId, message_id: placeholder.message_id }).catch(() => {})
+        return
+      }
       currentPlaceholderId = placeholder.message_id
       run.placeholderId = currentPlaceholderId
       botMessageIds.push(currentPlaceholderId)
