@@ -30,9 +30,13 @@ function wrapBlockquotes(text) {
   return out.join('\n')
 }
 
-// Telegram's HTML parse mode has no <table> tag, so a GFM pipe table is rendered as a
-// fixed-width monospace grid inside <pre> instead — the closest thing to "a table" it can show.
-const TABLE_SEP_LINE_RE = /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/
+// Telegram's HTML mode has no <table> tag, so a GFM pipe table renders as a monospace <pre> grid.
+const TABLE_CELL_SEP_RE = /^:?-+:?$/
+
+function fenceLangOf(line) {
+  const m = line.match(/^```([a-zA-Z0-9_+-]*)\s*$/)
+  return m ? m[1] : null
+}
 
 function splitTableRow(line) {
   let s = line.trim()
@@ -57,41 +61,86 @@ function splitTableRow(line) {
   return cells
 }
 
+// Counts code points rather than UTF-16 units, so an astral-plane emoji in a cell (a surrogate
+// pair) doesn't throw off column padding by counting as two characters wide.
+function visualWidth(s) {
+  return [...s].length
+}
+
+function padCell(s, width) {
+  const pad = width - visualWidth(s)
+  return pad > 0 ? s + ' '.repeat(pad) : s
+}
+
 function renderTableBlock(headerLine, rowLines) {
   const header = splitTableRow(headerLine)
   const rows = rowLines.map(splitTableRow)
   const colCount = header.length
-  const widths = header.map(c => c.length)
+  const widths = header.map(c => visualWidth(c))
   for (const row of rows) {
-    for (let c = 0; c < colCount; c++) widths[c] = Math.max(widths[c], (row[c] ?? '').length)
+    for (let c = 0; c < colCount; c++) widths[c] = Math.max(widths[c], visualWidth(row[c] ?? ''))
   }
-  const padRow = row => row.map((c, i) => (c ?? '').padEnd(widths[i])).join(' | ')
+  const padRow = row => row.map((c, i) => padCell(c ?? '', widths[i])).join(' | ')
   const sep = widths.map(w => '-'.repeat(w)).join('-+-')
   const lines = [padRow(header), sep, ...rows.map(padRow)]
   return `<pre>${escapeHtml(lines.join('\n'))}</pre>`
 }
 
-// Scans line-by-line for `| header |` immediately followed by a `|---|---|` separator, then
-// greedily consumes further pipe-bearing lines as rows until a blank/non-table line ends it.
+function isTableSeparatorRow(sepLine, expectedCols) {
+  if (!sepLine.includes('-')) return false
+  const cells = splitTableRow(sepLine)
+  return cells.length === expectedCols && cells.every(c => TABLE_CELL_SEP_RE.test(c))
+}
+
+// Detects `| header |` immediately followed by a matching `|---|---|` separator (same column
+// count, dash-only cells — so a stray "text with a | in it" followed by an unrelated "---"
+// divider isn't misread as a table), then consumes further pipe-bearing lines as rows.
+function detectTableAt(lines, i) {
+  const headerLine = lines[i]
+  const sepLine = lines[i + 1]
+  if (!headerLine?.includes('|') || sepLine === undefined) return null
+  const headerCells = splitTableRow(headerLine)
+  if (!isTableSeparatorRow(sepLine, headerCells.length)) return null
+  const rowLines = []
+  let j = i + 2
+  while (j < lines.length && lines[j].trim() !== '' && lines[j].includes('|')) {
+    rowLines.push(lines[j])
+    j++
+  }
+  return { headerLine, sepLine, rowLines, next: j }
+}
+
 function replaceMarkdownTables(text, stashHtml) {
   const lines = text.split('\n')
   const out = []
   let i = 0
   while (i < lines.length) {
-    const header = lines[i]
-    const sep = lines[i + 1]
-    if (header?.includes('|') && sep !== undefined && TABLE_SEP_LINE_RE.test(sep) && sep.includes('-')) {
-      const rowLines = []
-      let j = i + 2
-      while (j < lines.length && lines[j].trim() !== '' && lines[j].includes('|')) {
-        rowLines.push(lines[j])
-        j++
-      }
-      out.push(stashHtml(renderTableBlock(header, rowLines)))
-      i = j
+    const table = detectTableAt(lines, i)
+    if (table) {
+      out.push(stashHtml(renderTableBlock(table.headerLine, table.rowLines)))
+      i = table.next
       continue
     }
-    out.push(header)
+    out.push(lines[i])
+    i++
+  }
+  return out.join('\n')
+}
+
+// A markdown table read aloud verbatim (padded pipes/dashes) is noise, so speech rendering
+// swaps each table block for a short spoken placeholder instead.
+export function stripMarkdownTablesForSpeech(text) {
+  const lines = String(text ?? '').split('\n')
+  const out = []
+  let i = 0
+  while (i < lines.length) {
+    const table = detectTableAt(lines, i)
+    if (table) {
+      out.push('[table]')
+      i = table.next
+      continue
+    }
+    out.push(lines[i])
     i++
   }
   return out.join('\n')
@@ -134,14 +183,38 @@ export function markdownToTelegramHtml(text) {
   return work
 }
 
+// Groups a table's header/separator/row lines into one queue entry so the chunker below
+// never splits mid-table the way it already avoids splitting mid-fence for code blocks.
+function toLogicalLines(lines) {
+  const out = []
+  let insideFence = false
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    if (fenceLangOf(line) !== null) {
+      insideFence = !insideFence
+      out.push(line)
+      i++
+      continue
+    }
+    if (!insideFence) {
+      const table = detectTableAt(lines, i)
+      if (table) {
+        out.push([table.headerLine, table.sepLine, ...table.rowLines].join('\n'))
+        i = table.next
+        continue
+      }
+    }
+    out.push(line)
+    i++
+  }
+  return out
+}
+
 export function markdownToTelegramHtmlChunks(text, limit = 4096) {
   const src = String(text ?? '')
   if (!src) return []
 
-  const fenceLangOf = line => {
-    const m = line.match(/^```([a-zA-Z0-9_+-]*)\s*$/)
-    return m ? m[1] : null
-  }
   const render = (lns, openLang) =>
     markdownToTelegramHtml(openLang !== null ? [...lns, '```'].join('\n') : lns.join('\n'))
   const renderAlone = (piece, lang) => (lang !== null ? render([`\`\`\`${lang}`, piece], lang) : render([piece], null))
@@ -162,7 +235,7 @@ export function markdownToTelegramHtmlChunks(text, limit = 4096) {
 
   const isEmptyFenceBuffer = lns => lns.length > 0 && lns.every(l => fenceLangOf(l) !== null)
 
-  const queue = src.split('\n')
+  const queue = toLogicalLines(src.split('\n'))
   const chunks = []
   let bufLines = []
   let fenceLang = null

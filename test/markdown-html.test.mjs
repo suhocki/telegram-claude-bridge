@@ -119,6 +119,17 @@ test('markdownToTelegramHtml: a short row of dashes with no preceding pipe line 
   assert.equal(markdownToTelegramHtml('above\n---\nbelow'), 'above\n---\nbelow')
 })
 
+test('markdownToTelegramHtml: prose containing a literal "|" followed by an unrelated "---" divider is not misread as a table', () => {
+  assert.equal(
+    markdownToTelegramHtml('Use a pipe (|) between commands\n---\nThis section explains further.'),
+    'Use a pipe (|) between commands\n---\nThis section explains further.',
+  )
+})
+
+test('markdownToTelegramHtml: a separator whose column count does not match the header is not a table', () => {
+  assert.equal(markdownToTelegramHtml('| A | B |\n|---|\nnext'), '| A | B |\n|---|\nnext')
+})
+
 test('markdownToTelegramHtml: markdown syntax inside table cells is not converted (rendered as literal text)', () => {
   assert.equal(
     markdownToTelegramHtml('| Col |\n|-----|\n| **bold** `code` |'),
@@ -130,6 +141,13 @@ test('markdownToTelegramHtml: a table followed by more text keeps both', () => {
   assert.equal(
     markdownToTelegramHtml('| A |\n|---|\n| 1 |\nafter'),
     '<pre>A\n-\n1</pre>\nafter',
+  )
+})
+
+test('markdownToTelegramHtml: an astral-plane emoji (surrogate pair) in a cell counts as one character wide for alignment', () => {
+  assert.equal(
+    markdownToTelegramHtml('| Status | Task |\n|--------|------|\n| 😀 | build |\n| ok | deploy |'),
+    '<pre>Status | Task  \n-------+-------\n😀      | build \nok     | deploy</pre>',
   )
 })
 
@@ -194,6 +212,26 @@ test('markdownToTelegramHtmlChunks: reassembling the code content across chunks 
   const chunks = markdownToTelegramHtmlChunks(md, 500)
   const combined = chunks.join('')
   for (let i = 0; i < 300; i++) assert.ok(combined.includes(`const line${i} = ${i};`), `missing line${i}`)
+})
+
+test('markdownToTelegramHtmlChunks: a table is kept as one atomic block instead of being split mid-row across chunks', () => {
+  const filler = 'x'.repeat(150)
+  const rows = Array.from({ length: 5 }, (_, i) => `| Item ${i} | value-${i} |`).join('\n')
+  const md = `${filler}\n\n| Name | Value |\n|------|-------|\n${rows}`
+  const chunks = markdownToTelegramHtmlChunks(md, 200)
+  assert.ok(chunks.length > 1)
+  for (const c of chunks) assert.ok(c.length <= 200)
+  const tableChunk = chunks.find(c => c.includes('<pre>'))
+  assert.ok(tableChunk, 'no chunk contains the rendered table')
+  for (let i = 0; i < 5; i++) assert.ok(tableChunk.includes(`Item ${i}`), `row ${i} missing from the table chunk`)
+  const preOpens = (tableChunk.match(/<pre>/g) || []).length
+  const preCloses = (tableChunk.match(/<\/pre>/g) || []).length
+  assert.equal(preOpens, preCloses, `unbalanced <pre> in table chunk: ${tableChunk}`)
+})
+
+test('markdownToTelegramHtmlChunks: a table inside a fenced code block is left as literal code, not parsed as a real table', () => {
+  const md = '```\n| a | b |\n|---|---|\n| 1 | 2 |\n```'
+  assert.equal(markdownToTelegramHtmlChunks(md, 4096)[0], markdownToTelegramHtml(md))
 })
 
 test('markdownToTelegramHtmlChunks: content split at a plain-text boundary matches chunk-then-render behavior', () => {
