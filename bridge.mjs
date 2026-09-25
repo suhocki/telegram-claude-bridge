@@ -1524,50 +1524,60 @@ async function fetchFishVoicesPage(pageNumber) {
   }
 }
 
-// Private-chat counterpart to createPlaceholderController below: same progress tracker, but each tick
-// streams a sendRichMessageDraft instead of editing a real message (there is none — see runClaudeTurn's
-// skip of the classic placeholder send for private chats). onFallback is called at most once, the first
-// time a draft call fails, so the caller can create a real placeholder and take over from there.
-function createDraftPlaceholderController(chatId, draftId, initialStatus, onFallback) {
+// Private-chat counterpart to createPlaceholderController below, for the same root placeholder role only (never for subagents).
+function createDraftPlaceholderController(chatId, draftId, initialStatus, sharedGate, onFallback) {
   const tracker = createProgressTracker(initialStatus, {
     renderTranscript: (historyLines, liveText) => renderDraftMarkdown(historyLines, liveText),
   })
+  let alive = true
   let fellBack = false
 
   async function editPlaceholder({ text }) {
-    if (fellBack) return
+    if (!alive || fellBack) return
     const markdown = text ?? initialStatus
     try {
       const { method, params } = buildSendRichMessageDraftCall(chatId, draftId, markdown)
       await tg(method, params)
     } catch (e) {
-      if (fellBack) return
+      if (!alive || fellBack) return
+      if (/message is not modified/i.test(e.message)) return
+      const retryAfterMatch = e.message.match(/retry after (\d+)/i)
+      if (retryAfterMatch) {
+        sharedGate.pauseFor(Number(retryAfterMatch[1]) * 1000)
+        log('sendRichMessageDraft rate-limited, pausing streaming updates', e.message)
+        return
+      }
       fellBack = true
       log('sendRichMessageDraft failed, falling back to a classic placeholder', e.message)
-      statusUpdater.stop()
-      await onFallback(markdown)
+      stop()
+      await onFallback()
     }
   }
 
-  const statusUpdater = createStatusUpdater({
-    getStatus: () => tracker.snapshot(),
-    onUpdate: latestStatus => editPlaceholder(latestStatus),
-    initialStatus: tracker.snapshot(),
-    intervalMs: STREAM_EDIT_INTERVAL_MS,
-  })
+  // Unlike a real message, a draft self-expires ~30s after its last refresh, so this must resend on every tick regardless of content change.
+  const timer = setInterval(() => {
+    if (alive && !sharedGate.isPaused()) editPlaceholder(tracker.snapshot())
+  }, STREAM_EDIT_INTERVAL_MS)
 
-  // Eager first draft: createStatusUpdater only calls onUpdate on a *change*, but unlike the classic
-  // placeholder (sent immediately by its own caller), nothing has been sent yet at all.
-  editPlaceholder(tracker.snapshot()).catch(() => {})
+  function stop() {
+    if (!alive) return
+    alive = false
+    clearInterval(timer)
+  }
 
   return {
     tracker,
     editPlaceholder,
-    statusUpdater,
+    statusUpdater: {
+      stop,
+      get alive() {
+        return alive
+      },
+    },
     ingest(event) {
       tracker.ingest(event)
     },
-    setKeyboard() {}, // sendRichMessageDraft has no reply_markup slot — the native Stop button is the only control
+    setKeyboard() {}, // sendRichMessageDraft has no reply_markup slot
   }
 }
 
@@ -1697,9 +1707,9 @@ async function runClaudeTurn(
     isResume = false,
     checkpointHistory = [],
     turnMeta = {},
-    usingDraftStreaming = false,
   }
 ) {
+  const usingDraftStreaming = run.draftId != null
   const cancelKeyboard = buildCancelKeyboard(chatId, run.pending.length)
   let currentPlaceholderId = run.placeholderId
   if (currentPlaceholderId != null && isResume) {
@@ -1707,41 +1717,34 @@ async function runClaudeTurn(
     await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: currentPlaceholderId, reply_markup: cancelKeyboard }).catch(() => {})
   }
 
-  // shared by root + every subagent placeholder below, so a 429 on any one of them
-  // backs off every concurrent edit loop writing to this same chat
+  // shared by root + every subagent placeholder below, so a 429 on any one of them backs off every concurrent edit loop writing to this chat
   const chatRateGate = createChatRateGate()
+  // guards fallbackToClassicPlaceholder against firing after this turn's own cleanup already ran (a late, in-flight draft tick failing post-turn)
+  let turnSettled = false
 
+  // optional-chained defensively: rootController is always assigned before this can run today, but it's a handed-off callback.
   let rootController
-  // Runs at most once, the first time sendRichMessageDraft fails: creates the real classic placeholder
-  // this run never sent, seeds a normal controller from the draft tracker's history, and hands off —
-  // every later reference to rootController (routeEvent, run.setKeyboard, the end-of-turn cleanup below)
-  // reads the `let` fresh each time, so reassigning it here is all the handoff needs.
-  async function fallbackToClassicPlaceholder(currentMarkdown) {
-    rootController.statusUpdater.stop()
+  async function fallbackToClassicPlaceholder() {
+    if (turnSettled) return
+    rootController?.statusUpdater.stop()
+    const seededHistory = rootController?.tracker.historySnapshot() ?? []
     try {
-      const placeholder = await tg(
-        'sendMessage',
-        buildWorkingPlaceholderParams(chatId, currentMarkdown || workingStatus, originMessageId, cancelKeyboard, threadId)
-      )
+      const placeholder = await tg('sendMessage', buildWorkingPlaceholderParams(chatId, workingStatus, originMessageId, cancelKeyboard, threadId))
       currentPlaceholderId = placeholder.message_id
       run.placeholderId = currentPlaceholderId
       botMessageIds.push(currentPlaceholderId)
-      rootController = createPlaceholderController(
-        chatId,
-        currentPlaceholderId,
-        chatRateGate,
-        cancelKeyboard,
-        currentMarkdown || workingStatus,
-        rootController.tracker.historySnapshot()
-      )
+      rootController = createPlaceholderController(chatId, currentPlaceholderId, chatRateGate, cancelKeyboard, workingStatus, seededHistory)
+      if (seededHistory.length) await rootController.editPlaceholder(rootController.tracker.snapshot())
     } catch (e) {
       log('failed to create fallback placeholder after sendRichMessageDraft failure', e.message)
     }
   }
   rootController = usingDraftStreaming
-    ? createDraftPlaceholderController(chatId, run.draftId, workingStatus, fallbackToClassicPlaceholder)
+    ? createDraftPlaceholderController(chatId, run.draftId, workingStatus, chatRateGate, fallbackToClassicPlaceholder)
     : createPlaceholderController(chatId, currentPlaceholderId, chatRateGate, cancelKeyboard, workingStatus, checkpointHistory)
   run.setKeyboard = kb => rootController.setKeyboard(kb)
+  // sent only now that rootController is assigned — fallbackToClassicPlaceholder (if this fails) must never run before that assignment exists.
+  if (usingDraftStreaming) await rootController.editPlaceholder(rootController.tracker.snapshot())
 
   // one placeholder message per parallel subagent (Agent tool call), keyed by that
   // tool_use's id; created when it starts, deleted once its tool_result comes back
@@ -1882,6 +1885,10 @@ async function runClaudeTurn(
           e.cancelledResult?.total_cost_usd ?? 0
         )
       }
+      if (currentPlaceholderId == null && usingDraftStreaming && resumableSessionId) {
+        // a draft has no message to attach a Continue button to — materialize the real placeholder Continue needs, same as an actual send failure would
+        await fallbackToClassicPlaceholder()
+      }
       if (currentPlaceholderId != null && resumableSessionId) {
         // leave the placeholder's progress log as-is — only the button changes, so Continue can pick up on the same visible history
         state.pendingContinue[key] = {
@@ -1910,6 +1917,7 @@ async function runClaudeTurn(
       if (reactionMessageIds.length) await Promise.all(reactionMessageIds.map(id => setReaction(chatId, id, ERROR_REACTION)))
     }
   } finally {
+    turnSettled = true
     rootController.statusUpdater.stop()
     activeRuns.delete(key)
     // avoid wiping the Continue button the catch block may have just attached above
@@ -2147,7 +2155,6 @@ async function handleMessage(msg) {
       originMessageId: msg.message_id,
       reactionMessageIds,
       isCompact: command === 'compact',
-      usingDraftStreaming,
       turnMeta: {
         originMessageId: msg.message_id,
         anchorMessageId: meta.messageId,

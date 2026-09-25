@@ -472,15 +472,13 @@ export function shouldUseDraftStreaming(chat) {
   return chat?.type === 'private'
 }
 
-// draft_id only needs to be unique within a chat (each sendRichMessageDraft call also carries chat_id), and stable across refreshes
-// of one run but different for the next — a per-chat counter is enough. State is immutable-update style to match setVoiceReplyPreference etc.
+// draft_id only needs to be unique per chat, so a per-chat counter is enough; immutable-update style to match setVoiceReplyPreference etc.
 export function nextDraftId(draftIdState, chatId) {
   const draftId = (draftIdState?.[chatId] ?? 0) + 1
   return { draftId, nextState: { ...draftIdState, [chatId]: draftId } }
 }
 
-// can_stop/keep_on_stop are always on: the native Stop button is this feature's whole point, and keep_on_stop just
-// avoids the draft vanishing out from under the user the instant they tap it (see the stopped_message_generation handler).
+// keep_on_stop avoids the draft vanishing the instant Stop is tapped, before stopped_message_generation is even handled.
 export function buildSendRichMessageDraftCall(chatId, draftId, markdownText) {
   return {
     method: 'sendRichMessageDraft',
@@ -488,12 +486,11 @@ export function buildSendRichMessageDraftCall(chatId, draftId, markdownText) {
   }
 }
 
-// Mirrors parseCallbackData's split: this only parses the update into a lookup key + draftId; the caller does the
-// activeRuns lookup and decides whether to actually cancel (so a stale draft_id from an already-superseded run is a no-op).
+// Mirrors parseCallbackData's split: only parses the update, the caller does the activeRuns lookup and cancel decision.
 export function parseStoppedMessageGeneration(update) {
   const chatId = update?.chat?.id
   if (chatId == null || update?.draft_id == null) return null
-  return { key: String(chatId), draftId: update.draft_id }
+  return { key: threadKey(chatId, null), draftId: update.draft_id }
 }
 
 export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, parseMode, editMessageId, threadId, keyboard) {

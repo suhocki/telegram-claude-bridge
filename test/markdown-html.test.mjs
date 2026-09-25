@@ -487,6 +487,14 @@ test('renderDraftMarkdown: a stray triple-backtick run in a history line cannot 
   assert.equal(result.match(/````/g).length, 2, 'exactly the opening and closing fence, nothing closed early')
 })
 
+test('regression: a history line with 4+ consecutive backticks grows the fence instead of letting it close early', () => {
+  const result = renderDraftMarkdown(['⏳ Bash: grep \'````\' file.js…'], '', 30000)
+  const fiveBacktickRuns = result.match(/`{5,}/g)
+  assert.equal(fiveBacktickRuns?.length, 2, 'the fence must be longer than the embedded 4-backtick run, and only the real fences should match')
+  assert.ok(result.includes('````'), 'the embedded 4-backtick run itself must still be present, unbroken, inside the fence')
+  assert.equal(result.match(/<\/details>/g).length, 1, 'the closing tag appears exactly once, proving the fence was not closed early')
+})
+
 test('regression: renderDraftMarkdown with limit 0 (or negative) returns null rather than a string that violates the limit', () => {
   const history = ['a very long history line that would normally need truncating down to size']
   for (const limit of [0, -1, -100]) {
