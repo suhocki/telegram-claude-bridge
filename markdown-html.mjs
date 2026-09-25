@@ -432,41 +432,36 @@ export function renderTranscriptHtml(historyLines, liveText, limit = 4096) {
   return liveHtml ? `${historyText}\n${liveHtml}` : historyText
 }
 
-// An inline code span isn't markdown/HTML-parsed, so this guards a short summary line better than escapeHtml — newlines are collapsed first (an inline span spanning one isn't a safe bet here), and the fence length is sized past any backtick run already present.
+// Guards a short summary line against a mid-token 80-char cut (e.g. an unclosed **) or an embedded newline — an inline span isn't markdown/HTML-parsed and pads a boundary backtick so it can't fuse with the delimiter.
 function wrapSafeInline(line) {
   const singleLine = line.replace(/\s*\n\s*/g, ' ')
   const runs = singleLine.match(/`+/g)
   const longest = runs ? runs.reduce((max, r) => Math.max(max, r.length), 0) : 0
   const tick = '`'.repeat(longest + 1)
-  // a boundary backtick would otherwise fuse with the delimiter into a longer, mismatched closing run — CommonMark's own fix is a padding space.
   const pad = singleLine.startsWith('`') || singleLine.endsWith('`') ? ' ' : ''
   return `${tick}${pad}${singleLine}${pad}${tick}`
 }
 
-// The summary is always inline-wrapped, even with a full body: it's a hard 80-char cut of arbitrary model output that can land mid-token (e.g. an unclosed **), which escapeHtml alone wouldn't neutralize.
+const detailsBlock = (summary, body) => `<details><summary>${summary}</summary>\n\n${body}\n\n</details>`
+
 function renderHistoryEntry(line, full) {
-  return full ? `<details><summary>${wrapSafeInline(line)}</summary>\n\n${escapeHtml(full)}\n\n</details>` : wrapSafeInline(line)
+  return full ? detailsBlock(wrapSafeInline(line), escapeHtml(full)) : wrapSafeInline(line)
 }
 
 export function renderDraftMarkdown(historyLines, liveText, limit = 30000, fullTexts = []) {
-  // paired by index first (fullTexts isn't filtered the same way historyLines is about to be), then falsy lines dropped.
-  const paired = (historyLines ?? []).map((line, i) => ({ line, full: fullTexts[i] || null }))
-  const entries = paired.filter(entry => entry.line)
+  const entries = (historyLines ?? []).map((line, i) => ({ line, full: fullTexts[i] || null })).filter(entry => entry.line)
   const live = String(liveText ?? '').trim()
   if (!entries.length) return (live && tailPlainTextLines(live, limit)) || null
 
   const summaryFor = count => `🔧 ${count} step${count === 1 ? '' : 's'}`
-  const wrap = (body, liveSuffix, count) => `<details><summary>${summaryFor(count)}</summary>\n\n${body}\n\n</details>${liveSuffix}`
-  // budgeted against entries.length (the largest the surviving count can ever be) — conservative by at most a couple of chars, but the final, possibly-smaller count recomputed below is then always guaranteed to still fit.
+  const wrap = (body, liveSuffix, count) => `${detailsBlock(summaryFor(count), body)}${liveSuffix}`
   const emptyBudget = limit - wrap('', '', entries.length).length
   if (emptyBudget < 0) return null
 
-  // live gets first claim on the budget (it's the visible "front line"), capped so its own "\n\n" separator can never push the total over emptyBudget.
   const cappedLive = live ? tailPlainTextLines(live, Math.max(0, emptyBudget - 2)) : ''
   const liveSuffix = cappedLive ? `\n\n${cappedLive}` : ''
   const bodyBudget = emptyBudget - liveSuffix.length
 
-  // rendered once per entry, not re-rendered on every drop below — whole entries drop from the front (oldest first) rather than truncating mid-entry, which could otherwise cut an entry's own <details> tag in half.
   const rendered = entries.map(e => renderHistoryEntry(e.line, e.full))
   let start = 0
   let body = rendered.join('\n')
@@ -474,10 +469,10 @@ export function renderDraftMarkdown(historyLines, liveText, limit = 30000, fullT
     start++
     body = rendered.slice(start).join('\n')
   }
-  // last resort: even the single most recent entry's own expandable body doesn't fit — show its short line without the expansion instead of nothing.
   if (body.length > bodyBudget) body = renderHistoryEntry(entries[start].line, null)
-  const survivingCount = entries.length - start
-  return body.length <= bodyBudget ? wrap(body, liveSuffix, survivingCount) : wrap('', liveSuffix, survivingCount)
+  // even the single most recent, degraded (no-expansion) entry doesn't fit — an empty-bodied "N steps" wrapper would be misleading, so drop history and fall back to live-only against the full limit.
+  if (body.length > bodyBudget) return (live && tailPlainTextLines(live, limit)) || null
+  return wrap(body, liveSuffix, entries.length - start)
 }
 
 export function htmlToPlainFallback(html) {

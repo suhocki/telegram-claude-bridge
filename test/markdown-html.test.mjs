@@ -582,6 +582,19 @@ test('regression: when even the single most recent entry (with its own expandabl
   assert.ok(!result.includes('xxxx'), 'the oversized full text itself must not appear at all')
 })
 
+test('regression: when even the degraded plain short line cannot fit at all, history is dropped entirely instead of showing an empty-bodied "N steps" wrapper', () => {
+  const result = renderDraftMarkdown(['⏳ Bash: npm test…'], '', 55)
+  assert.equal(result, null, 'a misleading "🔧 1 step" header over nothing must not be returned')
+})
+
+test('regression: a large in-flight live answer that leaves no room for even one degraded history line drops history, not just live text', () => {
+  const live = 'x'.repeat(29950)
+  const result = renderDraftMarkdown(['⏳ Bash: npm test…'], live, 30000)
+  assert.ok(!result.includes('<details'), 'no misleading empty-bodied wrapper — this is realistic (a long streaming answer), not a contrived tiny limit')
+  assert.ok(result.length <= 30000)
+  assert.ok(live.endsWith(result))
+})
+
 test('regression: renderDraftMarkdown with limit 0 (or negative) returns null rather than a string that violates the limit', () => {
   const history = ['a very long history line that would normally need truncating down to size']
   for (const limit of [0, -1, -100]) {

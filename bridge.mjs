@@ -110,6 +110,7 @@ import {
   buildPlaceholderEditParams,
   buildWorkingPlaceholderParams,
   parseTelegramEditError,
+  capCheckpointHistoryFullText,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
   isVoiceReplyEnabled,
@@ -1926,7 +1927,7 @@ async function runClaudeTurn(
           sessionId: resumableSessionId,
           placeholderId: currentPlaceholderId,
           isCompact,
-          checkpointHistory: rootController.tracker.historySnapshot(),
+          checkpointHistory: capCheckpointHistoryFullText(rootController.tracker.historySnapshot()),
           ...turnMeta,
         }
         continueArmed = true

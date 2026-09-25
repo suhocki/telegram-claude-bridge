@@ -56,6 +56,7 @@ import {
   nextDraftId,
   buildSendRichMessageDraftCall,
   parseStoppedMessageGeneration,
+  capCheckpointHistoryFullText,
   extractReactionMarker,
   buildSetMessageReactionParams,
   buildReactionMarkerInstructions,
@@ -1160,6 +1161,28 @@ test('parseStoppedMessageGeneration: returns null when chat or draft_id is missi
   assert.equal(parseStoppedMessageGeneration({ draft_id: 7 }), null)
   assert.equal(parseStoppedMessageGeneration({ chat: { id: 123 } }), null)
   assert.equal(parseStoppedMessageGeneration(null), null)
+})
+
+test('capCheckpointHistoryFullText: leaves a full text under the cap untouched', () => {
+  const history = [{ line: '💬 short…', full: 'short and complete' }]
+  assert.deepEqual(capCheckpointHistoryFullText(history, 100), history)
+})
+
+test('capCheckpointHistoryFullText: truncates a full text over the cap, leaving the line untouched', () => {
+  const history = [{ line: '💬 short…', full: 'x'.repeat(200) }]
+  const result = capCheckpointHistoryFullText(history, 100)
+  assert.equal(result[0].line, '💬 short…')
+  assert.equal(result[0].full.length, 100)
+})
+
+test('capCheckpointHistoryFullText: a null full text (no expansion, e.g. a seeded/tool line) passes through unchanged', () => {
+  const history = [{ line: '⏳ Bash: npm test…', full: null }]
+  assert.deepEqual(capCheckpointHistoryFullText(history, 100), history)
+})
+
+test('capCheckpointHistoryFullText: a missing/empty array is handled without crashing', () => {
+  assert.deepEqual(capCheckpointHistoryFullText(undefined), [])
+  assert.deepEqual(capCheckpointHistoryFullText([]), [])
 })
 
 test('buildReplyCallsFromChunks: no editMessageId behaves like a plain sendMessage, unchanged across chunks', () => {

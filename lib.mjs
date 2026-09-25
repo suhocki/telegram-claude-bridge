@@ -493,6 +493,15 @@ export function parseStoppedMessageGeneration(update) {
   return { key: threadKey(chatId, null), draftId: update.draft_id }
 }
 
+export const MAX_PERSISTED_FULL_TEXT_CHARS = 4000
+
+// Only checkpointHistory going into state.pendingContinue needs this — an in-memory, same-turn fallback isn't written to disk and doesn't sit around indefinitely.
+export function capCheckpointHistoryFullText(checkpointHistory, maxChars = MAX_PERSISTED_FULL_TEXT_CHARS) {
+  return (checkpointHistory ?? []).map(entry =>
+    entry?.full && entry.full.length > maxChars ? { ...entry, full: entry.full.slice(0, maxChars) } : entry
+  )
+}
+
 export function buildReplyCallsFromChunks(chatId, chunks, replyToMessageId, parseMode, editMessageId, threadId, keyboard) {
   return chunks.map((part, i) => {
     const params = { chat_id: chatId, text: part }

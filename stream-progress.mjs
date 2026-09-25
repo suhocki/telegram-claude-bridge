@@ -159,7 +159,6 @@ export function createProgressTracker(
   } = {}
 ) {
   const seenToolIds = new Set()
-  // { line, full } — one array, not two kept in lockstep, so nothing can misalign which full text belongs to which line.
   const checkpoints = []
   let ephemeral = []
   let liveText = ''
