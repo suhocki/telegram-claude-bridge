@@ -518,6 +518,18 @@ test('regression: a summary line with an embedded newline (e.g. a multi-line too
   assert.ok(result.includes('line one line two'))
 })
 
+test('regression: a summary line containing a literal HTML tag (e.g. a grep pattern for "</details>") is escaped, not left able to close the surrounding tag', () => {
+  const result = renderDraftMarkdown(['⏳ Bash: grep "</details><b>x</b>" file.js…'], '', 30000)
+  assert.equal(result.match(/<\/details>/g).length, 1, 'only the real, outer closing tag — the literal one in the line must not count as a second')
+  assert.ok(result.includes('&lt;/details&gt;&lt;b&gt;x&lt;/b&gt;'), 'the literal tag text is escaped, not left as real markup')
+})
+
+test('regression: a full-text entry whose short summary line also contains a literal HTML tag is escaped the same way', () => {
+  const result = renderDraftMarkdown(['🤔 discussing </details> tags…'], '', 30000, ['the full reasoning'])
+  assert.equal(result.match(/<\/details>/g).length, 2, 'exactly the inner and outer real closing tags')
+  assert.ok(result.includes('&lt;/details&gt;'), 'the literal sequence in the summary is escaped too, not just in the full body')
+})
+
 test('regression: a line ending in a literal backtick gets a padding space, so it cannot fuse with the closing delimiter into a longer, mismatched run', () => {
   const line = '🤔 open the file`'
   const result = renderDraftMarkdown([line], '', 30000)

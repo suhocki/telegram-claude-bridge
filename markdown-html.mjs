@@ -432,9 +432,9 @@ export function renderTranscriptHtml(historyLines, liveText, limit = 4096) {
   return liveHtml ? `${historyText}\n${liveHtml}` : historyText
 }
 
-// Guards a short summary line against a mid-token 80-char cut (e.g. an unclosed **) or an embedded newline — an inline span isn't markdown/HTML-parsed and pads a boundary backtick so it can't fuse with the delimiter.
+// Guards a short summary line against a mid-token 80-char cut (e.g. an unclosed **), an embedded newline, or a literal HTML tag (e.g. a grep pattern containing "</details>") — escaped and newline-collapsed before an inline span (not markdown/HTML-parsed) wraps it, padded against a boundary backtick fusing with the delimiter.
 function wrapSafeInline(line) {
-  const singleLine = line.replace(/\s*\n\s*/g, ' ')
+  const singleLine = escapeHtml(line).replace(/\s*\n\s*/g, ' ')
   const runs = singleLine.match(/`+/g)
   const longest = runs ? runs.reduce((max, r) => Math.max(max, r.length), 0) : 0
   const tick = '`'.repeat(longest + 1)
