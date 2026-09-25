@@ -63,9 +63,9 @@ function splitTableRow(line) {
 
 // Wide ranges per UAX #11 (CJK/Hangul/Kana/fullwidth forms/emoji) render as 2 monospace cells.
 const WIDE_CODE_POINT_RANGES = [
-  [0x1100, 0x115f], [0x2329, 0x232a], [0x2e80, 0xa4cf], [0xac00, 0xd7a3],
-  [0xf900, 0xfaff], [0xfe30, 0xfe4f], [0xff00, 0xff60], [0xffe0, 0xffe6],
-  [0x1f300, 0x1faff], [0x20000, 0x3fffd],
+  [0x1100, 0x115f], [0x2329, 0x232a], [0x2600, 0x27bf], [0x2b00, 0x2bff],
+  [0x2e80, 0xa4cf], [0xac00, 0xd7a3], [0xf900, 0xfaff], [0xfe30, 0xfe4f],
+  [0xff00, 0xff60], [0xffe0, 0xffe6], [0x1f300, 0x1faff], [0x20000, 0x3fffd],
 ]
 const graphemeSegmenter = new Intl.Segmenter('en', { granularity: 'grapheme' })
 
@@ -85,11 +85,12 @@ function padCell(s, width) {
   return pad > 0 ? s + ' '.repeat(pad) : s
 }
 
+// GFM rows with too few cells get blank fill-ins; rows with too many get the excess dropped.
 function renderTableBlock(headerLine, rowLines) {
   const header = splitTableRow(headerLine)
   const rows = rowLines.map(splitTableRow)
-  const colCount = Math.max(header.length, ...rows.map(r => r.length))
-  const widths = Array.from({ length: colCount }, (_, i) => visualWidth(header[i] ?? ''))
+  const colCount = header.length
+  const widths = header.map(c => visualWidth(c))
   for (const row of rows) {
     for (let c = 0; c < colCount; c++) widths[c] = Math.max(widths[c], visualWidth(row[c] ?? ''))
   }
@@ -105,11 +106,13 @@ function isTableSeparatorRow(sepLine, expectedCols) {
   return cells.length === expectedCols && cells.every(c => TABLE_CELL_SEP_RE.test(c))
 }
 
-// Requires a separator matching the header's column count so a stray "|" in prose followed by an unrelated "---" divider isn't misread as a table.
+const UNESCAPED_PIPE_RE = /(?<!\\)\|/
+
+// Requires an unescaped-pipe header plus a same-column-count separator, so ordinary prose isn't misread as a table.
 function detectTableAt(lines, i) {
   const headerLine = lines[i]
   const sepLine = lines[i + 1]
-  if (!headerLine?.includes('|') || sepLine === undefined) return null
+  if (!headerLine || !UNESCAPED_PIPE_RE.test(headerLine) || sepLine === undefined) return null
   const headerCells = splitTableRow(headerLine)
   if (!isTableSeparatorRow(sepLine, headerCells.length)) return null
   const rowLines = []
@@ -121,14 +124,14 @@ function detectTableAt(lines, i) {
   return { headerLine, sepLine, rowLines, next: j }
 }
 
-function replaceMarkdownTables(text, stashHtml) {
-  const lines = text.split('\n')
+function sweepTableBlocks(text, onTable) {
+  const lines = String(text ?? '').split('\n')
   const out = []
   let i = 0
   while (i < lines.length) {
     const table = detectTableAt(lines, i)
     if (table) {
-      out.push(stashHtml(renderTableBlock(table.headerLine, table.rowLines)))
+      out.push(onTable(table))
       i = table.next
       continue
     }
@@ -138,19 +141,33 @@ function replaceMarkdownTables(text, stashHtml) {
   return out.join('\n')
 }
 
-// A markdown table read aloud verbatim (padded pipes/dashes) is noise, so this swaps each table block for a short spoken placeholder.
+function replaceMarkdownTables(text, stashHtml) {
+  return sweepTableBlocks(text, table => stashHtml(renderTableBlock(table.headerLine, table.rowLines)))
+}
+
+// A markdown table read aloud verbatim (padded pipes/dashes) is noise, so this swaps it for a spoken placeholder — no brackets, since [bracket] tags are the prosody-annotation markup syntax (see annotateProsody in lib.mjs).
 export function stripMarkdownTablesForSpeech(text) {
+  return sweepTableBlocks(text, () => 'table data')
+}
+
+const RENDERED_TABLE_SEP_RE = /^[-+]+$/
+
+// The Listen button reads Telegram's own already-rendered message text (our padded " | "/"-+-" grid, not raw markdown pipes), so it needs this separate detector rather than stripMarkdownTablesForSpeech.
+export function stripRenderedTableGridsForSpeech(text) {
   const lines = String(text ?? '').split('\n')
   const out = []
   let i = 0
   while (i < lines.length) {
-    const table = detectTableAt(lines, i)
-    if (table) {
-      out.push('[table]')
-      i = table.next
+    const header = lines[i]
+    const sep = lines[i + 1]
+    if (header?.includes(' | ') && sep !== undefined && RENDERED_TABLE_SEP_RE.test(sep)) {
+      out.push('table data')
+      let j = i + 2
+      while (j < lines.length && lines[j].includes(' | ')) j++
+      i = j
       continue
     }
-    out.push(lines[i])
+    out.push(header)
     i++
   }
   return out.join('\n')
@@ -220,24 +237,24 @@ function toLogicalLines(lines) {
   return out
 }
 
-// A raw character split (splitToFit) loses a table's header/separator on every piece after the
-// first, so a piece past that point can no longer be re-detected as a table. This regroups by
-// whole rows instead, repeating the header/separator on each piece so every piece stays a table.
+// Regroups by whole rows (repeating header/separator on each piece) instead of splitToFit's raw character split, which would lose the header past the first piece and stop being a table at all.
 function splitTableRowsToFit(tableText, limit) {
   const [header, sep, ...rows] = tableText.split('\n')
   const build = rs => [header, sep, ...rs].join('\n')
   const pieces = []
-  let acc = []
-  for (const row of rows) {
-    const candidate = [...acc, row]
-    if (acc.length && markdownToTelegramHtml(build(candidate)).length > limit) {
-      pieces.push(build(acc))
-      acc = [row]
-    } else {
-      acc = candidate
+  let start = 0
+  while (start < rows.length) {
+    let lo = start + 1
+    let hi = rows.length
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2)
+      if (markdownToTelegramHtml(build(rows.slice(start, mid))).length <= limit) lo = mid
+      else hi = mid - 1
     }
+    pieces.push(build(rows.slice(start, lo)))
+    start = lo
   }
-  pieces.push(build(acc))
+  if (!pieces.length) pieces.push(build([]))
   return pieces
 }
 

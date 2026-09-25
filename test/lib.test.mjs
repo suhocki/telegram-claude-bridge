@@ -2258,7 +2258,7 @@ test('buildSpeechText: null/undefined becomes an empty string', () => {
 test('buildSpeechText: a markdown table becomes a short spoken placeholder instead of raw pipes/dashes', () => {
   assert.equal(
     buildSpeechText('Summary:\n\n| Name | Age |\n|------|-----|\n| Alice | 30 |\n\nDone.'),
-    'Summary:\n\n[table]\n\nDone.',
+    'Summary:\n\ntable data\n\nDone.',
   )
 })
 

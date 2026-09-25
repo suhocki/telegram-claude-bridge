@@ -1,6 +1,13 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { markdownToTelegramHtml, markdownToTelegramHtmlChunks, htmlToPlainFallback, renderStreamingTail, renderTranscriptHtml } from '../markdown-html.mjs'
+import {
+  markdownToTelegramHtml,
+  markdownToTelegramHtmlChunks,
+  htmlToPlainFallback,
+  renderStreamingTail,
+  renderTranscriptHtml,
+  stripRenderedTableGridsForSpeech,
+} from '../markdown-html.mjs'
 
 test('markdownToTelegramHtml: escapes bare &, <, > outside any markdown construct', () => {
   assert.equal(markdownToTelegramHtml('1 < 2 && 3 > 1'), '1 &lt; 2 &amp;&amp; 3 &gt; 1')
@@ -158,10 +165,24 @@ test('markdownToTelegramHtml: a CJK (double-width) cell aligns against ASCII cel
   )
 })
 
-test('markdownToTelegramHtml: a row with more cells than the header still renders every cell, padded consistently', () => {
+test('markdownToTelegramHtml: a row with more cells than the header has the excess dropped, per GFM', () => {
   assert.equal(
     markdownToTelegramHtml('| A | B |\n|---|---|\n| 1 | 2 | 3 |'),
-    '<pre>A | B |  \n--+---+--\n1 | 2 | 3</pre>',
+    '<pre>A | B\n--+--\n1 | 2</pre>',
+  )
+})
+
+test('markdownToTelegramHtml: an emoji from the misc-symbols/dingbats block (e.g. checkmarks) is also measured as 2 columns wide', () => {
+  assert.equal(
+    markdownToTelegramHtml('| Status | Icon |\n|--------|------|\n| ok | ✅ |\n| bad | ❌ |'),
+    '<pre>Status | Icon\n-------+-----\nok     | ✅  \nbad    | ❌  </pre>',
+  )
+})
+
+test('markdownToTelegramHtml: a header with only an escaped pipe (no real column separator) followed by an unrelated "---" divider is not misread as a table', () => {
+  assert.equal(
+    markdownToTelegramHtml('To show a literal pipe use `a\\|b`.\n---\nThis section explains further.'),
+    'To show a literal pipe use <code>a\\|b</code>.\n---\nThis section explains further.',
   )
 })
 
@@ -423,4 +444,13 @@ test('renderTranscriptHtml: when history alone already fills the limit, it is ta
   assert.ok(result.length <= 200, `result length ${result.length} exceeds the 200 limit`)
   assert.ok(!result.includes('this should not appear'), 'live text should be dropped when there is no budget left for it')
   assert.ok(result.includes('number 49'), 'the tail should keep the most recent history lines')
+})
+
+test('stripRenderedTableGridsForSpeech: replaces an already-rendered table grid (Telegram\'s own plain message.text, used by the Listen button) with a spoken placeholder', () => {
+  const rendered = htmlToPlainFallback(markdownToTelegramHtml('Summary:\n\n| Name | Age |\n|------|-----|\n| Alice | 30 |\n\nDone.'))
+  assert.equal(stripRenderedTableGridsForSpeech(rendered), 'Summary:\n\ntable data\n\nDone.')
+})
+
+test('stripRenderedTableGridsForSpeech: text with no table grid is left unchanged', () => {
+  assert.equal(stripRenderedTableGridsForSpeech('no table here at all'), 'no table here at all')
 })
