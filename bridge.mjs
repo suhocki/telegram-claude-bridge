@@ -457,7 +457,7 @@ const loadButtonsModule = createButtonsModuleLoader(resolveButtonsModulePath(but
 // Returns the ids of the messages it created (empty for an edit of an existing one) so a
 // caller can remember them and delete them later on a rewind.
 async function sendReply(chatId, text, replyToMessageId, editMessageId, threadId, keyboard) {
-  const content = text || '(empty response)'
+  const content = text || '⚠️ empty response'
   const { method: richMethod, params: richParams } = buildRichReplyCall(chatId, content, replyToMessageId, editMessageId, threadId, keyboard)
   try {
     const sent = await tg(richMethod, richParams)
@@ -955,6 +955,9 @@ function cancelCheckin(key) {
   delete state.pendingCheckins[key]
 }
 
+// A success exit with completely empty text is a flaky/incomplete completion, not a real answer — worth one retry before falling back to an error-shaped message instead of a fake-looking empty reply.
+const MAX_EMPTY_RESULT_RETRIES = 1
+
 async function runCheckin(key) {
   const pending = state.pendingCheckins[key]
   if (!pending) return
@@ -969,15 +972,15 @@ async function runCheckin(key) {
   }
 
   try {
-    const { promise: checkinPromise } = runClaude(
-      buildCheckinFollowupPrompt(pending.instruction),
-      sessionId,
-      undefined,
-      currentAuthMode(),
-      currentModelConfig(key),
-      key
-    )
-    const result = await checkinPromise
+    const checkinPrompt = buildCheckinFollowupPrompt(pending.instruction)
+    let result
+    let resumeSessionId = sessionId
+    for (let attempt = 0; ; attempt++) {
+      result = await runClaude(checkinPrompt, resumeSessionId, undefined, currentAuthMode(), currentModelConfig(key), key).promise
+      if (result.is_error || extractResponseMarkers(result.result).text || attempt >= MAX_EMPTY_RESULT_RETRIES) break
+      log('check-in returned an empty result with no error, retrying', key, `attempt ${attempt + 1}`)
+      resumeSessionId = result.session_id ?? resumeSessionId
+    }
     const priorSession = normalizeSession(state.sessions[key])
     let newSession = priorSession
     if (result.session_id) {
@@ -989,7 +992,9 @@ async function runCheckin(key) {
     const { text: cleanedResult, attachPaths, checkin: nextCheckin, noReply } = extractResponseMarkers(result.result)
     const costWarningCrossed = newSession && crossedCostThreshold(priorSession?.costUsd ?? 0, newSession.costUsd, costWarnUsd)
     const suppressReply = noReply && !cleanedResult && !result.is_error && !costWarningCrossed
-    let replyText = result.is_error ? `⚠️ ${cleanedResult || 'check-in error'}` : cleanedResult || '(empty check-in response)'
+    let replyText = result.is_error
+      ? `⚠️ ${cleanedResult || 'check-in error'}`
+      : cleanedResult || '⚠️ empty check-in response, even after a retry.'
     if (costWarningCrossed) {
       replyText = `${buildCostWarning(newSession.costUsd, costWarnUsd)}\n\n${replyText}`
     }
@@ -1698,20 +1703,27 @@ async function runClaudeTurn(
   let getSessionId = () => null
   try {
     if (run.finished) throw new Error('cancelled before the run could start')
-    const claude = runClaude(prompt, sessionId, event => routeEvent(event), authMode, modelConfig, key)
-    getSessionId = claude.getSessionId
-    run.cancel = () => {
-      if (cancelled) return
-      cancelled = true
-      run.finished = true
-      claude.cancel()
-    }
-    const result = await claude.promise
-    // claude can catch SIGTERM and still emit a result event before exiting, so a resolved promise doesn't rule out a cancel
-    if (cancelled) {
-      const err = new Error('cancelled after the run had already produced a result')
-      err.cancelledResult = result
-      throw err
+    let result
+    let resumeSessionId = sessionId
+    for (let attempt = 0; ; attempt++) {
+      const claude = runClaude(prompt, resumeSessionId, event => routeEvent(event), authMode, modelConfig, key)
+      getSessionId = claude.getSessionId
+      run.cancel = () => {
+        if (cancelled) return
+        cancelled = true
+        run.finished = true
+        claude.cancel()
+      }
+      result = await claude.promise
+      // claude can catch SIGTERM and still emit a result event before exiting, so a resolved promise doesn't rule out a cancel
+      if (cancelled) {
+        const err = new Error('cancelled after the run had already produced a result')
+        err.cancelledResult = result
+        throw err
+      }
+      if (result.is_error || extractResponseMarkers(result.result).text || attempt >= MAX_EMPTY_RESULT_RETRIES) break
+      log('claude returned an empty result with no error, retrying the turn', key, `attempt ${attempt + 1}`)
+      resumeSessionId = result.session_id ?? resumeSessionId
     }
     run.finished = true
     // no finalStatus edit: the placeholder gets deleted outright below, once the real reply is sent
@@ -1731,7 +1743,7 @@ async function runClaudeTurn(
       ? `⚠️ ${cleanedResult || 'error'}`
       : isCompact
         ? `✅ conversation compacted.${cleanedResult ? `\n\n${cleanedResult}` : ''}`
-        : (cleanedResult || '(empty response)')
+        : (cleanedResult || '⚠️ empty response, even after a retry — please try rephrasing.')
     if (costWarningCrossed) {
       replyText = `${buildCostWarning(newSession.costUsd, costWarnUsd)}\n\n${replyText}`
     }
