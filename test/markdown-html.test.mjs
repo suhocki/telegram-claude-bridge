@@ -7,6 +7,7 @@ import {
   renderStreamingTail,
   renderTranscriptHtml,
   stripRenderedTableGridsForSpeech,
+  richMessageToSpeechText,
 } from '../markdown-html.mjs'
 
 test('markdownToTelegramHtml: escapes bare &, <, > outside any markdown construct', () => {
@@ -453,4 +454,97 @@ test('stripRenderedTableGridsForSpeech: replaces an already-rendered table grid 
 
 test('stripRenderedTableGridsForSpeech: text with no table grid is left unchanged', () => {
   assert.equal(stripRenderedTableGridsForSpeech('no table here at all'), 'no table here at all')
+})
+
+// Shapes below (except heading/expandable_blockquote/custom_emoji) are captured verbatim from a real sendRichMessage response (Bot API 10.1).
+test('richMessageToSpeechText: a table block becomes the same short spoken placeholder regardless of cell content', () => {
+  const richMessage = {
+    blocks: [
+      {
+        type: 'table',
+        cells: [
+          [{ text: 'Company', is_header: true, align: 'center', valign: 'middle' }, { text: 'Match', is_header: true, align: 'center', valign: 'middle' }],
+          [{ text: 'TradingView', align: 'left', valign: 'middle' }, { text: '90%', align: 'left', valign: 'middle' }],
+        ],
+        is_bordered: true,
+        is_striped: true,
+      },
+    ],
+  }
+  assert.equal(richMessageToSpeechText(richMessage), 'table data')
+})
+
+test('richMessageToSpeechText: a paragraph with mixed plain-string and typed RichText entries (bold/code) flattens to plain words', () => {
+  const richMessage = {
+    blocks: [
+      {
+        type: 'paragraph',
+        text: [{ type: 'bold', text: 'Итог:' }, ' протестировал ', { type: 'code', text: 'sendRichMessage' }, ' напрямую.'],
+      },
+    ],
+  }
+  assert.equal(richMessageToSpeechText(richMessage), 'Итог: протестировал sendRichMessage напрямую.')
+})
+
+test('richMessageToSpeechText: a blockquote unwraps its nested paragraph blocks', () => {
+  const richMessage = { blocks: [{ type: 'blockquote', blocks: [{ type: 'paragraph', text: 'цитата для проверки' }] }] }
+  assert.equal(richMessageToSpeechText(richMessage), 'цитата для проверки')
+})
+
+test('richMessageToSpeechText: a pre (code) block reads its plain text', () => {
+  const richMessage = { blocks: [{ type: 'pre', text: 'const x = 1;', language: 'js' }] }
+  assert.equal(richMessageToSpeechText(richMessage), 'const x = 1;')
+})
+
+test('richMessageToSpeechText: a list joins each item\'s blocks, one per line', () => {
+  const richMessage = {
+    blocks: [
+      {
+        type: 'list',
+        items: [
+          { label: '•', blocks: [{ type: 'paragraph', text: 'пункт 1' }] },
+          { label: '•', blocks: [{ type: 'paragraph', text: 'пункт 2' }] },
+        ],
+      },
+    ],
+  }
+  assert.equal(richMessageToSpeechText(richMessage), 'пункт 1\nпункт 2')
+})
+
+test('richMessageToSpeechText: a link RichText (object with url + nested text) reads its label', () => {
+  const richMessage = { blocks: [{ type: 'paragraph', text: { type: 'url', text: 'link', url: 'https://example.com/' } }] }
+  assert.equal(richMessageToSpeechText(richMessage), 'link')
+})
+
+test('richMessageToSpeechText: multiple blocks join with a blank line between them', () => {
+  const richMessage = { blocks: [{ type: 'paragraph', text: 'first' }, { type: 'paragraph', text: 'second' }] }
+  assert.equal(richMessageToSpeechText(richMessage), 'first\n\nsecond')
+})
+
+test('richMessageToSpeechText: a heading block reads its text', () => {
+  assert.equal(richMessageToSpeechText({ blocks: [{ type: 'heading', text: 'Section title', size: 2 }] }), 'Section title')
+})
+
+test('richMessageToSpeechText: an expandable_blockquote (collapsed-by-default quote) reads its text field, not a nested blocks array', () => {
+  assert.equal(richMessageToSpeechText({ blocks: [{ type: 'expandable_blockquote', text: 'collapsed quote' }] }), 'collapsed quote')
+})
+
+test('richMessageToSpeechText: a details block reads its always-visible summary plus its nested blocks', () => {
+  const richMessage = { blocks: [{ type: 'details', summary: 'Tool output', blocks: [{ type: 'paragraph', text: 'full log line' }] }] }
+  assert.equal(richMessageToSpeechText(richMessage), 'Tool output\nfull log line')
+})
+
+test('richMessageToSpeechText: a custom_emoji RichText node (no `text` field) falls back to its alternative_text', () => {
+  const richMessage = { blocks: [{ type: 'paragraph', text: { type: 'custom_emoji', custom_emoji_id: '123', alternative_text: '🔥' } }] }
+  assert.equal(richMessageToSpeechText(richMessage), '🔥')
+})
+
+test('richMessageToSpeechText: a mathematical_expression block reads its LaTeX source (stored under expression, not text)', () => {
+  assert.equal(richMessageToSpeechText({ blocks: [{ type: 'mathematical_expression', expression: 'E = mc^2' }] }), 'E = mc^2')
+})
+
+test('richMessageToSpeechText: no blocks (or no rich_message at all) yields an empty string', () => {
+  assert.equal(richMessageToSpeechText({ blocks: [] }), '')
+  assert.equal(richMessageToSpeechText(null), '')
+  assert.equal(richMessageToSpeechText(undefined), '')
 })

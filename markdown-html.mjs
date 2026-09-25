@@ -145,9 +145,12 @@ function replaceMarkdownTables(text, stashHtml) {
   return sweepTableBlocks(text, table => stashHtml(renderTableBlock(table.headerLine, table.rowLines)))
 }
 
-// A markdown table read aloud verbatim (padded pipes/dashes) is noise, so this swaps it for a spoken placeholder — no brackets, since [bracket] tags are the prosody-annotation markup syntax (see annotateProsody in lib.mjs).
+// No brackets, since [bracket] tags are the prosody-annotation markup syntax (see annotateProsody in lib.mjs).
+const TABLE_SPEECH_PLACEHOLDER = 'table data'
+
+// A markdown table read aloud verbatim (padded pipes/dashes) is noise, so this swaps it for a spoken placeholder.
 export function stripMarkdownTablesForSpeech(text) {
-  return sweepTableBlocks(text, () => 'table data')
+  return sweepTableBlocks(text, () => TABLE_SPEECH_PLACEHOLDER)
 }
 
 const RENDERED_TABLE_SEP_RE = /^[-+]+$/
@@ -161,7 +164,7 @@ export function stripRenderedTableGridsForSpeech(text) {
     const header = lines[i]
     const sep = lines[i + 1]
     if (header?.includes(' | ') && sep !== undefined && RENDERED_TABLE_SEP_RE.test(sep)) {
-      out.push('table data')
+      out.push(TABLE_SPEECH_PLACEHOLDER)
       let j = i + 2
       while (j < lines.length && lines[j].includes(' | ')) j++
       i = j
@@ -171,6 +174,45 @@ export function stripRenderedTableGridsForSpeech(text) {
     i++
   }
   return out.join('\n')
+}
+
+function richTextToPlain(richText) {
+  if (richText == null) return ''
+  if (typeof richText === 'string') return richText
+  if (Array.isArray(richText)) return richText.map(richTextToPlain).join('')
+  if (richText.text !== undefined) return richTextToPlain(richText.text)
+  // RichTextCustomEmoji has no `text` field, only this fallback label for the emoji itself.
+  if (typeof richText.alternative_text === 'string') return richText.alternative_text
+  return ''
+}
+
+function richBlocksToPlain(blocks) {
+  return (blocks ?? []).map(richBlockToPlain).join('\n')
+}
+
+function richBlockToPlain(block) {
+  switch (block?.type) {
+    case 'table':
+      return TABLE_SPEECH_PLACEHOLDER
+    case 'blockquote':
+      return richBlocksToPlain(block.blocks)
+    case 'expandable_blockquote':
+    case 'heading':
+      return richTextToPlain(block.text)
+    case 'details':
+      return [richTextToPlain(block.summary), richBlocksToPlain(block.blocks)].filter(Boolean).join('\n')
+    case 'mathematical_expression':
+      return block.expression ?? ''
+    case 'list':
+      return (block.items ?? []).map(item => richBlocksToPlain(item.blocks)).join('\n')
+    default:
+      return richTextToPlain(block?.text)
+  }
+}
+
+// A message sent via sendRichMessage carries its content in rich_message.blocks instead of the classic text field, so the Listen button (which reads back Telegram's own message object) needs this instead of a plain string.
+export function richMessageToSpeechText(richMessage) {
+  return (richMessage?.blocks ?? []).map(richBlockToPlain).filter(Boolean).join('\n\n')
 }
 
 export function markdownToTelegramHtml(text) {
