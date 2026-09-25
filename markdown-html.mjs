@@ -61,10 +61,23 @@ function splitTableRow(line) {
   return cells
 }
 
-// Counts code points rather than UTF-16 units, so an astral-plane emoji in a cell (a surrogate
-// pair) doesn't throw off column padding by counting as two characters wide.
+// Wide ranges per UAX #11 (CJK/Hangul/Kana/fullwidth forms/emoji) render as 2 monospace cells.
+const WIDE_CODE_POINT_RANGES = [
+  [0x1100, 0x115f], [0x2329, 0x232a], [0x2e80, 0xa4cf], [0xac00, 0xd7a3],
+  [0xf900, 0xfaff], [0xfe30, 0xfe4f], [0xff00, 0xff60], [0xffe0, 0xffe6],
+  [0x1f300, 0x1faff], [0x20000, 0x3fffd],
+]
+const graphemeSegmenter = new Intl.Segmenter('en', { granularity: 'grapheme' })
+
+function isWideCodePoint(cp) {
+  return WIDE_CODE_POINT_RANGES.some(([lo, hi]) => cp >= lo && cp <= hi)
+}
+
+// Segments by grapheme (not code point) so a ZWJ/skin-tone emoji sequence counts as one glyph.
 function visualWidth(s) {
-  return [...s].length
+  let width = 0
+  for (const { segment } of graphemeSegmenter.segment(s)) width += isWideCodePoint(segment.codePointAt(0)) ? 2 : 1
+  return width
 }
 
 function padCell(s, width) {
@@ -75,12 +88,12 @@ function padCell(s, width) {
 function renderTableBlock(headerLine, rowLines) {
   const header = splitTableRow(headerLine)
   const rows = rowLines.map(splitTableRow)
-  const colCount = header.length
-  const widths = header.map(c => visualWidth(c))
+  const colCount = Math.max(header.length, ...rows.map(r => r.length))
+  const widths = Array.from({ length: colCount }, (_, i) => visualWidth(header[i] ?? ''))
   for (const row of rows) {
     for (let c = 0; c < colCount; c++) widths[c] = Math.max(widths[c], visualWidth(row[c] ?? ''))
   }
-  const padRow = row => row.map((c, i) => padCell(c ?? '', widths[i])).join(' | ')
+  const padRow = row => Array.from({ length: colCount }, (_, i) => padCell(row[i] ?? '', widths[i])).join(' | ')
   const sep = widths.map(w => '-'.repeat(w)).join('-+-')
   const lines = [padRow(header), sep, ...rows.map(padRow)]
   return `<pre>${escapeHtml(lines.join('\n'))}</pre>`
@@ -92,9 +105,7 @@ function isTableSeparatorRow(sepLine, expectedCols) {
   return cells.length === expectedCols && cells.every(c => TABLE_CELL_SEP_RE.test(c))
 }
 
-// Detects `| header |` immediately followed by a matching `|---|---|` separator (same column
-// count, dash-only cells — so a stray "text with a | in it" followed by an unrelated "---"
-// divider isn't misread as a table), then consumes further pipe-bearing lines as rows.
+// Requires a separator matching the header's column count so a stray "|" in prose followed by an unrelated "---" divider isn't misread as a table.
 function detectTableAt(lines, i) {
   const headerLine = lines[i]
   const sepLine = lines[i + 1]
@@ -127,8 +138,7 @@ function replaceMarkdownTables(text, stashHtml) {
   return out.join('\n')
 }
 
-// A markdown table read aloud verbatim (padded pipes/dashes) is noise, so speech rendering
-// swaps each table block for a short spoken placeholder instead.
+// A markdown table read aloud verbatim (padded pipes/dashes) is noise, so this swaps each table block for a short spoken placeholder.
 export function stripMarkdownTablesForSpeech(text) {
   const lines = String(text ?? '').split('\n')
   const out = []
@@ -183,8 +193,7 @@ export function markdownToTelegramHtml(text) {
   return work
 }
 
-// Groups a table's header/separator/row lines into one queue entry so the chunker below
-// never splits mid-table the way it already avoids splitting mid-fence for code blocks.
+// Groups a table's lines into one queue entry so the chunker below doesn't split mid-table.
 function toLogicalLines(lines) {
   const out = []
   let insideFence = false
@@ -209,6 +218,27 @@ function toLogicalLines(lines) {
     i++
   }
   return out
+}
+
+// A raw character split (splitToFit) loses a table's header/separator on every piece after the
+// first, so a piece past that point can no longer be re-detected as a table. This regroups by
+// whole rows instead, repeating the header/separator on each piece so every piece stays a table.
+function splitTableRowsToFit(tableText, limit) {
+  const [header, sep, ...rows] = tableText.split('\n')
+  const build = rs => [header, sep, ...rs].join('\n')
+  const pieces = []
+  let acc = []
+  for (const row of rows) {
+    const candidate = [...acc, row]
+    if (acc.length && markdownToTelegramHtml(build(candidate)).length > limit) {
+      pieces.push(build(acc))
+      acc = [row]
+    } else {
+      acc = candidate
+    }
+  }
+  pieces.push(build(acc))
+  return pieces
 }
 
 export function markdownToTelegramHtmlChunks(text, limit = 4096) {
@@ -253,7 +283,13 @@ export function markdownToTelegramHtmlChunks(text, limit = 4096) {
     if (renderAlone(line, nextFenceLang).length > limit) {
       if (bufLines.length) flush()
       fenceLang = nextFenceLang
-      for (const piece of splitToFit(line, fenceLang)) chunks.push(renderAlone(piece, fenceLang))
+      const lineRows = line.split('\n')
+      const wholeTable = fenceLang === null ? detectTableAt(lineRows, 0) : null
+      const rawPieces = wholeTable && wholeTable.next === lineRows.length ? splitTableRowsToFit(line, limit) : [line]
+      for (const rawPiece of rawPieces) {
+        if (renderAlone(rawPiece, fenceLang).length <= limit) chunks.push(renderAlone(rawPiece, fenceLang))
+        else for (const piece of splitToFit(rawPiece, fenceLang)) chunks.push(renderAlone(piece, fenceLang))
+      }
       bufLines = fenceLang !== null ? [`\`\`\`${fenceLang}`] : []
       continue
     }

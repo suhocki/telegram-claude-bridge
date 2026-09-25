@@ -144,10 +144,24 @@ test('markdownToTelegramHtml: a table followed by more text keeps both', () => {
   )
 })
 
-test('markdownToTelegramHtml: an astral-plane emoji (surrogate pair) in a cell counts as one character wide for alignment', () => {
+test('markdownToTelegramHtml: an emoji cell is measured as 2 display columns wide, not 1 code point or 2 UTF-16 units', () => {
   assert.equal(
     markdownToTelegramHtml('| Status | Task |\n|--------|------|\n| 😀 | build |\n| ok | deploy |'),
-    '<pre>Status | Task  \n-------+-------\n😀      | build \nok     | deploy</pre>',
+    '<pre>Status | Task  \n-------+-------\n😀     | build \nok     | deploy</pre>',
+  )
+})
+
+test('markdownToTelegramHtml: a CJK (double-width) cell aligns against ASCII cells in the same column', () => {
+  assert.equal(
+    markdownToTelegramHtml('| Name | Note |\n|------|------|\n| 张三 | ok |\n| Bob | fine |'),
+    '<pre>Name | Note\n-----+-----\n张三 | ok  \nBob  | fine</pre>',
+  )
+})
+
+test('markdownToTelegramHtml: a row with more cells than the header still renders every cell, padded consistently', () => {
+  assert.equal(
+    markdownToTelegramHtml('| A | B |\n|---|---|\n| 1 | 2 | 3 |'),
+    '<pre>A | B |  \n--+---+--\n1 | 2 | 3</pre>',
   )
 })
 
@@ -227,6 +241,21 @@ test('markdownToTelegramHtmlChunks: a table is kept as one atomic block instead 
   const preOpens = (tableChunk.match(/<pre>/g) || []).length
   const preCloses = (tableChunk.match(/<\/pre>/g) || []).length
   assert.equal(preOpens, preCloses, `unbalanced <pre> in table chunk: ${tableChunk}`)
+})
+
+test('markdownToTelegramHtmlChunks: a table too big for one chunk is split by whole rows, repeating the header on each piece, instead of leaking raw pipe text', () => {
+  const rows = Array.from({ length: 50 }, (_, i) => `| Item ${i} | value-${i} |`).join('\n')
+  const md = `| Name | Value |\n|------|-------|\n${rows}`
+  const chunks = markdownToTelegramHtmlChunks(md, 300)
+  assert.ok(chunks.length > 1)
+  for (const c of chunks) {
+    assert.ok(c.length <= 300)
+    assert.ok(c.startsWith('<pre>Name'), `piece lost its table header: ${c}`)
+    const withoutPre = c.replace(/<pre>[\s\S]*?<\/pre>/g, '')
+    assert.ok(!withoutPre.includes('|'), `raw unrendered pipe text leaked outside <pre>: ${c}`)
+  }
+  const combined = chunks.join('')
+  for (let i = 0; i < 50; i++) assert.ok(combined.includes(`Item ${i}`), `missing row ${i}`)
 })
 
 test('markdownToTelegramHtmlChunks: a table inside a fenced code block is left as literal code, not parsed as a real table', () => {
