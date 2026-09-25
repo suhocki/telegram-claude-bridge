@@ -526,6 +526,15 @@ test('renderDraftMarkdown: under a tight limit, the live text (shown outside the
   assert.ok(result.includes('number 49'), 'the history tail should keep the most recent lines, dropping older ones instead')
 })
 
+test('regression: renderDraftMarkdown truncates the live text (not bails to null) when history is non-empty but live alone would overflow the limit', () => {
+  const history = ['⏳ Bash: npm test…']
+  const live = 'z'.repeat(500)
+  const result = renderDraftMarkdown(history, live, 200)
+  assert.notEqual(result, null, 'a long live segment must not blank out an otherwise-renderable draft')
+  assert.ok(result.length <= 200, `result length ${result?.length} exceeds the 200 limit`)
+  assert.ok(result.endsWith('z'), 'the live tail (kept in preference to history) is what survives at the end')
+})
+
 test('stripRenderedTableGridsForSpeech: replaces an already-rendered table grid (Telegram\'s own plain message.text, used by the Listen button) with a spoken placeholder', () => {
   const rendered = htmlToPlainFallback(markdownToTelegramHtml('Summary:\n\n| Name | Age |\n|------|-----|\n| Alice | 30 |\n\nDone.'))
   assert.equal(stripRenderedTableGridsForSpeech(rendered), 'Summary:\n\ntable data\n\nDone.')

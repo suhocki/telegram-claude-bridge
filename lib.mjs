@@ -886,6 +886,14 @@ export function buildWorkingPlaceholderParams(chatId, text, replyToMessageId, ke
   return keyboard ? { ...base, reply_markup: keyboard } : base
 }
 
+// Shared by every placeholder-style controller's editPlaceholder (classic and draft alike) so their error handling can't silently drift apart.
+export function parseTelegramEditError(message) {
+  const text = String(message ?? '')
+  if (/message is not modified/i.test(text)) return { notModified: true, retryAfterMs: null }
+  const match = text.match(/retry after (\d+)/i)
+  return { notModified: false, retryAfterMs: match ? Number(match[1]) * 1000 : null }
+}
+
 const VOICE_TOGGLE_ARG_RE = /^\s+(on|off)$/i
 
 export function parseVoiceToggleCommand(text, botUsername) {

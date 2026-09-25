@@ -109,6 +109,7 @@ import {
   resolveJoinFragmentText,
   buildPlaceholderEditParams,
   buildWorkingPlaceholderParams,
+  parseTelegramEditError,
   parseVoiceToggleCommand,
   setVoiceReplyPreference,
   isVoiceReplyEnabled,
@@ -1538,10 +1539,10 @@ function createDraftPlaceholderController(chatId, draftId, initialStatus, shared
       await tg(method, params)
     } catch (e) {
       if (fellBack) return
-      if (/message is not modified/i.test(e.message)) return
-      const retryAfterMatch = e.message.match(/retry after (\d+)/i)
-      if (retryAfterMatch) {
-        statusUpdater.pauseFor(Number(retryAfterMatch[1]) * 1000)
+      const { notModified, retryAfterMs } = parseTelegramEditError(e.message)
+      if (notModified) return
+      if (retryAfterMs != null) {
+        statusUpdater.pauseFor(retryAfterMs)
         log('sendRichMessageDraft rate-limited, pausing streaming updates', e.message)
         return
       }
@@ -1598,10 +1599,10 @@ function createPlaceholderController(
     try {
       await tg('editMessageText', params)
     } catch (e) {
-      if (/message is not modified/i.test(e.message)) return
-      const retryAfterMatch = e.message.match(/retry after (\d+)/i)
-      if (retryAfterMatch) {
-        statusUpdater.pauseFor(Number(retryAfterMatch[1]) * 1000)
+      const { notModified, retryAfterMs } = parseTelegramEditError(e.message)
+      if (notModified) return
+      if (retryAfterMs != null) {
+        statusUpdater.pauseFor(retryAfterMs)
         log('editMessageText rate-limited, pausing streaming updates', e.message)
         return
       }
@@ -1713,25 +1714,26 @@ async function runClaudeTurn(
   const chatRateGate = createChatRateGate()
   // guards fallbackToClassicPlaceholder against firing after this turn's own cleanup already ran (a late, in-flight draft tick failing post-turn)
   let turnSettled = false
-  // a draft tick failing and a cancel/timeout landing the same instant can both try to trigger this — only the first one should ever run.
-  let fallbackAttempted = false
+  // a mutex, not a one-shot latch: blocks two concurrent triggers from both creating a placeholder, but a later, separate attempt may still retry after this one fails outright.
+  let fallbackInFlight = false
 
   // optional-chained defensively: rootController is always assigned before this can run today, but it's a handed-off callback.
   let rootController
   async function fallbackToClassicPlaceholder() {
-    if (turnSettled || fallbackAttempted) return
-    fallbackAttempted = true
-    rootController?.statusUpdater.stop()
-    const seededHistory = rootController?.tracker.historySnapshot() ?? []
-    // recomputed here, not reused from turn start: joins folded into run.pending while streaming never had a keyboard to show them on until now.
-    const liveCancelKeyboard = buildCancelKeyboard(chatId, run.pending.length)
+    if (turnSettled || fallbackInFlight) return
+    fallbackInFlight = true
     try {
+      rootController?.statusUpdater.stop()
+      // recomputed here, not reused from turn start: joins folded into run.pending while streaming never had a keyboard to show them on until now.
+      const liveCancelKeyboard = buildCancelKeyboard(chatId, run.pending.length)
       const placeholder = await tg('sendMessage', buildWorkingPlaceholderParams(chatId, workingStatus, originMessageId, liveCancelKeyboard, threadId))
       if (turnSettled) {
         // the turn already concluded via the other path while this sendMessage was in flight — this placeholder is now orphaned, not useful.
         await tg('deleteMessage', { chat_id: chatId, message_id: placeholder.message_id }).catch(() => {})
         return
       }
+      // snapshotted only now, not before the await above: events ingested into the still-live draft tracker during that round-trip must not be lost.
+      const seededHistory = rootController?.tracker.historySnapshot() ?? []
       currentPlaceholderId = placeholder.message_id
       run.placeholderId = currentPlaceholderId
       botMessageIds.push(currentPlaceholderId)
@@ -1739,6 +1741,8 @@ async function runClaudeTurn(
       if (seededHistory.length) await rootController.editPlaceholder(rootController.tracker.snapshot())
     } catch (e) {
       log('failed to create fallback placeholder after sendRichMessageDraft failure', e.message)
+    } finally {
+      fallbackInFlight = false
     }
   }
   rootController = usingDraftStreaming

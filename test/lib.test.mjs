@@ -84,6 +84,7 @@ import {
   TRANSCRIPT_QUOTE_MAX_CHARS,
   buildPlaceholderEditParams,
   buildWorkingPlaceholderParams,
+  parseTelegramEditError,
   buildCancelKeyboard,
   buildContinueKeyboard,
   buildListenKeyboard,
@@ -2302,6 +2303,23 @@ test('buildWorkingPlaceholderParams: omits message_thread_id when no threadId is
     text: '⏳ working…',
     reply_parameters: { message_id: 42, allow_sending_without_reply: true },
   })
+})
+
+test('parseTelegramEditError: recognizes a "message is not modified" error, case-insensitively', () => {
+  assert.deepEqual(parseTelegramEditError('Bad Request: message is not modified'), { notModified: true, retryAfterMs: null })
+  assert.deepEqual(parseTelegramEditError('MESSAGE IS NOT MODIFIED'), { notModified: true, retryAfterMs: null })
+})
+
+test('parseTelegramEditError: extracts a retry-after value in milliseconds', () => {
+  assert.deepEqual(parseTelegramEditError('Too Many Requests: retry after 5'), { notModified: false, retryAfterMs: 5000 })
+})
+
+test('parseTelegramEditError: neither pattern matches an unrelated error', () => {
+  assert.deepEqual(parseTelegramEditError('Bad Request: chat not found'), { notModified: false, retryAfterMs: null })
+})
+
+test('parseTelegramEditError: a nullish message is treated as an unrelated error, not a crash', () => {
+  assert.deepEqual(parseTelegramEditError(undefined), { notModified: false, retryAfterMs: null })
 })
 
 test('parseVoiceToggleCommand: recognizes /voice on and /voice off case-insensitively', () => {

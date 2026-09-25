@@ -447,12 +447,15 @@ export function renderDraftMarkdown(historyLines, liveText, limit = 30000) {
   const historyFull = lines.join('\n')
   const fence = backtickFenceFor(historyFull)
   const summary = `🔧 ${lines.length} step${lines.length === 1 ? '' : 's'}`
-  const liveSuffix = live ? `\n\n${live}` : ''
-  const wrap = body => `<details><summary>${summary}</summary>\n\n${fence}\n${body}\n${fence}\n\n</details>${liveSuffix}`
-  // this wrapper (unlike renderTranscriptHtml's) has a fixed cost that doesn't shrink with the budget — bail to null if even an empty body can't fit.
-  const emptyWrapped = wrap('')
-  if (emptyWrapped.length > limit) return null
-  return wrap(tailPlainTextLines(historyFull, limit - emptyWrapped.length))
+  const wrap = (body, liveSuffix) => `<details><summary>${summary}</summary>\n\n${fence}\n${body}\n${fence}\n\n</details>${liveSuffix}`
+  // this wrapper (unlike renderTranscriptHtml's) has a fixed cost that doesn't shrink with the budget — bail to null if even an empty body/live can't fit.
+  const emptyBudget = limit - wrap('', '').length
+  if (emptyBudget < 0) return null
+
+  // live gets first claim on the budget (it's the visible "front line"), capped so its own "\n\n" separator can never push the total over emptyBudget.
+  const cappedLive = live ? tailPlainTextLines(live, Math.max(0, emptyBudget - 2)) : ''
+  const liveSuffix = cappedLive ? `\n\n${cappedLive}` : ''
+  return wrap(tailPlainTextLines(historyFull, emptyBudget - liveSuffix.length), liveSuffix)
 }
 
 export function htmlToPlainFallback(html) {
