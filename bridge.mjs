@@ -973,23 +973,26 @@ async function runCheckin(key) {
 
   try {
     const checkinPrompt = buildCheckinFollowupPrompt(pending.instruction)
+    const priorSession = normalizeSession(state.sessions[key])
     let result
+    let markers
     let resumeSessionId = sessionId
+    let newSession = priorSession
     for (let attempt = 0; ; attempt++) {
       result = await runClaude(checkinPrompt, resumeSessionId, undefined, currentAuthMode(), currentModelConfig(key), key).promise
-      if (result.is_error || extractResponseMarkers(result.result).text || attempt >= MAX_EMPTY_RESULT_RETRIES) break
+      // accumulated per attempt, not just the surviving one, so a discarded empty-retry attempt's spend is never dropped from the tracked session cost
+      if (result.session_id) {
+        newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
+        state.sessions[key] = newSession
+        saveState(state)
+        syncConfigPin(key)
+      }
+      markers = extractResponseMarkers(result.result)
+      if (result.is_error || markers.noReply || markers.text || attempt >= MAX_EMPTY_RESULT_RETRIES) break
       log('check-in returned an empty result with no error, retrying', key, `attempt ${attempt + 1}`)
       resumeSessionId = result.session_id ?? resumeSessionId
     }
-    const priorSession = normalizeSession(state.sessions[key])
-    let newSession = priorSession
-    if (result.session_id) {
-      newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
-      state.sessions[key] = newSession
-      saveState(state)
-      syncConfigPin(key)
-    }
-    const { text: cleanedResult, attachPaths, checkin: nextCheckin, noReply } = extractResponseMarkers(result.result)
+    const { text: cleanedResult, attachPaths, checkin: nextCheckin, noReply } = markers
     const costWarningCrossed = newSession && crossedCostThreshold(priorSession?.costUsd ?? 0, newSession.costUsd, costWarnUsd)
     const suppressReply = noReply && !cleanedResult && !result.is_error && !costWarningCrossed
     let replyText = result.is_error
@@ -1704,7 +1707,9 @@ async function runClaudeTurn(
   try {
     if (run.finished) throw new Error('cancelled before the run could start')
     let result
+    let markers
     let resumeSessionId = sessionId
+    let newSession = priorSession
     for (let attempt = 0; ; attempt++) {
       const claude = runClaude(prompt, resumeSessionId, event => routeEvent(event), authMode, modelConfig, key)
       getSessionId = claude.getSessionId
@@ -1721,21 +1726,23 @@ async function runClaudeTurn(
         err.cancelledResult = result
         throw err
       }
-      if (result.is_error || extractResponseMarkers(result.result).text || attempt >= MAX_EMPTY_RESULT_RETRIES) break
+      // accumulated per attempt, not just the surviving one, so a discarded empty-retry attempt's spend is never dropped from the tracked session cost
+      if (result.session_id) {
+        newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
+        state.sessions[key] = newSession
+        saveState(state)
+        syncConfigPin(key)
+      }
+      markers = extractResponseMarkers(result.result)
+      // /compact and NO_REPLY-suppressed turns are expected to come back with no text — only a genuinely unclassified empty completion gets retried
+      if (result.is_error || isCompact || markers.noReply || markers.text || attempt >= MAX_EMPTY_RESULT_RETRIES) break
       log('claude returned an empty result with no error, retrying the turn', key, `attempt ${attempt + 1}`)
       resumeSessionId = result.session_id ?? resumeSessionId
     }
     run.finished = true
     // no finalStatus edit: the placeholder gets deleted outright below, once the real reply is sent
     rootController.statusUpdater.stop()
-    let newSession = priorSession
-    if (result.session_id) {
-      newSession = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
-      state.sessions[key] = newSession
-      saveState(state)
-      syncConfigPin(key)
-    }
-    const { text: cleanedResult, attachPaths, reactionEmoji, checkin, noReply } = extractResponseMarkers(result.result)
+    const { text: cleanedResult, attachPaths, reactionEmoji, checkin, noReply } = markers
     const costWarningCrossed = newSession && crossedCostThreshold(priorSession?.costUsd ?? 0, newSession.costUsd, costWarnUsd)
     // NO_REPLY only ever suppresses an otherwise-empty, otherwise-unremarkable turn — an error, /compact, or a cost warning always still gets sent
     const suppressReply = noReply && !cleanedResult && !result.is_error && !isCompact && !costWarningCrossed
