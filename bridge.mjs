@@ -1707,11 +1707,12 @@ async function runClaudeTurn(
   let cancelled = false
   let continueArmed = false
   let getSessionId = () => null
+  // hoisted above the try block so the catch's cancel/timeout fallback sees the latest attempt's id, not the turn's stale pre-retry one
+  let resumeSessionId = sessionId
   try {
     if (run.finished) throw new Error('cancelled before the run could start')
     let result
     let markers
-    let resumeSessionId = sessionId
     let newSession = priorSession
     for (let attempt = 0; ; attempt++) {
       const claude = runClaude(prompt, resumeSessionId, event => routeEvent(event), authMode, modelConfig, key)
@@ -1789,7 +1790,7 @@ async function runClaudeTurn(
     rootController.statusUpdater.stop()
     if (cancelled || e.timedOut) {
       // a hard kill often beats runClaude's own capturedSessionId to any stream line, so fall back to the resume id this turn was already given
-      const resumableSessionId = e.cancelledResult?.session_id ?? getSessionId() ?? sessionId
+      const resumableSessionId = e.cancelledResult?.session_id ?? getSessionId() ?? resumeSessionId
       if (resumableSessionId) {
         state.sessions[key] = accumulateSessionCost(
           normalizeSession(state.sessions[key]),
