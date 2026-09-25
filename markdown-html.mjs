@@ -432,17 +432,18 @@ export function renderTranscriptHtml(historyLines, liveText, limit = 4096) {
   return liveHtml ? `${historyText}\n${liveHtml}` : historyText
 }
 
-// An inline code span isn't markdown/HTML-parsed, so this — not escapeHtml — guards a raw tool command/path; sized past any backtick run already in the line.
+// An inline code span isn't markdown/HTML-parsed, so this guards a short summary line better than escapeHtml — newlines are collapsed first (an inline span spanning one isn't a safe bet here), and the fence length is sized past any backtick run already present.
 function wrapSafeInline(line) {
-  const runs = line.match(/`+/g)
+  const singleLine = line.replace(/\s*\n\s*/g, ' ')
+  const runs = singleLine.match(/`+/g)
   const longest = runs ? runs.reduce((max, r) => Math.max(max, r.length), 0) : 0
   const tick = '`'.repeat(longest + 1)
-  return `${tick}${line}${tick}`
+  return `${tick}${singleLine}${tick}`
 }
 
-// escapeHtml only touches &/</>, so **bold**/_italic_/`code` etc. still render — it just stops a literal "</details>" in the model's own text from closing this tag early.
+// The summary is always inline-wrapped, even with a full body: it's a hard 80-char cut of arbitrary model output that can land mid-token (e.g. an unclosed **), which escapeHtml alone wouldn't neutralize.
 function renderHistoryEntry(line, full) {
-  return full ? `<details><summary>${escapeHtml(line)}</summary>\n\n${escapeHtml(full)}\n\n</details>` : wrapSafeInline(line)
+  return full ? `<details><summary>${wrapSafeInline(line)}</summary>\n\n${escapeHtml(full)}\n\n</details>` : wrapSafeInline(line)
 }
 
 export function renderDraftMarkdown(historyLines, liveText, limit = 30000, fullTexts = []) {

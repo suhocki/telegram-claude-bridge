@@ -499,12 +499,23 @@ test('regression: a history line with 4+ consecutive backticks grows the inline 
   assert.equal(result.match(/<\/details>/g).length, 1, 'the closing tag appears exactly once, proving nothing closed early')
 })
 
-test('renderDraftMarkdown: a history line with a full-text counterpart becomes its own expandable <details>, markdown formatting intact', () => {
+test('renderDraftMarkdown: a history line with a full-text counterpart becomes its own expandable <details>, summary inline-wrapped, full body markdown intact', () => {
   const result = renderDraftMarkdown(['🤔 a short preview…'], '', 30000, ['the full, unabridged thinking with **markdown** intact'])
   assert.equal(
     result,
-    '<details><summary>🔧 1 step</summary>\n\n<details><summary>🤔 a short preview…</summary>\n\nthe full, unabridged thinking with **markdown** intact\n\n</details>\n\n</details>'
+    '<details><summary>🔧 1 step</summary>\n\n<details><summary>`🤔 a short preview…`</summary>\n\nthe full, unabridged thinking with **markdown** intact\n\n</details>\n\n</details>'
   )
+})
+
+test('regression: a summary line truncated mid-markdown-token (e.g. an unclosed **) is neutralized by the inline wrap, not left to bleed past </summary>', () => {
+  const result = renderDraftMarkdown(['🤔 an unclosed **bold marker cut off…'], '', 30000, ['the full text here'])
+  assert.ok(result.includes('<summary>`🤔 an unclosed **bold marker cut off…`</summary>'), 'the lone ** stays literal, inside the safe inline span')
+})
+
+test('regression: a summary line with an embedded newline (e.g. a multi-line tool command) is collapsed to one line before being inline-wrapped', () => {
+  const result = renderDraftMarkdown(['⏳ Bash: line one\nline two…'], '', 30000)
+  assert.ok(!result.includes('\nline two'), 'no literal newline survives inside the inline span')
+  assert.ok(result.includes('line one line two'))
 })
 
 test('regression: a literal "</details>" inside the model\'s own full text cannot close the wrapper tag early', () => {
@@ -522,7 +533,7 @@ test('renderDraftMarkdown: a mix of tool-call lines (no full text) and a thinkin
     [null, 'the full thinking text', undefined]
   )
   assert.ok(result.includes('`⏳ Bash: npm test…`'), 'tool line stays inline-wrapped, no expansion')
-  assert.ok(result.includes('<details><summary>🤔 short…</summary>\n\nthe full thinking text\n\n</details>'), 'thinking line becomes its own nested expandable section')
+  assert.ok(result.includes('<details><summary>`🤔 short…`</summary>\n\nthe full thinking text\n\n</details>'), 'thinking line becomes its own nested expandable section')
   assert.ok(result.includes('`✅ Read: foo.py…`'), 'tool line stays inline-wrapped, no expansion')
 })
 
