@@ -143,6 +143,11 @@ function renderEphemeral(entry) {
   return `${entry.state} ${formatToolBody(entry.name, entry.input)}`
 }
 
+// Parallels renderEphemeral, index-for-index: the untruncated text behind a thinking line, or null for anything else.
+function ephemeralFullText(entry) {
+  return entry.kind === 'thinking' ? entry.full : null
+}
+
 // Only frozen *text* segments (💬, for a human) become permanent checkpointLines; tool calls and frozen thinking are ephemeral and collapse away on the next checkpoint.
 export function createProgressTracker(
   initialStatus = DEFAULT_WORKING_STATUS,
@@ -155,6 +160,8 @@ export function createProgressTracker(
 ) {
   const seenToolIds = new Set()
   const checkpointLines = []
+  // Parallel to checkpointLines; never seeded from initialCheckpointLines, so a resumed turn's checkpoints have no expandable full text.
+  const checkpointFullTexts = []
   let ephemeral = []
   let liveText = ''
   let liveKind = null // 'thinking' | 'text' | null
@@ -174,17 +181,18 @@ export function createProgressTracker(
     pushBounded(ephemeral, maxEphemeralLines, entry)
   }
 
-  function pushCheckpoint(line) {
+  function pushCheckpoint(line, full = null) {
     pushBounded(checkpointLines, maxCheckpointLines, line)
+    pushBounded(checkpointFullTexts, maxCheckpointLines, full)
   }
 
   function freezeLive() {
     const trimmed = liveText.trim()
     if (trimmed) {
       if (liveKind === 'thinking') {
-        pushEphemeral({ kind: 'thinking', text: `🤔 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}` })
+        pushEphemeral({ kind: 'thinking', text: `🤔 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, full: trimmed })
       } else {
-        pushCheckpoint(`💬 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`)
+        pushCheckpoint(`💬 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, trimmed)
         ephemeral = [] // a checkpoint is the summary of everything that led to it — collapse the rest
       }
     }
@@ -201,6 +209,11 @@ export function createProgressTracker(
     return [...checkpointLines, ...ephemeral.map(renderEphemeral)]
   }
 
+  // Index-aligned with historyLines(): the full untruncated text behind a thinking/said line, or null where there is none.
+  function historyFullTexts() {
+    return [...checkpointFullTexts, ...ephemeral.map(ephemeralFullText)]
+  }
+
   function defaultRender() {
     const preview = liveText.trim()
       ? liveKind === 'thinking'
@@ -211,7 +224,7 @@ export function createProgressTracker(
   }
 
   function commit() {
-    const rendered = renderTranscript ? renderTranscript(historyLines(), liveDisplayText()) : defaultRender()
+    const rendered = renderTranscript ? renderTranscript(historyLines(), liveDisplayText(), historyFullTexts()) : defaultRender()
     // renderTranscript can legitimately return null (e.g. nothing fits the budget this
     // tick) — treat that the same as "nothing new to report" rather than letting null
     // overwrite a perfectly good prior status (and leak downstream into an edit)

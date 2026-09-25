@@ -1528,7 +1528,7 @@ async function fetchFishVoicesPage(pageNumber) {
 // Private-chat counterpart to createPlaceholderController below, for the same root placeholder role only (never for subagents).
 function createDraftPlaceholderController(chatId, draftId, initialStatus, sharedGate, onFallback) {
   const tracker = createProgressTracker(initialStatus, {
-    renderTranscript: (historyLines, liveText) => renderDraftMarkdown(historyLines, liveText),
+    renderTranscript: (historyLines, liveText, fullTexts) => renderDraftMarkdown(historyLines, liveText, undefined, fullTexts),
   })
   let fellBack = false
   // no ordering guarantee across independent requests, so overlapping sends could flash stale content back onto the draft — serialize them instead.

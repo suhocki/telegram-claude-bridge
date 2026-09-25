@@ -432,22 +432,26 @@ export function renderTranscriptHtml(historyLines, liveText, limit = 4096) {
   return liveHtml ? `${historyText}\n${liveHtml}` : historyText
 }
 
-// Fenced code isn't markdown/HTML-parsed even inside <details> (the one place Rich Markdown does parse both), so this — not escapeHtml — is the guard here; sized past any backtick run already in the text.
-function backtickFenceFor(text) {
-  const runs = text.match(/`+/g)
+// An inline code span isn't markdown/HTML-parsed, so this — not escapeHtml — guards a raw tool command/path; sized past any backtick run already in the line.
+function wrapSafeInline(line) {
+  const runs = line.match(/`+/g)
   const longest = runs ? runs.reduce((max, r) => Math.max(max, r.length), 0) : 0
-  return '`'.repeat(Math.max(4, longest + 1))
+  const tick = '`'.repeat(longest + 1)
+  return `${tick}${line}${tick}`
 }
 
-export function renderDraftMarkdown(historyLines, liveText, limit = 30000) {
-  const lines = (historyLines ?? []).filter(Boolean)
-  const live = String(liveText ?? '').trim()
-  if (!lines.length) return (live && tailPlainTextLines(live, limit)) || null
+// escapeHtml only touches &/</>, so **bold**/_italic_/`code` etc. still render — it just stops a literal "</details>" in the model's own text from closing this tag early.
+function renderHistoryEntry(line, full) {
+  return full ? `<details><summary>${escapeHtml(line)}</summary>\n\n${escapeHtml(full)}\n\n</details>` : wrapSafeInline(line)
+}
 
-  const historyFull = lines.join('\n')
-  const fence = backtickFenceFor(historyFull)
-  const summary = `🔧 ${lines.length} step${lines.length === 1 ? '' : 's'}`
-  const wrap = (body, liveSuffix) => `<details><summary>${summary}</summary>\n\n${fence}\n${body}\n${fence}\n\n</details>${liveSuffix}`
+export function renderDraftMarkdown(historyLines, liveText, limit = 30000, fullTexts = []) {
+  const entries = (historyLines ?? []).map((line, i) => (line ? { line, full: fullTexts[i] || null } : null)).filter(Boolean)
+  const live = String(liveText ?? '').trim()
+  if (!entries.length) return (live && tailPlainTextLines(live, limit)) || null
+
+  const summary = `🔧 ${entries.length} step${entries.length === 1 ? '' : 's'}`
+  const wrap = (body, liveSuffix) => `<details><summary>${summary}</summary>\n\n${body}\n\n</details>${liveSuffix}`
   // this wrapper (unlike renderTranscriptHtml's) has a fixed cost that doesn't shrink with the budget — bail to null if even an empty body/live can't fit.
   const emptyBudget = limit - wrap('', '').length
   if (emptyBudget < 0) return null
@@ -455,7 +459,18 @@ export function renderDraftMarkdown(historyLines, liveText, limit = 30000) {
   // live gets first claim on the budget (it's the visible "front line"), capped so its own "\n\n" separator can never push the total over emptyBudget.
   const cappedLive = live ? tailPlainTextLines(live, Math.max(0, emptyBudget - 2)) : ''
   const liveSuffix = cappedLive ? `\n\n${cappedLive}` : ''
-  return wrap(tailPlainTextLines(historyFull, emptyBudget - liveSuffix.length), liveSuffix)
+  const bodyBudget = emptyBudget - liveSuffix.length
+
+  // whole entries drop from the front (oldest first) rather than truncating mid-entry, which could otherwise cut an entry's own <details> tag in half.
+  let kept = entries
+  let body = kept.map(e => renderHistoryEntry(e.line, e.full)).join('\n')
+  while (kept.length > 1 && body.length > bodyBudget) {
+    kept = kept.slice(1)
+    body = kept.map(e => renderHistoryEntry(e.line, e.full)).join('\n')
+  }
+  // last resort: even the single most recent entry's own expandable body doesn't fit — show its short line without the expansion instead of nothing.
+  if (body.length > bodyBudget) body = renderHistoryEntry(kept[0].line, null)
+  return body.length <= bodyBudget ? wrap(body, liveSuffix) : wrap('', liveSuffix)
 }
 
 export function htmlToPlainFallback(html) {
