@@ -730,20 +730,37 @@ test('createProgressTracker: a tool_result for a line already evicted by the cap
   assert.equal(tracker.current(), '⏳ Bash: b…\n⏳ Bash: c…')
 })
 
-test('createProgressTracker.historySnapshot freezes any trailing live text into a checkpoint before returning', () => {
+test('createProgressTracker.historySnapshot freezes any trailing live text into a checkpoint before returning, with its full text alongside', () => {
   const tracker = createProgressTracker()
   tracker.ingest({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'still going' } } })
-  assert.deepEqual(tracker.historySnapshot(), ['💬 still going'])
+  assert.deepEqual(tracker.historySnapshot(), [{ line: '💬 still going', full: 'still going' }])
 })
 
-test('createProgressTracker.historySnapshot returns the checkpoint lines seen so far, oldest first', () => {
+test('createProgressTracker.historySnapshot returns the checkpoint lines seen so far, oldest first, each with its full text', () => {
   const tracker = createProgressTracker()
   const tool = (id, name, input) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } })
   const text = t => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: t } } })
   tracker.ingest(text('first'))
   tracker.ingest(tool('toolu_1', 'Bash', { command: 'a' }))
   tracker.ingest(text('second'))
-  assert.deepEqual(tracker.historySnapshot(), ['💬 first', '💬 second'])
+  assert.deepEqual(tracker.historySnapshot(), [
+    { line: '💬 first', full: 'first' },
+    { line: '💬 second', full: 'second' },
+  ])
+})
+
+test('regression: historySnapshot seeded back in via initialCheckpointLines round-trips correctly (fallback/resume from a live tracker keeps its full text)', () => {
+  const tracker = createProgressTracker()
+  tracker.ingest({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'reasoning' } } })
+  tracker.ingest({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'a long enough answer' } } })
+  const snapshot = tracker.historySnapshot()
+  const resumed = createProgressTracker(DEFAULT_WORKING_STATUS, { initialCheckpointLines: snapshot })
+  assert.deepEqual(resumed.historySnapshot(), snapshot)
+})
+
+test('regression: historySnapshot still accepts old, pre-upgrade plain-string initialCheckpointLines without crashing (full text just stays null)', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, { initialCheckpointLines: ['💬 from disk, plain string'] })
+  assert.deepEqual(tracker.historySnapshot(), [{ line: '💬 from disk, plain string', full: null }])
 })
 
 test('createProgressTracker: initialCheckpointLines seeds history immediately, before any event is ingested', () => {

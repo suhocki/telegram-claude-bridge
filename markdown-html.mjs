@@ -455,10 +455,10 @@ export function renderDraftMarkdown(historyLines, liveText, limit = 30000, fullT
   const live = String(liveText ?? '').trim()
   if (!entries.length) return (live && tailPlainTextLines(live, limit)) || null
 
-  const summary = `🔧 ${entries.length} step${entries.length === 1 ? '' : 's'}`
-  const wrap = (body, liveSuffix) => `<details><summary>${summary}</summary>\n\n${body}\n\n</details>${liveSuffix}`
-  // this wrapper (unlike renderTranscriptHtml's) has a fixed cost that doesn't shrink with the budget — bail to null if even an empty body/live can't fit.
-  const emptyBudget = limit - wrap('', '').length
+  const summaryFor = count => `🔧 ${count} step${count === 1 ? '' : 's'}`
+  const wrap = (body, liveSuffix, count) => `<details><summary>${summaryFor(count)}</summary>\n\n${body}\n\n</details>${liveSuffix}`
+  // budgeted against entries.length (the largest the surviving count can ever be) — conservative by at most a couple of chars, but the final, possibly-smaller count recomputed below is then always guaranteed to still fit.
+  const emptyBudget = limit - wrap('', '', entries.length).length
   if (emptyBudget < 0) return null
 
   // live gets first claim on the budget (it's the visible "front line"), capped so its own "\n\n" separator can never push the total over emptyBudget.
@@ -476,7 +476,8 @@ export function renderDraftMarkdown(historyLines, liveText, limit = 30000, fullT
   }
   // last resort: even the single most recent entry's own expandable body doesn't fit — show its short line without the expansion instead of nothing.
   if (body.length > bodyBudget) body = renderHistoryEntry(entries[start].line, null)
-  return body.length <= bodyBudget ? wrap(body, liveSuffix) : wrap('', liveSuffix)
+  const survivingCount = entries.length - start
+  return body.length <= bodyBudget ? wrap(body, liveSuffix, survivingCount) : wrap('', liveSuffix, survivingCount)
 }
 
 export function htmlToPlainFallback(html) {

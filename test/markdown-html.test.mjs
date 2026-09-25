@@ -566,6 +566,14 @@ test('regression: oldest whole entries drop first under a tight budget, keeping 
   assert.ok(!result.includes('step 0…'), 'the oldest entries are dropped first, as whole entries')
 })
 
+test('regression: the "🔧 N steps" summary reflects how many entries actually survived truncation, not the original pre-drop count', () => {
+  const history = Array.from({ length: 20 }, (_, i) => `⏳ Bash: step ${i}…`)
+  const result = renderDraftMarkdown(history, '', 300)
+  const survivingCount = result.split('\n').filter(line => line.startsWith('`⏳')).length
+  assert.ok(survivingCount < 20, 'sanity check: this limit must actually force some entries to drop')
+  assert.match(result, new RegExp(`<summary>🔧 ${survivingCount} steps</summary>`), 'the header must count what is actually shown, not the original 20')
+})
+
 test('regression: when even the single most recent entry (with its own expandable body) cannot fit, it degrades to its plain short line instead of vanishing', () => {
   const result = renderDraftMarkdown(['🤔 a short preview…'], '', 120, ['x'.repeat(500)])
   assert.notEqual(result, null, 'the entry itself must still show up, just without the expansion')

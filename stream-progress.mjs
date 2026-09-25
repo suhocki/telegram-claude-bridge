@@ -168,7 +168,8 @@ export function createProgressTracker(
   let statusIsHtml = false
   let snapshotCache = { text: status, html: statusIsHtml }
 
-  for (const line of initialCheckpointLines) pushCheckpoint(line)
+  // a seed is a plain string (old persisted state.json data, or the classic path's own checkpointHistory) or a { line, full } entry (this tracker's own historySnapshot()) — both are accepted so nothing crashes on a pre-upgrade persisted turn.
+  for (const seed of initialCheckpointLines) pushCheckpoint(seed?.line ?? seed, seed?.full ?? null)
   if (checkpoints.length) commit()
 
   function pushBounded(array, maxLen, item) {
@@ -180,7 +181,6 @@ export function createProgressTracker(
     pushBounded(ephemeral, maxEphemeralLines, entry)
   }
 
-  // full stays null for a line seeded from initialCheckpointLines (a resumed turn) — there is no expandable text left to seed it with.
   function pushCheckpoint(line, full = null) {
     pushBounded(checkpoints, maxCheckpointLines, { line, full })
   }
@@ -283,10 +283,10 @@ export function createProgressTracker(
     return snapshotCache
   }
 
-  // freezes any trailing live text first, so a tracker snapshotted right before being discarded doesn't lose whatever was mid-stream
+  // freezes any trailing live text first, so a tracker snapshotted right before being discarded doesn't lose whatever was mid-stream; { line, full } entries, not plain strings, so a seeded fallback/resume can still expand what this tracker already captured.
   function historySnapshot() {
     freezeLive()
-    return checkpoints.map(c => c.line)
+    return checkpoints.map(c => ({ line: c.line, full: c.full }))
   }
 
   return { ingest, current, snapshot, historySnapshot }
