@@ -1539,27 +1539,16 @@ function createDraftPlaceholderController(chatId, draftId, threadId, initialStat
     renderTranscript: (historyLines, liveText, fullTexts) => renderDraftMarkdown(historyLines, liveText, undefined, fullTexts),
   })
   let fellBack = false
-  // no ordering guarantee across independent requests, so overlapping sends could flash stale content back onto the draft — serialize them instead.
+  // no ordering guarantee across independent requests, so overlapping sends could flash stale content back onto the draft — drop one instead of queueing it, the next tick's own fresh snapshot supersedes it anyway.
   let sending = false
-  let resendPending = false
 
   async function editPlaceholder({ text }) {
-    if (fellBack) return
-    if (sending) {
-      resendPending = true
-      return
-    }
+    if (fellBack || sending) return
     sending = true
     try {
       const { method, params } = buildSendRichMessageDraftCall(chatId, draftId, text, threadId)
       await tg(method, params)
-      sending = false
-      if (resendPending) {
-        resendPending = false
-        await editPlaceholder(tracker.snapshot())
-      }
     } catch (e) {
-      sending = false
       if (fellBack) return
       const { notModified, retryAfterMs } = parseTelegramEditError(e.message)
       if (notModified) return
@@ -1572,6 +1561,8 @@ function createDraftPlaceholderController(chatId, draftId, threadId, initialStat
       log('sendRichMessageDraft failed, falling back to a classic placeholder', e.message)
       statusUpdater.stop()
       await onFallback()
+    } finally {
+      sending = false
     }
   }
 
