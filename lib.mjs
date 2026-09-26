@@ -467,7 +467,6 @@ export function buildRichReplyCall(chatId, text, replyToMessageId, editMessageId
   return { method: 'sendRichMessage', params }
 }
 
-
 export const MAX_PERSISTED_FULL_TEXT_CHARS = 4000
 
 export function capCheckpointHistoryFullText(checkpointHistory, maxChars = MAX_PERSISTED_FULL_TEXT_CHARS) {
