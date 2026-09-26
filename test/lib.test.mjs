@@ -1189,9 +1189,12 @@ test('parseStoppedMessageGeneration: returns null when chat or draft_id is missi
 })
 
 test('parseStoppedMessageGeneration: coerces a string draft_id to Number, confirmed live as what Telegram actually sends', () => {
-  const parsed = parseStoppedMessageGeneration({ chat: { id: 123 }, draft_id: '3' })
-  assert.deepEqual(parsed, { chatId: '123', draftId: 3 })
-  assert.equal(typeof parsed.draftId, 'number')
+  assert.deepEqual(parseStoppedMessageGeneration({ chat: { id: 123 }, draft_id: '3' }), { chatId: '123', draftId: 3 })
+})
+
+test('parseStoppedMessageGeneration: rejects a non-numeric draft_id instead of coercing it to a NaN that could never match any run', () => {
+  assert.equal(parseStoppedMessageGeneration({ chat: { id: 123 }, draft_id: 'abc' }), null)
+  assert.equal(parseStoppedMessageGeneration({ chat: { id: 123 }, draft_id: '' }), null)
 })
 
 test('isTargetRunForStoppedGeneration: matches a live run with the same chatId and draftId', () => {
