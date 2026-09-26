@@ -52,13 +52,6 @@ import {
   combineSystemPrompts,
   buildReplyCallsFromChunks,
   buildRichReplyCall,
-  shouldUseDraftStreaming,
-  nextDraftId,
-  buildSendRichMessageDraftCall,
-  parseStoppedMessageGeneration,
-  isTargetRunForStoppedGeneration,
-  shouldSendDraftJoinNotice,
-  buildDraftJoinUnavailableNotice,
   capCheckpointHistoryFullText,
   extractReactionMarker,
   buildSetMessageReactionParams,
@@ -1115,122 +1108,6 @@ test('buildRichReplyCall: a keyboard is attached on both a fresh send and an edi
 test('buildRichReplyCall: a falsy keyboard adds no reply_markup', () => {
   const call = buildRichReplyCall('123', 'hi', undefined, undefined, undefined, null)
   assert.equal(call.params.reply_markup, undefined)
-})
-
-test('shouldUseDraftStreaming: true only for a private chat', () => {
-  assert.equal(shouldUseDraftStreaming({ type: 'private' }), true)
-  assert.equal(shouldUseDraftStreaming({ type: 'group' }), false)
-  assert.equal(shouldUseDraftStreaming({ type: 'supergroup' }), false)
-  assert.equal(shouldUseDraftStreaming({ type: 'channel' }), false)
-  assert.equal(shouldUseDraftStreaming(undefined), false)
-})
-
-test('nextDraftId: starts at 1 and increments per chat, independently of other chats', () => {
-  const first = nextDraftId({}, '123')
-  assert.deepEqual(first, { draftId: 1, nextState: { 123: 1 } })
-  const second = nextDraftId(first.nextState, '123')
-  assert.deepEqual(second, { draftId: 2, nextState: { 123: 2 } })
-  const otherChat = nextDraftId(second.nextState, '456')
-  assert.deepEqual(otherChat, { draftId: 1, nextState: { 123: 2, 456: 1 } })
-})
-
-test('nextDraftId: never returns zero and does not mutate the input state', () => {
-  const state = { 123: 0 }
-  const { draftId, nextState } = nextDraftId(state, '123')
-  assert.notEqual(draftId, 0)
-  assert.deepEqual(state, { 123: 0 })
-  assert.notEqual(nextState, state)
-})
-
-test('buildSendRichMessageDraftCall: builds a sendRichMessageDraft call with can_stop/keep_on_stop always on', () => {
-  const call = buildSendRichMessageDraftCall('123', 7, '⏳ working…')
-  assert.deepEqual(call, {
-    method: 'sendRichMessageDraft',
-    params: {
-      chat_id: '123',
-      draft_id: 7,
-      rich_message: { markdown: '⏳ working…' },
-      can_stop: true,
-      keep_on_stop: true,
-    },
-  })
-})
-
-test('buildSendRichMessageDraftCall: attaches message_thread_id when the draft is running inside a chat topic', () => {
-  const call = buildSendRichMessageDraftCall('123', 7, '⏳ working…', 55)
-  assert.deepEqual(call, {
-    method: 'sendRichMessageDraft',
-    params: {
-      chat_id: '123',
-      draft_id: 7,
-      rich_message: { markdown: '⏳ working…' },
-      can_stop: true,
-      keep_on_stop: true,
-      message_thread_id: 55,
-    },
-  })
-})
-
-test('parseStoppedMessageGeneration: extracts chatId and draft_id for the caller to scan activeRuns by', () => {
-  assert.deepEqual(parseStoppedMessageGeneration({ chat: { id: 123 }, draft_id: 7 }), { chatId: '123', draftId: 7 })
-})
-
-test('parseStoppedMessageGeneration: ignores message_thread_id — the caller matches by draft_id, not a reconstructed key', () => {
-  assert.deepEqual(parseStoppedMessageGeneration({ chat: { id: 123 }, draft_id: 7, message_thread_id: 55 }), {
-    chatId: '123',
-    draftId: 7,
-  })
-})
-
-test('parseStoppedMessageGeneration: returns null when chat or draft_id is missing', () => {
-  assert.equal(parseStoppedMessageGeneration({ draft_id: 7 }), null)
-  assert.equal(parseStoppedMessageGeneration({ chat: { id: 123 } }), null)
-  assert.equal(parseStoppedMessageGeneration(null), null)
-})
-
-test('parseStoppedMessageGeneration: coerces a string draft_id to Number, confirmed live as what Telegram actually sends', () => {
-  assert.deepEqual(parseStoppedMessageGeneration({ chat: { id: 123 }, draft_id: '3' }), { chatId: '123', draftId: 3 })
-})
-
-test('parseStoppedMessageGeneration: rejects a non-numeric draft_id instead of coercing it to a NaN that could never match any run', () => {
-  assert.equal(parseStoppedMessageGeneration({ chat: { id: 123 }, draft_id: 'abc' }), null)
-  assert.equal(parseStoppedMessageGeneration({ chat: { id: 123 }, draft_id: '' }), null)
-})
-
-test('isTargetRunForStoppedGeneration: matches a live run with the same chatId and draftId', () => {
-  const run = { finished: false, chatId: '123', draftId: 7 }
-  assert.equal(isTargetRunForStoppedGeneration(run, { chatId: '123', draftId: 7 }), true)
-})
-
-test('isTargetRunForStoppedGeneration: rejects a different chat reusing the same draftId number', () => {
-  const run = { finished: false, chatId: '999', draftId: 7 }
-  assert.equal(isTargetRunForStoppedGeneration(run, { chatId: '123', draftId: 7 }), false)
-})
-
-test('isTargetRunForStoppedGeneration: rejects a mismatched draftId in the same chat', () => {
-  const run = { finished: false, chatId: '123', draftId: 3 }
-  assert.equal(isTargetRunForStoppedGeneration(run, { chatId: '123', draftId: 7 }), false)
-})
-
-test('isTargetRunForStoppedGeneration: rejects an already-finished run', () => {
-  const run = { finished: true, chatId: '123', draftId: 7 }
-  assert.equal(isTargetRunForStoppedGeneration(run, { chatId: '123', draftId: 7 }), false)
-})
-
-test('shouldSendDraftJoinNotice: true for the first pending message on a draft-streamed run', () => {
-  assert.equal(shouldSendDraftJoinNotice({ draftId: 7, pending: [{}] }), true)
-})
-
-test('shouldSendDraftJoinNotice: false for a second pending message, so a burst of follow-ups only notices once', () => {
-  assert.equal(shouldSendDraftJoinNotice({ draftId: 7, pending: [{}, {}] }), false)
-})
-
-test('shouldSendDraftJoinNotice: false once draftId is unset, e.g. handleContinue runs that never draft-stream', () => {
-  assert.equal(shouldSendDraftJoinNotice({ draftId: undefined, pending: [{}] }), false)
-})
-
-test('buildDraftJoinUnavailableNotice: mentions the Join button is unavailable', () => {
-  assert.match(buildDraftJoinUnavailableNotice(), /Join button/)
 })
 
 test('capCheckpointHistoryFullText: leaves a full text under the cap untouched', () => {
@@ -3445,5 +3322,5 @@ test('buildRewindUnavailableNotice: tells the user the edit could not be rewound
 })
 
 test('TELEGRAM_ALLOWED_UPDATES: covers every update type the bridge acts on', () => {
-  assert.deepEqual(TELEGRAM_ALLOWED_UPDATES, ['message', 'edited_message', 'callback_query', 'stopped_message_generation'])
+  assert.deepEqual(TELEGRAM_ALLOWED_UPDATES, ['message', 'edited_message', 'callback_query'])
 })

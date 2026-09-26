@@ -4,9 +4,7 @@ import {
   markdownToTelegramHtml,
   markdownToTelegramHtmlChunks,
   htmlToPlainFallback,
-  renderStreamingTail,
-  renderTranscriptHtml,
-  renderDraftMarkdown,
+  renderRichTranscript,
   stripRenderedTableGridsForSpeech,
   richMessageToSpeechText,
 } from '../markdown-html.mjs'
@@ -334,173 +332,59 @@ test('markdownToTelegramHtmlChunks: a message that is only an empty fenced code 
   assert.deepEqual(chunks, ['<pre></pre>'])
 })
 
-test('renderStreamingTail: empty/null/undefined/whitespace-only input yields null', () => {
-  assert.equal(renderStreamingTail(''), null)
-  assert.equal(renderStreamingTail(null), null)
-  assert.equal(renderStreamingTail(undefined), null)
-  assert.equal(renderStreamingTail('   \n  '), null)
+test('renderRichTranscript: no history, just returns the trimmed live text raw (Telegram parses the markdown itself)', () => {
+  assert.equal(renderRichTranscript([], '**hi**', { limit: 30000 }), '**hi**')
+  assert.equal(renderRichTranscript([], '  hi  ', { limit: 30000 }), 'hi')
 })
 
-test('renderStreamingTail: text under the limit renders in full with no truncation notice', () => {
-  const text = 'Hello **world**, this is *streaming*.'
-  assert.equal(renderStreamingTail(text, 4096), markdownToTelegramHtml(text))
+test('renderRichTranscript: no history and no live text returns null', () => {
+  assert.equal(renderRichTranscript([], '', { limit: 30000 }), null)
+  assert.equal(renderRichTranscript(undefined, undefined, { limit: 30000 }), null)
 })
 
-test('renderStreamingTail: text over the limit is truncated to a tail chunk under the limit, prefixed with a notice', () => {
-  const text = Array.from({ length: 200 }, (_, i) => `line ${i} ${'x'.repeat(30)}`).join('\n')
-  const result = renderStreamingTail(text, 4096)
-  assert.ok(result.length <= 4096, `result length ${result.length} exceeds the limit`)
-  assert.ok(result.startsWith('⋯'), 'truncated tail should be prefixed with a notice')
-  assert.ok(result.includes(`line 199`), 'tail should carry the most recent content')
-  assert.ok(!result.includes('line 0 '), 'tail should not carry the earliest content')
-})
-
-test('renderStreamingTail: an unclosed fenced code block mid-stream renders as valid, balanced HTML', () => {
-  const text = 'intro\n```js\nconst a = 1\nconst b = 2'
-  const result = renderStreamingTail(text, 4096)
-  assert.ok(result.includes('<pre><code class="language-js">'))
-  assert.ok(result.includes('</code></pre>'))
-})
-
-test('renderStreamingTail: an unclosed inline bold/italic marker mid-stream stays literal instead of producing an unclosed tag', () => {
-  const result = renderStreamingTail('this is **not yet closed', 4096)
-  assert.ok(!result.includes('<b>'), 'should not open a <b> tag without its closing marker')
-  assert.ok(result.includes('**not yet closed'))
-})
-
-test('regression: renderStreamingTail never returns more than the requested limit even when the limit is smaller than the truncation notice itself', () => {
-  const longSingleLine = Array.from({ length: 200 }, (_, i) => `word${i}`).join(' ')
-  for (const limit of [1, 5, 10, 26, 27, 28]) {
-    const result = renderStreamingTail(longSingleLine, limit)
-    assert.ok(result === null || result.length <= limit, `limit ${limit}: result length ${result?.length} exceeds it`)
-  }
-})
-
-test('regression: renderStreamingTail drops (does not overflow on) a single character whose HTML-escaped form alone exceeds the limit', () => {
-  assert.equal(renderStreamingTail('&', 3), null)
-  assert.equal(renderStreamingTail('&', 1), null)
-})
-
-test('regression: renderStreamingTail drops (does not overflow on) a lone ">" whose blockquote-wrapped rendering alone exceeds the limit', () => {
-  assert.equal(renderStreamingTail('>', 5), null)
-})
-
-test('regression: renderStreamingTail still renders normally-sized content that happens to contain expandable characters', () => {
-  assert.equal(renderStreamingTail('&', 4096), '&amp;')
-  assert.equal(renderStreamingTail('a & b', 4096), 'a &amp; b')
-})
-
-test('renderTranscriptHtml: no history, just renders the live text as markdown HTML', () => {
-  assert.equal(renderTranscriptHtml([], '**hi**', 4096), markdownToTelegramHtml('**hi**'))
-})
-
-test('renderTranscriptHtml: no live text, joins history lines as escaped plain text (no markdown interpretation)', () => {
-  const result = renderTranscriptHtml(['⏳ Bash: echo **not bold**…', '✅ Read: foo.py…'], '', 4096)
-  assert.equal(result, '⏳ Bash: echo **not bold**…\n✅ Read: foo.py…')
-  assert.ok(!result.includes('<b>'), 'history lines must not get markdown-interpreted')
-})
-
-test('renderTranscriptHtml: history special characters are HTML-escaped', () => {
-  const result = renderTranscriptHtml(['⏳ Bash: echo <script>&"</script>…'], '', 4096)
-  assert.equal(result, '⏳ Bash: echo &lt;script&gt;&amp;"&lt;/script&gt;…')
-})
-
-test('renderTranscriptHtml: both history and live text combine on separate lines, history escaped-plain, live markdown-rendered', () => {
-  const result = renderTranscriptHtml(['⏳ Bash: npm test…'], '**done**', 4096)
-  assert.equal(result, '⏳ Bash: npm test…\n<b>done</b>')
-})
-
-test('renderTranscriptHtml: falsy history entries are filtered out', () => {
-  const result = renderTranscriptHtml(['⏳ Bash: npm test…', '', null, undefined], '', 4096)
-  assert.equal(result, '⏳ Bash: npm test…')
-})
-
-test('renderTranscriptHtml: empty/whitespace-only live text with history contributes nothing extra', () => {
-  const result = renderTranscriptHtml(['⏳ Bash: npm test…'], '   ', 4096)
-  assert.equal(result, '⏳ Bash: npm test…')
-})
-
-test('renderTranscriptHtml: no history and no live text returns null', () => {
-  assert.equal(renderTranscriptHtml([], '', 4096), null)
-  assert.equal(renderTranscriptHtml(undefined, undefined, 4096), null)
-})
-
-test('regression: renderTranscriptHtml with limit 0 (or negative) never returns text longer than the limit', () => {
-  const history = ['a very long history line that would normally need truncating down to size']
-  for (const limit of [0, -1, -100]) {
-    const result = renderTranscriptHtml(history, 'some live text too', limit)
-    assert.ok(result === null || result.length <= Math.max(limit, 0), `limit ${limit}: got ${JSON.stringify(result)}`)
-  }
-})
-
-test('renderTranscriptHtml: reserves space for history before rendering the live tail, so the combined output never exceeds the limit', () => {
-  const history = Array.from({ length: 60 }, (_, i) => `⏳ Bash: step ${i}…`)
-  const live = Array.from({ length: 200 }, (_, i) => `word${i}`).join(' ')
-  const result = renderTranscriptHtml(history, live, 500)
-  assert.ok(result.length <= 500, `combined length ${result.length} exceeds the 500 limit`)
-})
-
-test('renderTranscriptHtml: when history alone already fills the limit, it is tail-truncated by whole lines and the live text is dropped', () => {
-  const history = Array.from({ length: 50 }, (_, i) => `⏳ Bash: a fairly long step description number ${i}…`)
-  const result = renderTranscriptHtml(history, 'this should not appear', 200)
-  assert.ok(result.length <= 200, `result length ${result.length} exceeds the 200 limit`)
-  assert.ok(!result.includes('this should not appear'), 'live text should be dropped when there is no budget left for it')
-  assert.ok(result.includes('number 49'), 'the tail should keep the most recent history lines')
-})
-
-test('renderDraftMarkdown: no history, just returns the trimmed live text raw (Telegram parses the markdown itself)', () => {
-  assert.equal(renderDraftMarkdown([], '**hi**', 30000), '**hi**')
-  assert.equal(renderDraftMarkdown([], '  hi  ', 30000), 'hi')
-})
-
-test('renderDraftMarkdown: no history and no live text returns null', () => {
-  assert.equal(renderDraftMarkdown([], '', 30000), null)
-  assert.equal(renderDraftMarkdown(undefined, undefined, 30000), null)
-})
-
-test('regression: renderDraftMarkdown truncates live-only text (no history yet) to the limit instead of returning it unbounded', () => {
+test('regression: renderRichTranscript truncates live-only text (no history yet) to the limit instead of returning it unbounded', () => {
   const live = 'x'.repeat(500)
-  const result = renderDraftMarkdown([], live, 100)
+  const result = renderRichTranscript([], live, { limit: 100 })
   assert.ok(result.length <= 100, `result length ${result.length} exceeds the 100 limit`)
   assert.ok(live.endsWith(result), 'the kept text is the tail of the live text, not something else')
 })
 
-test('renderDraftMarkdown: history (no full text) is wrapped in a collapsed <details>, each line inline-code-wrapped so markdown chars are not interpreted', () => {
-  const result = renderDraftMarkdown(['⏳ Bash: echo **not bold**…', '✅ Read: foo.py…'], '', 30000)
+test('renderRichTranscript: history (no full text) is wrapped in a collapsed <details>, each line inline-code-wrapped so markdown chars are not interpreted', () => {
+  const result = renderRichTranscript(['⏳ Bash: echo **not bold**…', '✅ Read: foo.py…'], '', { limit: 30000 })
   assert.equal(result, '<details><summary>🔧 2 steps</summary>\n\n`⏳ Bash: echo **not bold**…`\n`✅ Read: foo.py…`\n\n</details>')
   assert.ok(!result.includes('<details open'), 'draft history defaults to collapsed, not <details open>')
 })
 
-test('renderDraftMarkdown: singular "step" for exactly one history line', () => {
-  const result = renderDraftMarkdown(['⏳ Bash: npm test…'], '', 30000)
+test('renderRichTranscript: singular "step" for exactly one history line', () => {
+  const result = renderRichTranscript(['⏳ Bash: npm test…'], '', { limit: 30000 })
   assert.match(result, /<summary>🔧 1 step<\/summary>/)
 })
 
-test('renderDraftMarkdown: live text is appended outside (after) the collapsed details block', () => {
-  const result = renderDraftMarkdown(['⏳ Bash: npm test…'], '**done**', 30000)
+test('renderRichTranscript: live text is appended outside (after) the collapsed details block', () => {
+  const result = renderRichTranscript(['⏳ Bash: npm test…'], '**done**', { limit: 30000 })
   assert.equal(result, '<details><summary>🔧 1 step</summary>\n\n`⏳ Bash: npm test…`\n\n</details>\n\n**done**')
 })
 
-test('renderDraftMarkdown: falsy history entries are filtered out', () => {
-  const result = renderDraftMarkdown(['⏳ Bash: npm test…', '', null, undefined], '', 30000)
+test('renderRichTranscript: falsy history entries are filtered out', () => {
+  const result = renderRichTranscript(['⏳ Bash: npm test…', '', null, undefined], '', { limit: 30000 })
   assert.match(result, /<summary>🔧 1 step<\/summary>/)
 })
 
-test('renderDraftMarkdown: a history line (no full text) with a stray triple-backtick run gets a 4-backtick inline wrap instead of a 1-backtick one', () => {
-  const result = renderDraftMarkdown(['⏳ Bash: grep \'```\' file.js…'], '', 30000)
+test('renderRichTranscript: a history line (no full text) with a stray triple-backtick run gets a 4-backtick inline wrap instead of a 1-backtick one', () => {
+  const result = renderRichTranscript(['⏳ Bash: grep \'```\' file.js…'], '', { limit: 30000 })
   assert.equal(result.match(/````/g).length, 2, 'exactly the opening and closing span, nothing closed early')
 })
 
 test('regression: a history line with 4+ consecutive backticks grows the inline wrap instead of letting it close early', () => {
-  const result = renderDraftMarkdown(['⏳ Bash: grep \'````\' file.js…'], '', 30000)
+  const result = renderRichTranscript(['⏳ Bash: grep \'````\' file.js…'], '', { limit: 30000 })
   const fiveBacktickRuns = result.match(/`{5,}/g)
   assert.equal(fiveBacktickRuns?.length, 2, 'the wrap must be longer than the embedded 4-backtick run, and only the real wrap ticks should match')
   assert.ok(result.includes('````'), 'the embedded 4-backtick run itself must still be present, unbroken, inside the wrap')
   assert.equal(result.match(/<\/details>/g).length, 1, 'the closing tag appears exactly once, proving nothing closed early')
 })
 
-test('renderDraftMarkdown: a history line with a full-text counterpart becomes its own expandable <details>, summary inline-wrapped, full body markdown intact', () => {
-  const result = renderDraftMarkdown(['🤔 a short preview…'], '', 30000, ['the full, unabridged thinking with **markdown** intact'])
+test('renderRichTranscript: a history line with a full-text counterpart becomes its own expandable <details>, summary inline-wrapped, full body markdown intact', () => {
+  const result = renderRichTranscript(['🤔 a short preview…'], '', { limit: 30000, fullTexts: ['the full, unabridged thinking with **markdown** intact'] })
   assert.equal(
     result,
     '<details><summary>🔧 1 step</summary>\n\n<details><summary>`🤔 a short preview…`</summary>\n\nthe full, unabridged thinking with **markdown** intact\n\n</details>\n\n</details>'
@@ -508,55 +392,54 @@ test('renderDraftMarkdown: a history line with a full-text counterpart becomes i
 })
 
 test('regression: a summary line truncated mid-markdown-token (e.g. an unclosed **) is neutralized by the inline wrap, not left to bleed past </summary>', () => {
-  const result = renderDraftMarkdown(['🤔 an unclosed **bold marker cut off…'], '', 30000, ['the full text here'])
+  const result = renderRichTranscript(['🤔 an unclosed **bold marker cut off…'], '', { limit: 30000, fullTexts: ['the full text here'] })
   assert.ok(result.includes('<summary>`🤔 an unclosed **bold marker cut off…`</summary>'), 'the lone ** stays literal, inside the safe inline span')
 })
 
 test('regression: a summary line with an embedded newline (e.g. a multi-line tool command) is collapsed to one line before being inline-wrapped', () => {
-  const result = renderDraftMarkdown(['⏳ Bash: line one\nline two…'], '', 30000)
+  const result = renderRichTranscript(['⏳ Bash: line one\nline two…'], '', { limit: 30000 })
   assert.ok(!result.includes('\nline two'), 'no literal newline survives inside the inline span')
   assert.ok(result.includes('line one line two'))
 })
 
 test('regression: a summary line containing a literal HTML tag (e.g. a grep pattern for "</details>") is escaped, not left able to close the surrounding tag', () => {
-  const result = renderDraftMarkdown(['⏳ Bash: grep "</details><b>x</b>" file.js…'], '', 30000)
+  const result = renderRichTranscript(['⏳ Bash: grep "</details><b>x</b>" file.js…'], '', { limit: 30000 })
   assert.equal(result.match(/<\/details>/g).length, 1, 'only the real, outer closing tag — the literal one in the line must not count as a second')
   assert.ok(result.includes('&lt;/details&gt;&lt;b&gt;x&lt;/b&gt;'), 'the literal tag text is escaped, not left as real markup')
 })
 
 test('regression: a full-text entry whose short summary line also contains a literal HTML tag is escaped the same way', () => {
-  const result = renderDraftMarkdown(['🤔 discussing </details> tags…'], '', 30000, ['the full reasoning'])
+  const result = renderRichTranscript(['🤔 discussing </details> tags…'], '', { limit: 30000, fullTexts: ['the full reasoning'] })
   assert.equal(result.match(/<\/details>/g).length, 2, 'exactly the inner and outer real closing tags')
   assert.ok(result.includes('&lt;/details&gt;'), 'the literal sequence in the summary is escaped too, not just in the full body')
 })
 
 test('regression: a line ending in a literal backtick gets a padding space, so it cannot fuse with the closing delimiter into a longer, mismatched run', () => {
   const line = '🤔 open the file`'
-  const result = renderDraftMarkdown([line], '', 30000)
+  const result = renderRichTranscript([line], '', { limit: 30000 })
   assert.equal(result, `<details><summary>🔧 1 step</summary>\n\n\`\` ${line} \`\`\n\n</details>`)
   assert.ok(!result.includes('file````'), 'the trailing backtick must not fuse with the closing delimiter into one longer run')
 })
 
 test('regression: a line starting with a literal backtick also gets a padding space on both sides', () => {
   const line = '`ls -la'
-  const result = renderDraftMarkdown([line], '', 30000)
+  const result = renderRichTranscript([line], '', { limit: 30000 })
   const opening = result.match(/^<details><summary>🔧 1 step<\/summary>\n\n(`+)/)[1]
   assert.ok(result.includes(`${opening} ${line} ${opening}`))
 })
 
 test('regression: a literal "</details>" inside the model\'s own full text cannot close the wrapper tag early', () => {
-  const result = renderDraftMarkdown(['🤔 discussing html…'], '', 30000, ['as in </details><b>injected</b>, see?'])
+  const result = renderRichTranscript(['🤔 discussing html…'], '', { limit: 30000, fullTexts: ['as in </details><b>injected</b>, see?'] })
   assert.equal(result.match(/<\/details>/g).length, 2, 'exactly the inner and outer closing tags — the literal one in the text must not count as a third')
   assert.ok(result.includes('&lt;/details&gt;'), 'the literal sequence is escaped, not left as real markup')
   assert.ok(!result.includes('<b>injected</b>'), 'content after the literal sequence must not turn into real, unescaped HTML')
 })
 
-test('renderDraftMarkdown: a mix of tool-call lines (no full text) and a thinking line (with full text) renders each appropriately', () => {
-  const result = renderDraftMarkdown(
+test('renderRichTranscript: a mix of tool-call lines (no full text) and a thinking line (with full text) renders each appropriately', () => {
+  const result = renderRichTranscript(
     ['⏳ Bash: npm test…', '🤔 short…', '✅ Read: foo.py…'],
     '',
-    30000,
-    [null, 'the full thinking text', undefined]
+    { limit: 30000, fullTexts: [null, 'the full thinking text', undefined] }
   )
   assert.ok(result.includes('`⏳ Bash: npm test…`'), 'tool line stays inline-wrapped, no expansion')
   assert.ok(result.includes('<details><summary>`🤔 short…`</summary>\n\nthe full thinking text\n\n</details>'), 'thinking line becomes its own nested expandable section')
@@ -564,7 +447,7 @@ test('renderDraftMarkdown: a mix of tool-call lines (no full text) and a thinkin
 })
 
 test('regression: falsy entries in fullTexts (missing index, null, undefined, empty string) all fall back to the safe inline wrap, not an empty expandable body', () => {
-  const result = renderDraftMarkdown(['💬 said something…'], '', 30000, [''])
+  const result = renderRichTranscript(['💬 said something…'], '', { limit: 30000, fullTexts: [''] })
   assert.ok(!result.includes('<details><summary>💬'), 'an empty full text must not produce a pointless nested expandable section')
   assert.ok(result.includes('`💬 said something…`'))
 })
@@ -572,7 +455,7 @@ test('regression: falsy entries in fullTexts (missing index, null, undefined, em
 test('regression: oldest whole entries drop first under a tight budget, keeping the most recent ones (with their expansion) intact', () => {
   const history = Array.from({ length: 20 }, (_, i) => `⏳ Bash: step ${i}…`)
   const fullTexts = history.map((_, i) => (i === 19 ? 'the full text of the most recent step' : null))
-  const result = renderDraftMarkdown(history, '', 300, fullTexts)
+  const result = renderRichTranscript(history, '', { limit: 300, fullTexts })
   assert.ok(result.length <= 300, `result length ${result.length} exceeds the 300 limit`)
   assert.ok(result.includes('the full text of the most recent step'), 'the most recent entry, and its expansion, survives')
   assert.ok(!result.includes('step 0…'), 'the oldest entries are dropped first, as whole entries')
@@ -580,14 +463,14 @@ test('regression: oldest whole entries drop first under a tight budget, keeping 
 
 test('regression: the "🔧 N steps" summary reflects how many entries actually survived truncation, not the original pre-drop count', () => {
   const history = Array.from({ length: 20 }, (_, i) => `⏳ Bash: step ${i}…`)
-  const result = renderDraftMarkdown(history, '', 300)
+  const result = renderRichTranscript(history, '', { limit: 300 })
   const survivingCount = result.split('\n').filter(line => line.startsWith('`⏳')).length
   assert.ok(survivingCount < 20, 'sanity check: this limit must actually force some entries to drop')
   assert.match(result, new RegExp(`<summary>🔧 ${survivingCount} steps</summary>`), 'the header must count what is actually shown, not the original 20')
 })
 
 test('regression: when even the single most recent entry (with its own expandable body) cannot fit, it degrades to its plain short line instead of vanishing', () => {
-  const result = renderDraftMarkdown(['🤔 a short preview…'], '', 120, ['x'.repeat(500)])
+  const result = renderRichTranscript(['🤔 a short preview…'], '', { limit: 120, fullTexts: ['x'.repeat(500)] })
   assert.notEqual(result, null, 'the entry itself must still show up, just without the expansion')
   assert.ok(result.length <= 120, `result length ${result?.length} exceeds the 120 limit`)
   assert.ok(result.includes('`🤔 a short preview…`'), 'degrades to the safe inline-wrapped short line')
@@ -595,46 +478,46 @@ test('regression: when even the single most recent entry (with its own expandabl
 })
 
 test('regression: when even the degraded plain short line cannot fit at all, history is dropped entirely instead of showing an empty-bodied "N steps" wrapper', () => {
-  const result = renderDraftMarkdown(['⏳ Bash: npm test…'], '', 55)
+  const result = renderRichTranscript(['⏳ Bash: npm test…'], '', { limit: 55 })
   assert.equal(result, null, 'a misleading "🔧 1 step" header over nothing must not be returned')
 })
 
 test('regression: a large in-flight live answer that leaves no room for even one degraded history line drops history, not just live text', () => {
   const live = 'x'.repeat(29950)
-  const result = renderDraftMarkdown(['⏳ Bash: npm test…'], live, 30000)
+  const result = renderRichTranscript(['⏳ Bash: npm test…'], live, { limit: 30000 })
   assert.ok(!result.includes('<details'), 'no misleading empty-bodied wrapper — this is realistic (a long streaming answer), not a contrived tiny limit')
   assert.ok(result.length <= 30000)
   assert.ok(live.endsWith(result))
 })
 
-test('regression: renderDraftMarkdown with limit 0 (or negative) returns null rather than a string that violates the limit', () => {
+test('regression: renderRichTranscript with limit 0 (or negative) returns null rather than a string that violates the limit', () => {
   const history = ['a very long history line that would normally need truncating down to size']
   for (const limit of [0, -1, -100]) {
-    const result = renderDraftMarkdown(history, 'some live text too', limit)
+    const result = renderRichTranscript(history, 'some live text too', { limit })
     assert.equal(result, null, `limit ${limit}: expected null (the <details> wrapper alone can't fit), got ${JSON.stringify(result)}`)
   }
 })
 
-test('regression: renderDraftMarkdown never returns text longer than a limit that at least fits the empty wrapper', () => {
+test('regression: renderRichTranscript never returns text longer than a limit that at least fits the empty wrapper', () => {
   const history = Array.from({ length: 50 }, (_, i) => `⏳ Bash: a fairly long step description number ${i}…`)
   for (const limit of [80, 200, 1000, 30000]) {
-    const result = renderDraftMarkdown(history, 'some live text too', limit)
+    const result = renderRichTranscript(history, 'some live text too', { limit })
     assert.ok(result === null || result.length <= limit, `limit ${limit}: got length ${result?.length}`)
   }
 })
 
-test('renderDraftMarkdown: under a tight limit, the live text (shown outside the collapsed block) is always kept in full, and history is tail-truncated by whole lines to make room', () => {
+test('renderRichTranscript: under a tight limit, the live text (shown outside the collapsed block) is always kept in full, and history is tail-truncated by whole lines to make room', () => {
   const history = Array.from({ length: 50 }, (_, i) => `⏳ Bash: a fairly long step description number ${i}…`)
-  const result = renderDraftMarkdown(history, 'this must always appear', 400)
+  const result = renderRichTranscript(history, 'this must always appear', { limit: 400 })
   assert.ok(result.length <= 400, `result length ${result.length} exceeds the 400 limit`)
   assert.ok(result.includes('this must always appear'), 'the live tail is the "front line" of activity and is never dropped')
   assert.ok(result.includes('number 49'), 'the history tail should keep the most recent lines, dropping older ones instead')
 })
 
-test('regression: renderDraftMarkdown truncates the live text (not bails to null) when history is non-empty but live alone would overflow the limit', () => {
+test('regression: renderRichTranscript truncates the live text (not bails to null) when history is non-empty but live alone would overflow the limit', () => {
   const history = ['⏳ Bash: npm test…']
   const live = 'z'.repeat(500)
-  const result = renderDraftMarkdown(history, live, 200)
+  const result = renderRichTranscript(history, live, { limit: 200 })
   assert.notEqual(result, null, 'a long live segment must not blank out an otherwise-renderable draft')
   assert.ok(result.length <= 200, `result length ${result?.length} exceeds the 200 limit`)
   assert.ok(result.endsWith('z'), 'the live tail (kept in preference to history) is what survives at the end')
