@@ -181,7 +181,7 @@ import {
 } from './jobs.mjs'
 import { loadGlobalAuthMode, saveGlobalAuthMode, seedGlobalAuthModeIfMissing, collectLegacyAuthModeValues } from './auth-mode.mjs'
 import { loadGlobalFishVoice, saveGlobalFishVoice } from './fish-voice.mjs'
-import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderRichTranscript, renderPlainFallback } from './markdown-html.mjs'
+import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderRichTranscript, stripRichOnlyMarkup } from './markdown-html.mjs'
 import {
   DEFAULT_WORKING_STATUS,
   createLineSplitter,
@@ -1539,11 +1539,16 @@ function createPlaceholderController(
     renderTranscript: (historyLines, liveText, fullTexts) => renderRichTranscript(historyLines, liveText, { fullTexts }),
     initialCheckpointLines,
   })
-  // the rich->classic fallback below is 2 sequential network calls worst-case, widening the window for an overlapping tick's response to land out of order — drop one instead of letting a stale reply win.
+  // the rich->classic fallback below is up to 3 sequential network calls worst-case — serialized so an overlapping call can't land out of order; queued (not dropped), so a request that arrives mid-send (e.g. the turn-end terminal edit) still fires, right after, instead of being silently lost.
   let sending = false
+  let pendingText
 
   async function editPlaceholder({ text }) {
-    if (messageId == null || sending) return
+    if (messageId == null) return
+    if (sending) {
+      pendingText = text
+      return
+    }
     sending = true
     try {
       const { method, params } = buildRichReplyCall(chatId, text, null, messageId, null, currentKeyboard)
@@ -1560,10 +1565,10 @@ function createPlaceholderController(
         }
         log('rich editMessageText failed, falling back to classic HTML', e.message)
       }
-      // rebuilt from the tracker's own raw lines, not text itself — text's <details> tags mean nothing outside Rich Markdown and would show up as literal escaped tag text otherwise
-      const plainText = renderPlainFallback(tracker.historyLines(), tracker.liveDisplayText())
-      if (plainText == null) return
-      const classicParams = buildPlaceholderEditParams(chatId, messageId, plainText, true, currentKeyboard)
+      // strips the <details>/<summary> tags from the same requested text instead of substituting different, tracker-derived content
+      const chunks = markdownToTelegramHtmlChunks(stripRichOnlyMarkup(text))
+      const classicText = chunks[chunks.length - 1] ?? ''
+      const classicParams = buildPlaceholderEditParams(chatId, messageId, classicText, true, currentKeyboard)
       try {
         await tg('editMessageText', classicParams)
       } catch (e2) {
@@ -1575,12 +1580,21 @@ function createPlaceholderController(
           return
         }
         const { parse_mode, ...plainParams } = classicParams
-        await tg('editMessageText', { ...plainParams, text: htmlToPlainFallback(classicParams.text) }).catch(e3 =>
+        try {
+          await tg('editMessageText', { ...plainParams, text: htmlToPlainFallback(classicParams.text) })
+        } catch (e3) {
+          const { retryAfterMs: plainRetryAfterMs } = parseTelegramEditError(e3.message)
+          if (plainRetryAfterMs != null) statusUpdater.pauseFor(plainRetryAfterMs)
           log('editMessageText classic fallback failed', e3.message)
-        )
+        }
       }
     } finally {
       sending = false
+      if (pendingText !== undefined) {
+        const next = pendingText
+        pendingText = undefined
+        await editPlaceholder({ text: next })
+      }
     }
   }
 

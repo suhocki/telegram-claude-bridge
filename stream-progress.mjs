@@ -286,8 +286,7 @@ export function createProgressTracker(
     return checkpoints.map(c => ({ line: c.line, full: c.full }))
   }
 
-  // historyLines/liveDisplayText: exposed so a caller can build a second, independent rendering (e.g. a plain-text fallback) from the same live state, not just read the one cached renderTranscript result.
-  return { ingest, current, snapshot, historySnapshot, historyLines, liveDisplayText }
+  return { ingest, current, snapshot, historySnapshot }
 }
 
 // Shared across every controller writing to the same chat (root + all its parallel

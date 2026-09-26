@@ -5,7 +5,7 @@ import {
   markdownToTelegramHtmlChunks,
   htmlToPlainFallback,
   renderRichTranscript,
-  renderPlainFallback,
+  stripRichOnlyMarkup,
   stripRenderedTableGridsForSpeech,
   richMessageToSpeechText,
 } from '../markdown-html.mjs'
@@ -524,33 +524,28 @@ test('regression: renderRichTranscript truncates the live text (not bails to nul
   assert.ok(result.endsWith('z'), 'the live tail (kept in preference to history) is what survives at the end')
 })
 
-test('renderPlainFallback: joins escaped history lines and live text, one per line, no <details> wrapping', () => {
-  const result = renderPlainFallback(['⏳ Bash: echo <b>hi</b>…', '✅ Read: foo.py…'], '**done**')
-  assert.equal(result, '⏳ Bash: echo &lt;b&gt;hi&lt;/b&gt;…\n✅ Read: foo.py…\n**done**')
-  assert.ok(!result.includes('<details'), 'must never emit a tag that only means something inside Rich Markdown')
+test('stripRichOnlyMarkup: removes the <details>/<summary> wrapper tags, keeping the inner content', () => {
+  const result = stripRichOnlyMarkup('<details><summary>🔧 1 step</summary>\n\n`⏳ Bash: npm test…`\n\n</details>')
+  assert.ok(!result.includes('<details'), 'the opening tag must not survive')
+  assert.ok(!result.includes('</details>'), 'the closing tag must not survive')
+  assert.ok(!result.includes('<summary>'), 'the summary open tag must not survive')
+  assert.ok(result.includes('🔧 1 step'), 'the summary text itself is kept, just unwrapped')
+  assert.ok(result.includes('`⏳ Bash: npm test…`'), 'the body content is kept as-is')
 })
 
-test('renderPlainFallback: falsy history entries are filtered out', () => {
-  const result = renderPlainFallback(['⏳ Bash: npm test…', '', null, undefined], '')
-  assert.equal(result, '⏳ Bash: npm test…')
+test('stripRichOnlyMarkup: plain text with no rich-only tags at all is returned unchanged', () => {
+  assert.equal(stripRichOnlyMarkup('✅ done'), '✅ done')
+  assert.equal(stripRichOnlyMarkup('**bold** and `code`'), '**bold** and `code`')
 })
 
-test('renderPlainFallback: no history and no live text returns null', () => {
-  assert.equal(renderPlainFallback([], ''), null)
-  assert.equal(renderPlainFallback(undefined, undefined), null)
+test('stripRichOnlyMarkup: null/undefined input becomes an empty string, not a crash', () => {
+  assert.equal(stripRichOnlyMarkup(null), '')
+  assert.equal(stripRichOnlyMarkup(undefined), '')
 })
 
-test('renderPlainFallback: whitespace-only live text with history contributes nothing extra', () => {
-  const result = renderPlainFallback(['⏳ Bash: npm test…'], '   ')
-  assert.equal(result, '⏳ Bash: npm test…')
-})
-
-test('regression: renderPlainFallback keeps the most recent lines (the tail), not the oldest, when over the limit', () => {
-  const history = Array.from({ length: 50 }, (_, i) => `⏳ Bash: a fairly long step description number ${i}…`)
-  const result = renderPlainFallback(history, '', 200)
-  assert.ok(result.length <= 200, `result length ${result.length} exceeds the 200 limit`)
-  assert.ok(result.includes('number 49'), 'the tail should keep the most recent history lines')
-  assert.ok(!result.includes('number 0…'), 'the oldest entries are dropped first')
+test('regression: stripRichOnlyMarkup leaves an HTML-escaped "</details>" (from user content, not this renderer\'s own wrapping) untouched', () => {
+  const escaped = '`⏳ Bash: grep &lt;/details&gt; file.js…`'
+  assert.equal(stripRichOnlyMarkup(escaped), escaped)
 })
 
 test('stripRenderedTableGridsForSpeech: replaces an already-rendered table grid (Telegram\'s own plain message.text, used by the Listen button) with a spoken placeholder', () => {

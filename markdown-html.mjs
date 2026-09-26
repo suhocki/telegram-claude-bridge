@@ -432,12 +432,12 @@ export function renderRichTranscript(historyLines, liveText, { limit = 30000, fu
   return wrap(body, liveSuffix, entries.length - start)
 }
 
-// Fallback for when the rich-message edit itself fails: rebuilt from the raw history lines rather than re-converting renderRichTranscript's own output, since that output's <details>/<summary> tags mean something only inside Telegram's Rich Markdown parser, not classic parse_mode=HTML.
-export function renderPlainFallback(historyLines, liveText, limit = 4096) {
-  const lines = (historyLines ?? []).filter(Boolean).map(escapeHtml)
-  const live = String(liveText ?? '').trim()
-  const combined = live ? [...lines, escapeHtml(live)] : lines
-  return combined.length ? tailPlainTextLines(combined.join('\n'), limit) : null
+// <details>/<summary> mean something only inside Telegram's Rich Markdown parser, not classic parse_mode=HTML — stripped before the classic-HTML fallback converts the same requested text, rather than substituting different (tracker-derived) content. Any *escaped* occurrence in user content (e.g. &lt;details&gt;) is untouched; only the literal, unescaped structural tags renderRichTranscript's own detailsBlock adds are stripped.
+export function stripRichOnlyMarkup(text) {
+  return String(text ?? '')
+    .replace(/<\/?details>/g, '')
+    .replace(/<summary>/g, '')
+    .replace(/<\/summary>/g, '\n')
 }
 
 export function htmlToPlainFallback(html) {
