@@ -515,18 +515,6 @@ test('createStatusUpdater fires onUpdate on an interval while the status changes
   updater.stop()
 })
 
-test('createStatusUpdater with alwaysSend fires onUpdate on every tick even when the status has not changed', t => {
-  t.mock.timers.enable({ apis: ['setInterval'] })
-  const status = 'same'
-  const updates = []
-  const updater = createStatusUpdater({ getStatus: () => status, onUpdate: s => updates.push(s), initialStatus: status, intervalMs: 1000, alwaysSend: true })
-  t.mock.timers.tick(1000)
-  t.mock.timers.tick(1000)
-  t.mock.timers.tick(1000)
-  assert.deepEqual(updates, ['same', 'same', 'same'])
-  updater.stop()
-})
-
 test('createStatusUpdater.stop clears the interval so onUpdate never fires again', t => {
   t.mock.timers.enable({ apis: ['setInterval'] })
   let status = 'first'

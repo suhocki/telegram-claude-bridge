@@ -306,15 +306,7 @@ export function createChatRateGate() {
   }
 }
 
-// alwaysSend skips the latest===lastSent dedup — for a caller whose target self-expires without a refresh (e.g. a Telegram draft), not just a real message that only needs an edit when something changed.
-export function createStatusUpdater({
-  getStatus,
-  onUpdate,
-  initialStatus = DEFAULT_WORKING_STATUS,
-  intervalMs = 3000,
-  sharedGate = null,
-  alwaysSend = false,
-}) {
+export function createStatusUpdater({ getStatus, onUpdate, initialStatus = DEFAULT_WORKING_STATUS, intervalMs = 3000, sharedGate = null }) {
   let alive = true
   let lastSent = initialStatus
   let skipTicks = 0
@@ -326,7 +318,7 @@ export function createStatusUpdater({
       return
     }
     const latest = getStatus()
-    if (!alwaysSend && latest === lastSent) return
+    if (latest === lastSent) return
     lastSent = latest
     onUpdate(latest)
   }, intervalMs)

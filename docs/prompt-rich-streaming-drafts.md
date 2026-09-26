@@ -1,5 +1,21 @@
 # Task: stream live rich-message drafts (private chats), native Stop button, collapsible tool transcripts
 
+**ABANDONED — do not paste this file as a prompt or re-implement any of it.** Live use exposed a
+fundamental platform problem no amount of bot-side code could fix: `sendRichMessageDraft`'s native
+UI treatment replaces the chat's own microphone/voice-recording button with the Stop icon for the
+whole duration of the draft, making it impossible to record a voice message while a turn is
+in-flight. The user rejected that trade-off outright once they hit it live. Everything in this
+file — `sendRichMessageDraft`, `draft_id`, `can_stop`/`keep_on_stop`, `stopped_message_generation`
+— was fully removed from the codebase in favor of a different approach: the collapsible-`<details>`
+win this doc was chasing doesn't actually require drafts at all — `sendRichMessage`/
+`editMessageText`+`rich_message` (already in production since #101/#102 for the *final* reply)
+supports the exact same Rich Markdown, on a real message with a real `message_id` and a real
+`reply_markup` slot, with none of the native-Stop-button/mic-hijacking baggage. See the PR that
+reverted this feature for the actual, shipped design. The rest of this file is kept only as a
+historical record of what was tried and why it didn't work — not as a spec to revive.
+
+---
+
 Paste this whole file as the prompt to a fresh Claude Code session opened in
 `~/projects/telegram-bridge`. The user has already agreed to this exact design in conversation —
 proceed directly to implementation, following this repo's own workflow in `CLAUDE.md` (branch →

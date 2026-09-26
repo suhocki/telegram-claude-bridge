@@ -467,54 +467,6 @@ export function buildRichReplyCall(chatId, text, replyToMessageId, editMessageId
   return { method: 'sendRichMessage', params }
 }
 
-// sendRichMessageDraft's chat_id is documented as private-chat-only (Bot API 10.1, Aug 2026) — every other chat type keeps the classic placeholder flow untouched.
-export function shouldUseDraftStreaming(chat) {
-  return chat?.type === 'private'
-}
-
-// draft_id only needs to be unique per chat, so a per-chat counter is enough; immutable-update style to match setVoiceReplyPreference etc.
-export function nextDraftId(draftIdState, chatId) {
-  const draftId = (draftIdState?.[chatId] ?? 0) + 1
-  return { draftId, nextState: { ...draftIdState, [chatId]: draftId } }
-}
-
-// keep_on_stop avoids the draft vanishing the instant Stop is tapped, before stopped_message_generation is even handled.
-export function buildSendRichMessageDraftCall(chatId, draftId, markdownText, threadId = null) {
-  return {
-    method: 'sendRichMessageDraft',
-    params: {
-      chat_id: chatId,
-      draft_id: draftId,
-      rich_message: { markdown: markdownText },
-      can_stop: true,
-      keep_on_stop: true,
-      ...threadIdParam(threadId),
-    },
-  }
-}
-
-// Telegram sends draft_id as a string ("3"); coerced to Number since nextDraftId always produces one, rejecting a non-numeric or zero result instead of letting it silently never match any run.
-export function parseStoppedMessageGeneration(update) {
-  const chatId = update?.chat?.id
-  if (chatId == null || update?.draft_id == null) return null
-  const draftId = Number(update.draft_id)
-  if (!Number.isFinite(draftId) || draftId === 0) return null
-  return { chatId: String(chatId), draftId }
-}
-
-// MessageGenerationStopped has no is_topic_message to key by like a real Message, so a reconstructed thread key can't be trusted — matches chatId+draftId directly instead (draft_id unique per chat, see nextDraftId).
-export function isTargetRunForStoppedGeneration(run, parsed) {
-  return !run.finished && run.draftId === parsed.draftId && run.chatId === parsed.chatId
-}
-
-// Caller already knows placeholderId is null (no keyboard possible right now); this only decides whether that's specifically the still-streaming-as-a-draft case worth a one-off explanation, vs. e.g. a classic placeholder send that just hasn't landed yet.
-export function shouldSendDraftJoinNotice(run) {
-  return run.draftId != null && run.pending.length === 1
-}
-
-export function buildDraftJoinUnavailableNotice() {
-  return "📥 got it — this draft can't show a Join button, so it'll run as its own follow-up once the current one wraps up."
-}
 
 export const MAX_PERSISTED_FULL_TEXT_CHARS = 4000
 
@@ -1328,7 +1280,7 @@ export function buildBotIdentity(getMeResult) {
 // Passed explicitly on every getUpdates call: the token may carry an allowed_updates
 // whitelist left over from an earlier bot setup, and edited_message missing from it would
 // silently disable rewind-on-edit. stopped_message_generation is the draft Stop button's update.
-export const TELEGRAM_ALLOWED_UPDATES = ['message', 'edited_message', 'callback_query', 'stopped_message_generation']
+export const TELEGRAM_ALLOWED_UPDATES = ['message', 'edited_message', 'callback_query']
 
 export function buildBotCommands() {
   return [
