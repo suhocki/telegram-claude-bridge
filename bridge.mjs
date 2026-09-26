@@ -266,6 +266,8 @@ const PROSODY_ANNOTATION_TIMEOUT_MS = 6000
 // Telegram rate-limits editMessageText to roughly 1/sec per chat; this stays safely under
 // that while still feeling "live" for the growing-text placeholder preview.
 const STREAM_EDIT_INTERVAL_MS = 1300
+// sendRichMessageDraft has a much stricter, undocumented limit than editMessageText — observed retry-after values of 3-10s (mode ~5s) in production logs at the STREAM_EDIT_INTERVAL_MS cadence above, so this sits comfortably past the mode rather than just under it.
+const DRAFT_STREAM_EDIT_INTERVAL_MS = 6000
 // Idle timeout (no stdout output at all for this long), not a cap on total turn duration — a long but actively streaming turn never trips it.
 const CLAUDE_TURN_TIMEOUT_MS = config.claudeTurnTimeoutMs ?? 20 * 60 * 1000
 // Backstop for a runaway loop the idle timeout alone wouldn't catch; scales with it (default 20min idle -> 4h), clamped to MAX_TIMEOUT_MS so a very large claudeTurnTimeoutMs can't overflow setTimeout's range and fire almost instantly.
@@ -1537,27 +1539,16 @@ function createDraftPlaceholderController(chatId, draftId, threadId, initialStat
     renderTranscript: (historyLines, liveText, fullTexts) => renderDraftMarkdown(historyLines, liveText, undefined, fullTexts),
   })
   let fellBack = false
-  // no ordering guarantee across independent requests, so overlapping sends could flash stale content back onto the draft — serialize them instead.
+  // no ordering guarantee across independent requests, so overlapping sends could flash stale content back onto the draft — drop one instead of queueing it, the next tick's own fresh snapshot supersedes it anyway.
   let sending = false
-  let resendPending = false
 
   async function editPlaceholder({ text }) {
-    if (fellBack) return
-    if (sending) {
-      resendPending = true
-      return
-    }
+    if (fellBack || sending) return
     sending = true
     try {
       const { method, params } = buildSendRichMessageDraftCall(chatId, draftId, text, threadId)
       await tg(method, params)
-      sending = false
-      if (resendPending) {
-        resendPending = false
-        await editPlaceholder(tracker.snapshot())
-      }
     } catch (e) {
-      sending = false
       if (fellBack) return
       const { notModified, retryAfterMs } = parseTelegramEditError(e.message)
       if (notModified) return
@@ -1570,6 +1561,8 @@ function createDraftPlaceholderController(chatId, draftId, threadId, initialStat
       log('sendRichMessageDraft failed, falling back to a classic placeholder', e.message)
       statusUpdater.stop()
       await onFallback()
+    } finally {
+      sending = false
     }
   }
 
@@ -1578,7 +1571,7 @@ function createDraftPlaceholderController(chatId, draftId, threadId, initialStat
     getStatus: () => tracker.snapshot(),
     onUpdate: latestStatus => editPlaceholder(latestStatus),
     initialStatus: tracker.snapshot(),
-    intervalMs: STREAM_EDIT_INTERVAL_MS,
+    intervalMs: DRAFT_STREAM_EDIT_INTERVAL_MS,
     sharedGate,
     alwaysSend: true,
   })
