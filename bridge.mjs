@@ -526,13 +526,15 @@ async function freezePlaceholderAsTranscript(chatId, placeholderId, quoteHtml, w
       return { frozen: false, placeholderId }
     }
   }
-  try {
-    const progressPlaceholder = await tg('sendMessage', buildWorkingPlaceholderParams(chatId, workingStatus, placeholderId, cancelKeyboard, threadId))
-    return { frozen: true, placeholderId: progressPlaceholder.message_id }
-  } catch (e) {
-    log('failed to send post-transcript working placeholder', e.message)
-    return { frozen: true, placeholderId: null }
-  }
+  const newPlaceholderId = await sendWorkingPlaceholder(
+    chatId,
+    workingStatus,
+    placeholderId,
+    cancelKeyboard,
+    threadId,
+    'failed to send post-transcript working placeholder'
+  )
+  return { frozen: true, placeholderId: newPlaceholderId }
 }
 
 async function setReaction(chatId, messageId, emoji) {
@@ -1541,13 +1543,11 @@ function createPlaceholderController(
   })
   let sending = false
   let pending
-  // latched once the rich tier fails for a genuine (non-rate-limit) reason, so later ticks go
-  // straight to the classic fallback instead of repeating a call already known to be broken
-  let richBroken = false
+  // consecutive non-rate-limit rich-tier failures before giving up on it for the rest of this turn
+  let richFailureStreak = 0
+  const RICH_TIER_FAILURE_THRESHOLD = 3
 
-  // Shared by every tier: 'ok' covers success, "already this text" and a handled rate-limit
-  // (the pause is applied here); anything else is a genuine failure, returned as its message so
-  // the caller decides whether to log it and/or fall back further.
+  // 'ok' covers success, a no-op, or an already-handled rate-limit; otherwise the failure message, for the caller to act on
   async function attemptEdit(method, params, rateLimitLabel) {
     try {
       await tg(method, params)
@@ -1565,13 +1565,17 @@ function createPlaceholderController(
   }
 
   async function sendTiered(text, isTrackerRendered) {
-    if (!richBroken) {
+    if (richFailureStreak < RICH_TIER_FAILURE_THRESHOLD) {
       const { method, params } = buildRichReplyCall(chatId, text, null, messageId, null, currentKeyboard)
       const outcome = await attemptEdit(method, params, 'rich editMessageText')
-      if (outcome === 'ok') return
+      if (outcome === 'ok') {
+        richFailureStreak = 0
+        return
+      }
+      richFailureStreak += 1
       log('rich editMessageText failed, falling back to a plain-text status', outcome)
-      richBroken = true
     }
+    if (messageId == null) return // may have gone null while the rich attempt above was in flight
     // a tracker-rendered snapshot's mixed escaping proved unsafe to down-convert faithfully (3 review rounds, 3 different content-corrupting bugs) — a simple, honest status instead; an explicit plain string (e.g. "done"/"failed") has no such risk and is sent as-is.
     const classicText = isTrackerRendered ? '⏳ still working — having trouble refreshing the live progress view' : text
     const classicParams = buildPlaceholderEditParams(chatId, messageId, classicText, false, currentKeyboard)
@@ -1586,22 +1590,32 @@ function createPlaceholderController(
       return
     }
     sending = true
-    await sendTiered(text, isTrackerRendered)
-    sending = false
-    // drain whatever coalesced while we were sending — but only once messageId is still live and
-    // any rate-limit pause that same send may have just opened has cleared, so this can't
-    // immediately re-hit Telegram inside the very backoff window it (or a sibling) just triggered
-    while (pending !== undefined && messageId != null) {
-      if (sharedGate?.isPaused()) {
-        await new Promise(resolve => setTimeout(resolve, STREAM_EDIT_INTERVAL_MS))
-        continue
+    try {
+      await sendTiered(text, isTrackerRendered)
+      // held across any wait below too, so a call arriving mid-pause coalesces instead of racing a second send
+      while (pending !== undefined && messageId != null) {
+        if (sharedGate?.isPaused()) {
+          await new Promise(resolve => setTimeout(resolve, STREAM_EDIT_INTERVAL_MS))
+          continue
+        }
+        const next = pending
+        pending = undefined
+        await sendTiered(next.text, next.isTrackerRendered)
       }
-      const next = pending
-      pending = undefined
-      sending = true
-      await sendTiered(next.text, next.isTrackerRendered)
+    } finally {
       sending = false
     }
+  }
+
+  async function pushKeyboard(kb) {
+    currentKeyboard = kb
+    if (messageId == null) return
+    const outcome = await attemptEdit(
+      'editMessageReplyMarkup',
+      { chat_id: chatId, message_id: messageId, reply_markup: kb },
+      'editMessageReplyMarkup'
+    )
+    if (outcome !== 'ok') log('editMessageReplyMarkup failed', outcome)
   }
 
   const statusUpdater = createStatusUpdater({
@@ -1627,6 +1641,7 @@ function createPlaceholderController(
     setKeyboard(kb) {
       currentKeyboard = kb
     },
+    pushKeyboard,
   }
 }
 
@@ -1665,8 +1680,7 @@ async function withTypingIndicator(chatId, threadId, fn) {
   }
 }
 
-// shared by handleMessage's own turn-start send and runClaudeTurn's after-the-fact retry, so the
-// actual sendMessage/params pairing can't drift between the two
+// shared by every turn-start placeholder send, so the sendMessage/params pairing can't drift between call sites
 async function sendWorkingPlaceholder(chatId, workingStatus, replyToMessageId, keyboard, threadId, failLogLabel) {
   try {
     const placeholder = await tg('sendMessage', buildWorkingPlaceholderParams(chatId, workingStatus, replyToMessageId, keyboard, threadId))
@@ -1751,7 +1765,12 @@ async function runClaudeTurn(
       entry.controller.statusUpdater.stop()
       const messageId = await entry.messageIdPromise
       if (messageId != null) {
-        await tg('deleteMessage', { chat_id: chatId, message_id: messageId }).catch(e => log('failed to delete subagent placeholder', e.message))
+        try {
+          await tg('deleteMessage', { chat_id: chatId, message_id: messageId })
+          entry.controller.setMessageId(null)
+        } catch (e) {
+          log('failed to delete subagent placeholder', e.message)
+        }
       }
     }
   }
@@ -1868,7 +1887,11 @@ async function runClaudeTurn(
           botMessageIds.push(currentPlaceholderId)
           rootController.setMessageId(currentPlaceholderId)
           rootController.setKeyboard(liveCancelKeyboard)
-          await rootController.editPlaceholder(rootController.tracker.snapshot())
+          try {
+            await rootController.editPlaceholder(rootController.tracker.snapshot())
+          } catch (e) {
+            log('failed to repaint placeholder after Continue retry', e.message)
+          }
         }
       }
       if (currentPlaceholderId != null && resumableSessionId) {
@@ -1881,16 +1904,7 @@ async function runClaudeTurn(
           ...turnMeta,
         }
         continueArmed = true
-        const continueKeyboard = buildContinueKeyboard(chatId)
-        // keep the controller's own idea of the keyboard in sync, so a streaming edit still in
-        // flight (or queued behind one) drains with Continue attached instead of clobbering it
-        // back to the stale Cancel keyboard it was constructed with
-        rootController.setKeyboard(continueKeyboard)
-        await tg('editMessageReplyMarkup', {
-          chat_id: chatId,
-          message_id: currentPlaceholderId,
-          reply_markup: continueKeyboard,
-        }).catch(() => {})
+        await rootController.pushKeyboard(buildContinueKeyboard(chatId))
       } else {
         // cancelled wins if both raced (a manual cancel right as the turn timeout also fired) — it reflects user intent.
         const text = !cancelled && e.timedOut ? '⏱️ timed out' : '🚫 cancelled'
@@ -1908,11 +1922,7 @@ async function runClaudeTurn(
     activeRuns.delete(key)
     // avoid wiping the Continue button the catch block may have just attached above
     if (currentPlaceholderId != null && !continueArmed) {
-      const clearedKeyboard = { inline_keyboard: [] }
-      // same reasoning as the Continue case above: keep the controller in sync so a still-in-flight
-      // or queued edit can't reattach the stale Cancel keyboard right after this clears it
-      rootController.setKeyboard(clearedKeyboard)
-      await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: currentPlaceholderId, reply_markup: clearedKeyboard }).catch(() => {})
+      await rootController.pushKeyboard({ inline_keyboard: [] })
     }
     // safety net: normally every subagent's tool_result already deletes its own
     // placeholder as it happens; this only catches leftovers from a crash or a missed
@@ -1924,7 +1934,9 @@ async function runClaudeTurn(
         entry.controller.statusUpdater.stop()
         const messageId = await entry.messageIdPromise
         if (messageId != null) {
-          await tg('deleteMessage', { chat_id: chatId, message_id: messageId }).catch(() => {})
+          await tg('deleteMessage', { chat_id: chatId, message_id: messageId })
+            .then(() => entry.controller.setMessageId(null))
+            .catch(() => {})
         }
       })
     )
