@@ -505,6 +505,15 @@ export function isTargetRunForStoppedGeneration(run, parsed) {
   return !run.finished && run.draftId === parsed.draftId && run.chatId === parsed.chatId
 }
 
+// Caller already knows placeholderId is null (no keyboard possible right now); this only decides whether that's specifically the still-streaming-as-a-draft case worth a one-off explanation, vs. e.g. a classic placeholder send that just hasn't landed yet.
+export function shouldSendDraftJoinNotice(run) {
+  return run.draftId != null && run.pending.length === 1
+}
+
+export function buildDraftJoinUnavailableNotice() {
+  return "📥 got it — this draft can't show a Join button, so it'll run as its own follow-up once the current one wraps up."
+}
+
 export const MAX_PERSISTED_FULL_TEXT_CHARS = 4000
 
 export function capCheckpointHistoryFullText(checkpointHistory, maxChars = MAX_PERSISTED_FULL_TEXT_CHARS) {

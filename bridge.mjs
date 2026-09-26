@@ -95,6 +95,8 @@ import {
   buildSendRichMessageDraftCall,
   parseStoppedMessageGeneration,
   isTargetRunForStoppedGeneration,
+  shouldSendDraftJoinNotice,
+  buildDraftJoinUnavailableNotice,
   getModelConfig,
   setModelConfigField,
   isValidModelConfigValue,
@@ -2266,7 +2268,14 @@ let botIdentity = { id: null, username: null }
 async function addPendingJoinMessage(chatId, key, run, msg) {
   if (run.finished) return
   run.pending.push(msg)
-  if (run.placeholderId == null) return
+  if (run.placeholderId == null) {
+    if (shouldSendDraftJoinNotice(run)) {
+      await sendReply(chatId, buildDraftJoinUnavailableNotice(), msg.message_id, null, resolveThreadId(msg)).catch(e =>
+        log('failed to send draft-join notice', e.message)
+      )
+    }
+    return
+  }
   const keyboard = buildCancelKeyboard(chatId, run.pending.length)
   run.setKeyboard(keyboard)
   const placeholderId = run.placeholderId
