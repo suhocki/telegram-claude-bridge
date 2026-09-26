@@ -164,8 +164,7 @@ export function createProgressTracker(
   let liveText = ''
   let liveKind = null // 'thinking' | 'text' | null
   let status = initialStatus
-  let statusIsHtml = false
-  let snapshotCache = { text: status, html: statusIsHtml }
+  let snapshotCache = { text: status }
 
   // a seed is a plain string (old persisted state.json data, or the classic path's own checkpointHistory) or a { line, full } entry (this tracker's own historySnapshot()) — both are accepted so nothing crashes on a pre-upgrade persisted turn.
   for (const seed of initialCheckpointLines) pushCheckpoint(seed?.line ?? seed, seed?.full ?? null)
@@ -229,8 +228,7 @@ export function createProgressTracker(
     if (rendered == null) return null
 
     status = rendered
-    statusIsHtml = Boolean(renderTranscript)
-    snapshotCache = { text: status, html: statusIsHtml }
+    snapshotCache = { text: status }
     return status
   }
 
@@ -306,15 +304,7 @@ export function createChatRateGate() {
   }
 }
 
-// alwaysSend skips the latest===lastSent dedup — for a caller whose target self-expires without a refresh (e.g. a Telegram draft), not just a real message that only needs an edit when something changed.
-export function createStatusUpdater({
-  getStatus,
-  onUpdate,
-  initialStatus = DEFAULT_WORKING_STATUS,
-  intervalMs = 3000,
-  sharedGate = null,
-  alwaysSend = false,
-}) {
+export function createStatusUpdater({ getStatus, onUpdate, initialStatus = DEFAULT_WORKING_STATUS, intervalMs = 3000, sharedGate = null }) {
   let alive = true
   let lastSent = initialStatus
   let skipTicks = 0
@@ -326,7 +316,7 @@ export function createStatusUpdater({
       return
     }
     const latest = getStatus()
-    if (!alwaysSend && latest === lastSent) return
+    if (latest === lastSent) return
     lastSent = latest
     onUpdate(latest)
   }, intervalMs)

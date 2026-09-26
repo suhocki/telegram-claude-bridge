@@ -353,19 +353,19 @@ test('createProgressTracker accumulates text deltas into a growing preview', () 
   assert.equal(tracker.ingest(delta(' world')), '✍️ Hello world')
 })
 
-test('createProgressTracker.snapshot starts as { text: initialStatus, html: false }', () => {
+test('createProgressTracker.snapshot starts as { text: initialStatus }', () => {
   const tracker = createProgressTracker()
-  assert.deepEqual(tracker.snapshot(), { text: DEFAULT_WORKING_STATUS, html: false })
+  assert.deepEqual(tracker.snapshot(), { text: DEFAULT_WORKING_STATUS })
 })
 
-test('createProgressTracker.snapshot reflects a tool status line as non-html', () => {
+test('createProgressTracker.snapshot reflects a tool status line', () => {
   const tracker = createProgressTracker()
   const event = {
     type: 'assistant',
     message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
   }
   tracker.ingest(event)
-  assert.deepEqual(tracker.snapshot(), { text: '⏳ Bash: npm test…', html: false })
+  assert.deepEqual(tracker.snapshot(), { text: '⏳ Bash: npm test…' })
 })
 
 test('createProgressTracker.snapshot returns the same object reference across ingests that report no change', () => {
@@ -379,21 +379,21 @@ test('createProgressTracker: without a renderTranscript option, text deltas stil
   const tracker = createProgressTracker()
   const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
   tracker.ingest(delta('Hello world'))
-  assert.deepEqual(tracker.snapshot(), { text: '✍️ Hello world', html: false })
+  assert.deepEqual(tracker.snapshot(), { text: '✍️ Hello world' })
 })
 
-test('createProgressTracker: with a renderTranscript option, changes are rendered through it (history, live) and marked html', () => {
+test('createProgressTracker: with a renderTranscript option, changes are rendered through it (history, live)', () => {
   const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
     renderTranscript: (history, live) => `[${history.join('|')}]<b>${live}</b>`,
   })
   const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
   assert.equal(tracker.ingest(delta('Hello')), '[]<b>Hello</b>')
-  assert.deepEqual(tracker.snapshot(), { text: '[]<b>Hello</b>', html: true })
+  assert.deepEqual(tracker.snapshot(), { text: '[]<b>Hello</b>' })
   tracker.ingest(delta(' world'))
-  assert.deepEqual(tracker.snapshot(), { text: '[]<b>Hello world</b>', html: true })
+  assert.deepEqual(tracker.snapshot(), { text: '[]<b>Hello world</b>' })
 })
 
-test('createProgressTracker: a tool_use event freezes live text into history (passed to renderTranscript) and stays html=true', () => {
+test('createProgressTracker: a tool_use event freezes live text into history (passed to renderTranscript)', () => {
   const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
     renderTranscript: (history, live) => JSON.stringify({ history, live }),
   })
@@ -405,7 +405,6 @@ test('createProgressTracker: a tool_use event freezes live text into history (pa
   }
   tracker.ingest(toolEvent)
   const snap = tracker.snapshot()
-  assert.equal(snap.html, true)
   assert.deepEqual(JSON.parse(snap.text), { history: ['💬 Hello', '⏳ Bash: npm test…'], live: '' })
 })
 
@@ -497,7 +496,7 @@ test('regression: a renderTranscript that returns null does not clobber the prio
   const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
   const second = tracker.ingest(delta('some text'))
   assert.equal(second, null, 'ingest should report no visible change when the renderer has nothing to show')
-  assert.deepEqual(tracker.snapshot(), { text: first, html: true }, 'the previous good status must survive a null render')
+  assert.deepEqual(tracker.snapshot(), { text: first }, 'the previous good status must survive a null render')
 })
 
 test('createStatusUpdater fires onUpdate on an interval while the status changes', t => {
@@ -512,18 +511,6 @@ test('createStatusUpdater fires onUpdate on an interval while the status changes
   assert.deepEqual(updates, ['second'])
   t.mock.timers.tick(1000)
   assert.deepEqual(updates, ['second'])
-  updater.stop()
-})
-
-test('createStatusUpdater with alwaysSend fires onUpdate on every tick even when the status has not changed', t => {
-  t.mock.timers.enable({ apis: ['setInterval'] })
-  const status = 'same'
-  const updates = []
-  const updater = createStatusUpdater({ getStatus: () => status, onUpdate: s => updates.push(s), initialStatus: status, intervalMs: 1000, alwaysSend: true })
-  t.mock.timers.tick(1000)
-  t.mock.timers.tick(1000)
-  t.mock.timers.tick(1000)
-  assert.deepEqual(updates, ['same', 'same', 'same'])
   updater.stop()
 })
 
