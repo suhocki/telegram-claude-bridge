@@ -874,7 +874,7 @@ export function buildWorkingPlaceholderParams(chatId, text, replyToMessageId, ke
   return keyboard ? { ...base, reply_markup: keyboard } : base
 }
 
-// Shared by every placeholder-style controller's editPlaceholder (classic and draft alike) so their error handling can't silently drift apart.
+// Shared by editPlaceholder's every tier (rich, classic HTML, plain text) so their error handling can't silently drift apart.
 export function parseTelegramEditError(message) {
   const text = String(message ?? '')
   if (/message is not modified/i.test(text)) return { notModified: true, retryAfterMs: null }
@@ -1279,7 +1279,7 @@ export function buildBotIdentity(getMeResult) {
 
 // Passed explicitly on every getUpdates call: the token may carry an allowed_updates
 // whitelist left over from an earlier bot setup, and edited_message missing from it would
-// silently disable rewind-on-edit. stopped_message_generation is the draft Stop button's update.
+// silently disable rewind-on-edit.
 export const TELEGRAM_ALLOWED_UPDATES = ['message', 'edited_message', 'callback_query']
 
 export function buildBotCommands() {

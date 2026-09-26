@@ -181,7 +181,7 @@ import {
 } from './jobs.mjs'
 import { loadGlobalAuthMode, saveGlobalAuthMode, seedGlobalAuthModeIfMissing, collectLegacyAuthModeValues } from './auth-mode.mjs'
 import { loadGlobalFishVoice, saveGlobalFishVoice } from './fish-voice.mjs'
-import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderRichTranscript } from './markdown-html.mjs'
+import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderRichTranscript, renderPlainFallback } from './markdown-html.mjs'
 import {
   DEFAULT_WORKING_STATUS,
   createLineSplitter,
@@ -1539,35 +1539,48 @@ function createPlaceholderController(
     renderTranscript: (historyLines, liveText, fullTexts) => renderRichTranscript(historyLines, liveText, { fullTexts }),
     initialCheckpointLines,
   })
+  // the rich->classic fallback below is 2 sequential network calls worst-case, widening the window for an overlapping tick's response to land out of order — drop one instead of letting a stale reply win.
+  let sending = false
 
   async function editPlaceholder({ text }) {
-    if (messageId == null) return
-    const { method, params } = buildRichReplyCall(chatId, text, null, messageId, null, currentKeyboard)
+    if (messageId == null || sending) return
+    sending = true
     try {
-      await tg(method, params)
-      return
-    } catch (e) {
-      const { notModified, retryAfterMs } = parseTelegramEditError(e.message)
-      if (notModified) return
-      if (retryAfterMs != null) {
-        statusUpdater.pauseFor(retryAfterMs)
-        log('editMessageText rate-limited, pausing streaming updates', e.message)
+      const { method, params } = buildRichReplyCall(chatId, text, null, messageId, null, currentKeyboard)
+      try {
+        await tg(method, params)
         return
+      } catch (e) {
+        const { notModified, retryAfterMs } = parseTelegramEditError(e.message)
+        if (notModified) return
+        if (retryAfterMs != null) {
+          statusUpdater.pauseFor(retryAfterMs)
+          log('editMessageText rate-limited, pausing streaming updates', e.message)
+          return
+        }
+        log('rich editMessageText failed, falling back to classic HTML', e.message)
       }
-      log('rich editMessageText failed, falling back to classic HTML', e.message)
-    }
-    // classic HTML fallback: same source markdown, converted instead of interpreted, truncated to one message like the pre-rich-message placeholder always was
-    const [firstChunk] = markdownToTelegramHtmlChunks(text)
-    const classicParams = buildPlaceholderEditParams(chatId, messageId, firstChunk ?? text, true, currentKeyboard)
-    try {
-      await tg('editMessageText', classicParams)
-    } catch (e2) {
-      const { notModified } = parseTelegramEditError(e2.message)
-      if (notModified) return
-      const { parse_mode, ...plainParams } = classicParams
-      await tg('editMessageText', { ...plainParams, text: htmlToPlainFallback(classicParams.text) }).catch(e3 =>
-        log('editMessageText classic fallback failed', e3.message)
-      )
+      // rebuilt from the tracker's own raw lines, not text itself — text's <details> tags mean nothing outside Rich Markdown and would show up as literal escaped tag text otherwise
+      const plainText = renderPlainFallback(tracker.historyLines(), tracker.liveDisplayText())
+      if (plainText == null) return
+      const classicParams = buildPlaceholderEditParams(chatId, messageId, plainText, true, currentKeyboard)
+      try {
+        await tg('editMessageText', classicParams)
+      } catch (e2) {
+        const { notModified, retryAfterMs } = parseTelegramEditError(e2.message)
+        if (notModified) return
+        if (retryAfterMs != null) {
+          statusUpdater.pauseFor(retryAfterMs)
+          log('editMessageText rate-limited, pausing streaming updates', e2.message)
+          return
+        }
+        const { parse_mode, ...plainParams } = classicParams
+        await tg('editMessageText', { ...plainParams, text: htmlToPlainFallback(classicParams.text) }).catch(e3 =>
+          log('editMessageText classic fallback failed', e3.message)
+        )
+      }
+    } finally {
+      sending = false
     }
   }
 
@@ -1777,7 +1790,7 @@ async function runClaudeTurn(
       } catch (e) {
         log('failed to delete working placeholder', e.message)
         // fall back to a terminal status edit so a stuck delete doesn't leave a stale phrase forever
-        await rootController.editPlaceholder({ text: result.is_error ? '❌ failed' : '✅ done', html: false })
+        await rootController.editPlaceholder({ text: result.is_error ? '❌ failed' : '✅ done' })
       }
     }
     if (!result.is_error) {
@@ -1808,14 +1821,17 @@ async function runClaudeTurn(
       if (currentPlaceholderId == null && resumableSessionId) {
         // the turn-start placeholder send itself must have failed — nothing to attach Continue to yet, so try once more now that it's actually needed.
         try {
+          const liveCancelKeyboard = buildCancelKeyboard(chatId, run.pending.length)
           const placeholder = await tg(
             'sendMessage',
-            buildWorkingPlaceholderParams(chatId, workingStatus, originMessageId, buildCancelKeyboard(chatId, run.pending.length), threadId)
+            buildWorkingPlaceholderParams(chatId, workingStatus, originMessageId, liveCancelKeyboard, threadId)
           )
           currentPlaceholderId = placeholder.message_id
           run.placeholderId = currentPlaceholderId
           botMessageIds.push(currentPlaceholderId)
           rootController.setMessageId(currentPlaceholderId)
+          // synced first: editPlaceholder below reuses the controller's own currentKeyboard, which is otherwise still whatever it was at construction time, before this retry.
+          rootController.setKeyboard(liveCancelKeyboard)
           await rootController.editPlaceholder(rootController.tracker.snapshot())
         } catch (e) {
           log('failed to create placeholder for Continue after initial send failure', e.message)

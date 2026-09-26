@@ -164,8 +164,7 @@ export function createProgressTracker(
   let liveText = ''
   let liveKind = null // 'thinking' | 'text' | null
   let status = initialStatus
-  let statusIsHtml = false
-  let snapshotCache = { text: status, html: statusIsHtml }
+  let snapshotCache = { text: status }
 
   // a seed is a plain string (old persisted state.json data, or the classic path's own checkpointHistory) or a { line, full } entry (this tracker's own historySnapshot()) — both are accepted so nothing crashes on a pre-upgrade persisted turn.
   for (const seed of initialCheckpointLines) pushCheckpoint(seed?.line ?? seed, seed?.full ?? null)
@@ -229,8 +228,7 @@ export function createProgressTracker(
     if (rendered == null) return null
 
     status = rendered
-    statusIsHtml = Boolean(renderTranscript)
-    snapshotCache = { text: status, html: statusIsHtml }
+    snapshotCache = { text: status }
     return status
   }
 
@@ -288,7 +286,8 @@ export function createProgressTracker(
     return checkpoints.map(c => ({ line: c.line, full: c.full }))
   }
 
-  return { ingest, current, snapshot, historySnapshot }
+  // historyLines/liveDisplayText: exposed so a caller can build a second, independent rendering (e.g. a plain-text fallback) from the same live state, not just read the one cached renderTranscript result.
+  return { ingest, current, snapshot, historySnapshot, historyLines, liveDisplayText }
 }
 
 // Shared across every controller writing to the same chat (root + all its parallel
