@@ -2270,7 +2270,9 @@ async function addPendingJoinMessage(chatId, key, run, msg) {
   run.pending.push(msg)
   if (run.placeholderId == null) {
     if (shouldSendDraftJoinNotice(run)) {
-      await sendReply(chatId, buildDraftJoinUnavailableNotice(), msg.message_id, null, resolveThreadId(msg)).catch(() => {})
+      await sendReply(chatId, buildDraftJoinUnavailableNotice(), msg.message_id, null, resolveThreadId(msg)).catch(e =>
+        log('failed to send draft-join notice', e.message)
+      )
     }
     return
   }
