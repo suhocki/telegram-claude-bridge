@@ -2733,13 +2733,35 @@ async function poll() {
         } else if (u.stopped_message_generation) {
           // native Stop button on a streamed draft: scans by chatId+draftId (unique per chat) rather than Map.get on a reconstructed key.
           const parsed = parseStoppedMessageGeneration(u.stopped_message_generation)
+          let matched = false
           if (parsed) {
             for (const run of activeRuns.values()) {
               if (isTargetRunForStoppedGeneration(run, parsed)) {
                 run.cancel()
+                matched = true
                 break
               }
             }
+          }
+          // logged unconditionally (not just on failure) — a silent success looks identical to "nothing arrived" otherwise.
+          log(
+            'stopped_message_generation',
+            u.update_id,
+            JSON.stringify(u.stopped_message_generation).slice(0, 2000),
+            'parsed:',
+            Boolean(parsed),
+            'matched:',
+            matched
+          )
+        } else {
+          // catches update kinds already in TELEGRAM_ALLOWED_UPDATES but with no handler here yet — a not-allow-listed kind is never delivered at all, so this can't catch that case.
+          const extraKeys = Object.keys(u).filter(k => k !== 'update_id')
+          if (extraKeys.length) {
+            log(
+              'received an update kind with no handler',
+              u.update_id,
+              extraKeys.map(k => `${k}:${JSON.stringify(u[k]).slice(0, 2000)}`).join(' ')
+            )
           }
         }
       }
