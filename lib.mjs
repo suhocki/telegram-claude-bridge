@@ -493,11 +493,11 @@ export function buildSendRichMessageDraftCall(chatId, draftId, markdownText, thr
   }
 }
 
-// Returns chatId+draftId, not a reconstructed thread key: unlike a real Message, MessageGenerationStopped has no is_topic_message to key off safely.
+// Returns chatId+draftId (not a reconstructed thread key, see isTargetRunForStoppedGeneration), draftId coerced to Number since Telegram sends it as a string ("3") while our own nextDraftId always produces one.
 export function parseStoppedMessageGeneration(update) {
   const chatId = update?.chat?.id
   if (chatId == null || update?.draft_id == null) return null
-  return { chatId: String(chatId), draftId: update.draft_id }
+  return { chatId: String(chatId), draftId: Number(update.draft_id) }
 }
 
 // draft_id is unique per chatId only (see nextDraftId), so the caller scans activeRuns for this instead of a direct key lookup.
