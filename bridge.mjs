@@ -2741,6 +2741,10 @@ async function poll() {
               }
             }
           }
+        } else {
+          // catches Bot API update kinds this bridge doesn't wire up yet, so a gap like this shows up in the logs instead of just silently doing nothing.
+          const kind = Object.keys(u).find(k => k !== 'update_id')
+          if (kind) log('received an update kind with no handler', kind, JSON.stringify(u[kind]))
         }
       }
     } catch (e) {
