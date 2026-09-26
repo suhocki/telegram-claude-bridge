@@ -181,7 +181,7 @@ import {
 } from './jobs.mjs'
 import { loadGlobalAuthMode, saveGlobalAuthMode, seedGlobalAuthModeIfMissing, collectLegacyAuthModeValues } from './auth-mode.mjs'
 import { loadGlobalFishVoice, saveGlobalFishVoice } from './fish-voice.mjs'
-import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderRichTranscript, stripRichOnlyMarkup } from './markdown-html.mjs'
+import { markdownToTelegramHtmlChunks, htmlToPlainFallback, renderRichTranscript } from './markdown-html.mjs'
 import {
   DEFAULT_WORKING_STATUS,
   createLineSplitter,
@@ -1539,14 +1539,13 @@ function createPlaceholderController(
     renderTranscript: (historyLines, liveText, fullTexts) => renderRichTranscript(historyLines, liveText, { fullTexts }),
     initialCheckpointLines,
   })
-  // the rich->classic fallback below is up to 3 sequential network calls worst-case — serialized so an overlapping call can't land out of order; queued (not dropped), so a request that arrives mid-send (e.g. the turn-end terminal edit) still fires, right after, instead of being silently lost.
   let sending = false
-  let pendingText
+  let pending
 
-  async function editPlaceholder({ text }) {
+  async function editPlaceholder({ text, isTrackerRendered = true }) {
     if (messageId == null) return
     if (sending) {
-      pendingText = text
+      pending = { text, isTrackerRendered }
       return
     }
     sending = true
@@ -1563,37 +1562,25 @@ function createPlaceholderController(
           log('editMessageText rate-limited, pausing streaming updates', e.message)
           return
         }
-        log('rich editMessageText failed, falling back to classic HTML', e.message)
+        log('rich editMessageText failed, falling back to a plain-text status', e.message)
       }
-      // strips the <details>/<summary> tags from the same requested text instead of substituting different, tracker-derived content
-      const chunks = markdownToTelegramHtmlChunks(stripRichOnlyMarkup(text))
-      const classicText = chunks[chunks.length - 1] ?? ''
-      const classicParams = buildPlaceholderEditParams(chatId, messageId, classicText, true, currentKeyboard)
+      // a tracker-rendered snapshot's mixed escaping proved unsafe to down-convert faithfully (3 review rounds, 3 different content-corrupting bugs) — a simple, honest status instead; an explicit plain string (e.g. "done"/"failed") has no such risk and is sent as-is.
+      const classicText = isTrackerRendered ? '⏳ still working — having trouble refreshing the live progress view' : text
+      const classicParams = buildPlaceholderEditParams(chatId, messageId, classicText, false, currentKeyboard)
       try {
         await tg('editMessageText', classicParams)
       } catch (e2) {
         const { notModified, retryAfterMs } = parseTelegramEditError(e2.message)
         if (notModified) return
-        if (retryAfterMs != null) {
-          statusUpdater.pauseFor(retryAfterMs)
-          log('editMessageText rate-limited, pausing streaming updates', e2.message)
-          return
-        }
-        const { parse_mode, ...plainParams } = classicParams
-        try {
-          await tg('editMessageText', { ...plainParams, text: htmlToPlainFallback(classicParams.text) })
-        } catch (e3) {
-          const { retryAfterMs: plainRetryAfterMs } = parseTelegramEditError(e3.message)
-          if (plainRetryAfterMs != null) statusUpdater.pauseFor(plainRetryAfterMs)
-          log('editMessageText classic fallback failed', e3.message)
-        }
+        if (retryAfterMs != null) statusUpdater.pauseFor(retryAfterMs)
+        log('editMessageText plain-text fallback failed', e2.message)
       }
     } finally {
       sending = false
-      if (pendingText !== undefined) {
-        const next = pendingText
-        pendingText = undefined
-        await editPlaceholder({ text: next })
+      if (pending !== undefined) {
+        const next = pending
+        pending = undefined
+        await editPlaceholder(next)
       }
     }
   }
@@ -1804,7 +1791,7 @@ async function runClaudeTurn(
       } catch (e) {
         log('failed to delete working placeholder', e.message)
         // fall back to a terminal status edit so a stuck delete doesn't leave a stale phrase forever
-        await rootController.editPlaceholder({ text: result.is_error ? '❌ failed' : '✅ done' })
+        await rootController.editPlaceholder({ text: result.is_error ? '❌ failed' : '✅ done', isTrackerRendered: false })
       }
     }
     if (!result.is_error) {
@@ -1833,7 +1820,7 @@ async function runClaudeTurn(
         )
       }
       if (currentPlaceholderId == null && resumableSessionId) {
-        // the turn-start placeholder send itself must have failed — nothing to attach Continue to yet, so try once more now that it's actually needed.
+        // the turn-start send must have failed (nothing to attach Continue to) — retry once, syncing the controller's keyboard first so the edit below doesn't clobber it with a stale one from construction time.
         try {
           const liveCancelKeyboard = buildCancelKeyboard(chatId, run.pending.length)
           const placeholder = await tg(
@@ -1844,7 +1831,6 @@ async function runClaudeTurn(
           run.placeholderId = currentPlaceholderId
           botMessageIds.push(currentPlaceholderId)
           rootController.setMessageId(currentPlaceholderId)
-          // synced first: editPlaceholder below reuses the controller's own currentKeyboard, which is otherwise still whatever it was at construction time, before this retry.
           rootController.setKeyboard(liveCancelKeyboard)
           await rootController.editPlaceholder(rootController.tracker.snapshot())
         } catch (e) {

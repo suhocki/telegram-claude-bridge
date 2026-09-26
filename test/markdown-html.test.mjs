@@ -5,7 +5,6 @@ import {
   markdownToTelegramHtmlChunks,
   htmlToPlainFallback,
   renderRichTranscript,
-  stripRichOnlyMarkup,
   stripRenderedTableGridsForSpeech,
   richMessageToSpeechText,
 } from '../markdown-html.mjs'
@@ -522,30 +521,6 @@ test('regression: renderRichTranscript truncates the live text (not bails to nul
   assert.notEqual(result, null, 'a long live segment must not blank out an otherwise-renderable draft')
   assert.ok(result.length <= 200, `result length ${result?.length} exceeds the 200 limit`)
   assert.ok(result.endsWith('z'), 'the live tail (kept in preference to history) is what survives at the end')
-})
-
-test('stripRichOnlyMarkup: removes the <details>/<summary> wrapper tags, keeping the inner content', () => {
-  const result = stripRichOnlyMarkup('<details><summary>🔧 1 step</summary>\n\n`⏳ Bash: npm test…`\n\n</details>')
-  assert.ok(!result.includes('<details'), 'the opening tag must not survive')
-  assert.ok(!result.includes('</details>'), 'the closing tag must not survive')
-  assert.ok(!result.includes('<summary>'), 'the summary open tag must not survive')
-  assert.ok(result.includes('🔧 1 step'), 'the summary text itself is kept, just unwrapped')
-  assert.ok(result.includes('`⏳ Bash: npm test…`'), 'the body content is kept as-is')
-})
-
-test('stripRichOnlyMarkup: plain text with no rich-only tags at all is returned unchanged', () => {
-  assert.equal(stripRichOnlyMarkup('✅ done'), '✅ done')
-  assert.equal(stripRichOnlyMarkup('**bold** and `code`'), '**bold** and `code`')
-})
-
-test('stripRichOnlyMarkup: null/undefined input becomes an empty string, not a crash', () => {
-  assert.equal(stripRichOnlyMarkup(null), '')
-  assert.equal(stripRichOnlyMarkup(undefined), '')
-})
-
-test('regression: stripRichOnlyMarkup leaves an HTML-escaped "</details>" (from user content, not this renderer\'s own wrapping) untouched', () => {
-  const escaped = '`⏳ Bash: grep &lt;/details&gt; file.js…`'
-  assert.equal(stripRichOnlyMarkup(escaped), escaped)
 })
 
 test('stripRenderedTableGridsForSpeech: replaces an already-rendered table grid (Telegram\'s own plain message.text, used by the Listen button) with a spoken placeholder', () => {
