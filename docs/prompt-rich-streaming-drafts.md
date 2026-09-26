@@ -10,9 +10,9 @@ file — `sendRichMessageDraft`, `draft_id`, `can_stop`/`keep_on_stop`, `stopped
 win this doc was chasing doesn't actually require drafts at all — `sendRichMessage`/
 `editMessageText`+`rich_message` (already in production since #101/#102 for the *final* reply)
 supports the exact same Rich Markdown, on a real message with a real `message_id` and a real
-`reply_markup` slot, with none of the native-Stop-button/mic-hijacking baggage. See the PR that
-reverted this feature for the actual, shipped design. The rest of this file is kept only as a
-historical record of what was tried and why it didn't work — not as a spec to revive.
+`reply_markup` slot, with none of the native-Stop-button/mic-hijacking baggage. See PR #112 for the
+actual, shipped design. The rest of this file is kept only as a historical record of what was
+tried and why it didn't work — not as a spec to revive.
 
 ---
 
