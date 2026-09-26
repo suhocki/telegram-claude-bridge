@@ -1776,8 +1776,6 @@ async function runClaudeTurn(
     ? createDraftPlaceholderController(chatId, run.draftId, threadId, workingStatus, chatRateGate, fallbackToClassicPlaceholder)
     : createPlaceholderController(chatId, currentPlaceholderId, chatRateGate, cancelKeyboard, workingStatus, checkpointHistory)
   run.setKeyboard = kb => rootController.setKeyboard(kb)
-  // exposed so a second incoming message can get a real, keyboard-capable placeholder even on a draft-streamed run — see addPendingJoinMessage.
-  run.ensurePlaceholder = fallbackToClassicPlaceholder
   // sent only now that rootController is assigned — fallbackToClassicPlaceholder (if this fails) must never run before that assignment exists.
   if (usingDraftStreaming) await rootController.editPlaceholder(rootController.tracker.snapshot())
 
@@ -2268,9 +2266,11 @@ let botIdentity = { id: null, username: null }
 async function addPendingJoinMessage(chatId, key, run, msg) {
   if (run.finished) return
   run.pending.push(msg)
-  // a draft-streamed run has no reply_markup slot to show Join/Cancel on — get a real placeholder first, same recovery path a failed sendRichMessageDraft already uses.
-  if (run.placeholderId == null) await run.ensurePlaceholder?.()
-  if (run.placeholderId == null) return
+  // a draft-streamed run has no reply_markup slot for a Join keyboard — react instead so the sender knows it wasn't ignored (it still runs, just as its own turn, not merged into this one).
+  if (run.placeholderId == null) {
+    await setReaction(chatId, msg.message_id, RECEIPT_REACTION).catch(() => {})
+    return
+  }
   const keyboard = buildCancelKeyboard(chatId, run.pending.length)
   run.setKeyboard(keyboard)
   const placeholderId = run.placeholderId
