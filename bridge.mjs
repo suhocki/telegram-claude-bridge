@@ -2266,11 +2266,20 @@ let botIdentity = { id: null, username: null }
 async function addPendingJoinMessage(chatId, key, run, msg) {
   if (run.finished) return
   run.pending.push(msg)
-  // a draft-streamed run has no reply_markup slot for a Join keyboard — react instead so the sender knows it wasn't ignored (it still runs, just as its own turn, not merged into this one).
-  if (run.placeholderId == null) {
-    await setReaction(chatId, msg.message_id, RECEIPT_REACTION).catch(() => {})
+  // a draft-streamed run has no reply_markup slot for a Join keyboard — a real, one-off reply is the only signal available (once per run, not per follow-up, to avoid spamming a burst of them).
+  if (run.draftId != null) {
+    if (run.pending.length === 1) {
+      await sendReply(
+        chatId,
+        "📥 got it — this draft can't show a Join button, so it'll run as its own follow-up once the current one wraps up.",
+        msg.message_id,
+        null,
+        resolveThreadId(msg)
+      ).catch(() => {})
+    }
     return
   }
+  if (run.placeholderId == null) return
   const keyboard = buildCancelKeyboard(chatId, run.pending.length)
   run.setKeyboard(keyboard)
   const placeholderId = run.placeholderId
