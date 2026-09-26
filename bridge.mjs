@@ -266,7 +266,7 @@ const PROSODY_ANNOTATION_TIMEOUT_MS = 6000
 // Telegram rate-limits editMessageText to roughly 1/sec per chat; this stays safely under
 // that while still feeling "live" for the growing-text placeholder preview.
 const STREAM_EDIT_INTERVAL_MS = 1300
-// sendRichMessageDraft has a much stricter, undocumented limit than editMessageText — observed retry-after values of 3-10s (mode ~5s) in production logs at the 1300ms cadence above, so this sits comfortably past the mode rather than just under it.
+// sendRichMessageDraft has a much stricter, undocumented limit than editMessageText — observed retry-after values of 3-10s (mode ~5s) in production logs at the STREAM_EDIT_INTERVAL_MS cadence above, so this sits comfortably past the mode rather than just under it.
 const DRAFT_STREAM_EDIT_INTERVAL_MS = 6000
 // Idle timeout (no stdout output at all for this long), not a cap on total turn duration — a long but actively streaming turn never trips it.
 const CLAUDE_TURN_TIMEOUT_MS = config.claudeTurnTimeoutMs ?? 20 * 60 * 1000

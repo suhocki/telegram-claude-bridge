@@ -141,9 +141,13 @@ For a turn running in a **private chat** (`msg.chat.type === 'private'`):
 1. **Don't create the classic real placeholder message at all.** Skip the initial `sendMessage`
    that currently creates the "⏳ working…" bubble (find this in `runClaudeTurn`/
    `createPlaceholderController`/`buildWorkingPlaceholderParams`).
-2. On the same cadence the existing progress-editing loop already uses (~1.3s, see the
-   `editMessageText` calls tied to `rootController`/`statusUpdater` in `runClaudeTurn`), call
-   `sendRichMessageDraft` instead, with:
+2. **Correction, PR #110: not the same ~1.3s cadence as `editMessageText`.**
+   `sendRichMessageDraft` has a much stricter, undocumented rate limit — running it at that
+   cadence produced 18 rate-limit hits in one production day and repeated forced fallbacks to a
+   classic placeholder mid-turn. Use a separate, slower interval
+   (`DRAFT_STREAM_EDIT_INTERVAL_MS`, 6000ms as of #110, chosen from observed `retry after` values
+   of 3-10s/mode ~5s) for this call specifically; leave the classic `editMessageText` loop at its
+   own, still-correct ~1.3s. Call `sendRichMessageDraft` on that slower cadence, with:
    - a stable `draft_id` for this run (any non-zero integer that's stable across refreshes of the
      *same* run and different across separate runs/turns — e.g. derive it from a per-chat
      monotonic counter, or hash the run's placeholder/queue key into a 31-bit int)
