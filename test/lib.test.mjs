@@ -57,6 +57,8 @@ import {
   buildSendRichMessageDraftCall,
   parseStoppedMessageGeneration,
   isTargetRunForStoppedGeneration,
+  shouldSendDraftJoinNotice,
+  buildDraftJoinUnavailableNotice,
   capCheckpointHistoryFullText,
   extractReactionMarker,
   buildSetMessageReactionParams,
@@ -1204,6 +1206,22 @@ test('isTargetRunForStoppedGeneration: rejects a mismatched draftId in the same 
 test('isTargetRunForStoppedGeneration: rejects an already-finished run', () => {
   const run = { finished: true, chatId: '123', draftId: 7 }
   assert.equal(isTargetRunForStoppedGeneration(run, { chatId: '123', draftId: 7 }), false)
+})
+
+test('shouldSendDraftJoinNotice: true for the first pending message on a draft-streamed run', () => {
+  assert.equal(shouldSendDraftJoinNotice({ draftId: 7, pending: [{}] }), true)
+})
+
+test('shouldSendDraftJoinNotice: false for a second pending message, so a burst of follow-ups only notices once', () => {
+  assert.equal(shouldSendDraftJoinNotice({ draftId: 7, pending: [{}, {}] }), false)
+})
+
+test('shouldSendDraftJoinNotice: false once draftId is unset, e.g. handleContinue runs that never draft-stream', () => {
+  assert.equal(shouldSendDraftJoinNotice({ draftId: undefined, pending: [{}] }), false)
+})
+
+test('buildDraftJoinUnavailableNotice: mentions the Join button is unavailable', () => {
+  assert.match(buildDraftJoinUnavailableNotice(), /Join button/)
 })
 
 test('capCheckpointHistoryFullText: leaves a full text under the cap untouched', () => {
