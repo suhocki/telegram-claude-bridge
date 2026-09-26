@@ -443,7 +443,7 @@ function nextWorkingPhrase() {
 
 const state = loadState()
 const chatQueue = createKeyedQueue()
-// thread key -> single in-flight run { cancel(), promptText, placeholderId, pending, finished, setKeyboard() }; chatQueue guarantees only one at a time.
+// thread key -> single in-flight run { cancel(), promptText, placeholderId, pending, finished, pushKeyboard() }; chatQueue guarantees only one at a time.
 const activeRuns = new Map()
 // thread key -> Set<messageId> already folded into a join tap, so runQueuedMessage below no-ops their own already-queued run.
 const consumedByJoin = new Map()
@@ -1723,7 +1723,7 @@ async function runClaudeTurn(
   // shared by root + every subagent placeholder below, so a 429 on any one of them backs off every concurrent edit loop writing to this chat
   const chatRateGate = createChatRateGate()
   const rootController = createPlaceholderController(chatId, currentPlaceholderId, chatRateGate, cancelKeyboard, workingStatus, checkpointHistory)
-  run.setKeyboard = kb => rootController.setKeyboard(kb)
+  run.pushKeyboard = kb => rootController.pushKeyboard(kb)
 
   // one placeholder message per parallel subagent (Agent tool call), keyed by that
   // tool_use's id; created when it starts, deleted once its tool_result comes back
@@ -2057,7 +2057,10 @@ async function handleMessage(msg) {
     placeholderId: null,
     pending: [],
     finished: false,
-    setKeyboard: () => {},
+    pushKeyboard: kb =>
+      tg('editMessageReplyMarkup', { chat_id: chatId, message_id: run.placeholderId, reply_markup: kb }).catch(e =>
+        log('failed to update join keyboard', e.message)
+      ),
   }
   // registered before the placeholder exists so a slow attachment download/transcription doesn't hide the Join button
   activeRuns.set(key, run)
@@ -2180,7 +2183,10 @@ async function handleContinue(chatId, key, threadId, pending) {
     placeholderId: pending.placeholderId,
     pending: [],
     finished: false,
-    setKeyboard: () => {},
+    pushKeyboard: kb =>
+      tg('editMessageReplyMarkup', { chat_id: chatId, message_id: run.placeholderId, reply_markup: kb }).catch(e =>
+        log('failed to update join keyboard', e.message)
+      ),
   }
   activeRuns.set(key, run)
 
@@ -2224,15 +2230,7 @@ async function addPendingJoinMessage(chatId, key, run, msg) {
   run.pending.push(msg)
   if (run.placeholderId == null) return
   const keyboard = buildCancelKeyboard(chatId, run.pending.length)
-  run.setKeyboard(keyboard)
-  const placeholderId = run.placeholderId
-  await joinKeyboardQueue
-    .enqueue(key, () =>
-      tg('editMessageReplyMarkup', { chat_id: chatId, message_id: placeholderId, reply_markup: keyboard }).catch(e =>
-        log('failed to update join keyboard', e.message)
-      )
-    )
-    .catch(() => {})
+  await joinKeyboardQueue.enqueue(key, () => run.pushKeyboard(keyboard)).catch(() => {})
 }
 
 async function transcribeJoinFragment(msg) {
