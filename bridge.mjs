@@ -266,6 +266,8 @@ const PROSODY_ANNOTATION_TIMEOUT_MS = 6000
 // Telegram rate-limits editMessageText to roughly 1/sec per chat; this stays safely under
 // that while still feeling "live" for the growing-text placeholder preview.
 const STREAM_EDIT_INTERVAL_MS = 1300
+// sendRichMessageDraft has a much stricter, undocumented limit than editMessageText — observed retry-after values of 3-10s (mode ~5s) in production logs at the 1300ms cadence above.
+const DRAFT_STREAM_EDIT_INTERVAL_MS = 4000
 // Idle timeout (no stdout output at all for this long), not a cap on total turn duration — a long but actively streaming turn never trips it.
 const CLAUDE_TURN_TIMEOUT_MS = config.claudeTurnTimeoutMs ?? 20 * 60 * 1000
 // Backstop for a runaway loop the idle timeout alone wouldn't catch; scales with it (default 20min idle -> 4h), clamped to MAX_TIMEOUT_MS so a very large claudeTurnTimeoutMs can't overflow setTimeout's range and fire almost instantly.
@@ -1578,7 +1580,7 @@ function createDraftPlaceholderController(chatId, draftId, threadId, initialStat
     getStatus: () => tracker.snapshot(),
     onUpdate: latestStatus => editPlaceholder(latestStatus),
     initialStatus: tracker.snapshot(),
-    intervalMs: STREAM_EDIT_INTERVAL_MS,
+    intervalMs: DRAFT_STREAM_EDIT_INTERVAL_MS,
     sharedGate,
     alwaysSend: true,
   })
