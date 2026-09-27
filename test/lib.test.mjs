@@ -34,6 +34,9 @@ import {
   buildAttachmentsCaption,
   buildMultiAttachmentAttrs,
   collectJoinBatchAttachmentMembers,
+  buildJoinAttachmentMediaGroup,
+  resolveReactionMessageIds,
+  resolveEditedMessageForTurn,
   mergeMediaGroupMessages,
   rebuildEditedMediaGroupMessage,
   exceedsAttachmentLimit,
@@ -2284,11 +2287,61 @@ test('collectJoinBatchAttachmentMembers: picks out only the non-voice-attachment
   assert.deepEqual(collectJoinBatchAttachmentMembers([textMsg, photoMsg, voiceMsg, docMsg]), [photoMsg, docMsg])
 })
 
-test('collectJoinBatchAttachmentMembers: flattens a batch entry that is itself a real album into its individual members', () => {
-  const albumMember1 = { message_id: 10, photo: [{ file_id: 'f1', file_size: 10 }] }
-  const albumMember2 = { message_id: 11, photo: [{ file_id: 'f2', file_size: 10 }], caption: 'the pair' }
-  const album = { message_id: 10, photo: [{ file_id: 'f1', file_size: 10 }], caption: 'the pair', mediaGroupMessages: [albumMember1, albumMember2] }
-  assert.deepEqual(collectJoinBatchAttachmentMembers([album]), [albumMember1, albumMember2])
+test('collectJoinBatchAttachmentMembers: a voice message is never picked up, even alongside other attachments', () => {
+  const photoMsg = { message_id: 1, photo: [{ file_id: 'f1', file_size: 10 }] }
+  const voiceMsg = { message_id: 2, voice: { file_id: 'v1', file_size: 10 } }
+  assert.deepEqual(collectJoinBatchAttachmentMembers([voiceMsg, photoMsg]), [photoMsg])
+})
+
+test('buildJoinAttachmentMediaGroup: a plain text/voice-only batch returns undefined, not an empty array', () => {
+  const textMsg = { message_id: 1, text: 'hi' }
+  const voiceMsg = { message_id: 2, voice: { file_id: 'v1', file_size: 10 } }
+  assert.equal(buildJoinAttachmentMediaGroup([textMsg, voiceMsg]), undefined)
+})
+
+test('buildJoinAttachmentMediaGroup: returns only the attachment-bearing messages, never a plain-text one', () => {
+  const photoMsg = { message_id: 1, photo: [{ file_id: 'f1', file_size: 10 }] }
+  const textMsg = { message_id: 2, text: 'hi' }
+  assert.deepEqual(buildJoinAttachmentMediaGroup([photoMsg, textMsg]), [photoMsg])
+})
+
+test('regression: a voice-only last is never included, so it can never re-enter as a raw attachment member', () => {
+  const photoMsg = { message_id: 1, photo: [{ file_id: 'f1', file_size: 10 }] }
+  const voiceMsg = { message_id: 2, voice: { file_id: 'v1', file_size: 10 } }
+  assert.deepEqual(buildJoinAttachmentMediaGroup([photoMsg, voiceMsg]), [photoMsg])
+})
+
+test('resolveReactionMessageIds: the anchor is already among memberMessages, so it appears once', () => {
+  const memberMessages = [{ message_id: 1 }, { message_id: 2 }]
+  assert.deepEqual(resolveReactionMessageIds(memberMessages, 2), [1, 2])
+})
+
+test('resolveReactionMessageIds: an anchor excluded from memberMessages (e.g. a Join batch with no attachment on its last message) is still appended', () => {
+  const memberMessages = [{ message_id: 1 }]
+  assert.deepEqual(resolveReactionMessageIds(memberMessages, 5), [1, 5])
+})
+
+test('resolveEditedMessageForTurn: fewer than two tracked members returns the edited message as-is', () => {
+  const editedMsg = { message_id: 1, text: 'edited' }
+  assert.equal(resolveEditedMessageForTurn([{ message_id: 1 }], editedMsg), editedMsg)
+  assert.equal(resolveEditedMessageForTurn(undefined, editedMsg), editedMsg)
+})
+
+test('resolveEditedMessageForTurn: the edited id is among the tracked members, so it rebuilds the merged album', () => {
+  const member1 = { message_id: 1, photo: [{ file_id: 'f1', file_size: 10 }] }
+  const member2 = { message_id: 2, photo: [{ file_id: 'f2', file_size: 10 }], caption: 'old' }
+  const editedMsg = { message_id: 2, photo: [{ file_id: 'f2', file_size: 10 }], caption: 'new' }
+  const result = resolveEditedMessageForTurn([member1, member2], editedMsg)
+  assert.equal(result.caption, 'new')
+  assert.equal(result.message_id, 1)
+})
+
+test('regression: the edited id is not among the tracked members (a Join batch anchor with no attachment of its own), so the edit is used as-is instead of replaying a stale caption', () => {
+  const photoMsg = { message_id: 1, photo: [{ file_id: 'f1', file_size: 10 }], caption: 'old caption' }
+  const otherPhotoMsg = { message_id: 2, photo: [{ file_id: 'f2', file_size: 10 }] }
+  const editedAnchor = { message_id: 3, text: 'edited text' }
+  const result = resolveEditedMessageForTurn([photoMsg, otherPhotoMsg], editedAnchor)
+  assert.equal(result, editedAnchor)
 })
 
 test('buildPlaceholderEditParams: with a keyboard, attaches reply_markup so editMessageText does not drop the Cancel button', () => {

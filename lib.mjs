@@ -234,16 +234,24 @@ export function mergeMediaGroupMessages(messages) {
   return { ...first, caption: withCaption?.caption, caption_entities: withCaption?.caption_entities, mediaGroupMessages: messages }
 }
 
-// flattens a Join batch into the non-voice-attachment-bearing messages within it (expanding any batch entry that was itself a real album), for use as a synthetic join message's mediaGroupMessages; voice never appears here since it's transcribed into text instead
+// voice is excluded here since it's transcribed into text instead, never carried as a raw attachment
 export function collectJoinBatchAttachmentMembers(batch) {
-  const members = []
-  for (const msg of batch) {
-    for (const member of mediaGroupMembers(msg)) {
-      const attachment = extractAttachment(member)
-      if (attachment && attachment.kind !== 'voice') members.push(member)
-    }
-  }
-  return members
+  return batch.filter(msg => {
+    const attachment = extractAttachment(msg)
+    return attachment && attachment.kind !== 'voice'
+  })
+}
+
+// the anchor itself may be excluded from memberMessages (see buildJoinAttachmentMediaGroup), but it must still get a reaction
+export function resolveReactionMessageIds(memberMessages, anchorMessageId) {
+  const ids = memberMessages.map(m => m.message_id)
+  return ids.includes(anchorMessageId) ? ids : [...ids, anchorMessageId]
+}
+
+// never includes a non-attachment message — mergeMediaGroupMessages/rebuildEditedMediaGroupMessage only ever read .caption, never .text, so one would have its later edits silently discarded
+export function buildJoinAttachmentMediaGroup(batch) {
+  const attachmentMembers = collectJoinBatchAttachmentMembers(batch)
+  return attachmentMembers.length ? attachmentMembers : undefined
 }
 
 export function buildAttachmentsCaption(attachments) {
@@ -1340,6 +1348,13 @@ export function rebuildEditedMediaGroupMessage(memberMessages, editedMsg) {
     return { ...merged, caption: editedMsg.caption, caption_entities: editedMsg.caption_entities }
   }
   return merged
+}
+
+// a turn's own anchor can lack an attachment of its own (see buildJoinAttachmentMediaGroup), so it may not be one of memberMessages — rebuilding around it anyway would replay a stale attachment caption instead of this edit
+export function resolveEditedMessageForTurn(memberMessages, editedMsg) {
+  const members = memberMessages ?? []
+  const rebuildable = members.length > 1 && members.some(m => String(m.message_id) === String(editedMsg.message_id))
+  return rebuildable ? rebuildEditedMediaGroupMessage(members, editedMsg) : editedMsg
 }
 
 export function findTurnIndexByBotMessageId(turnList, messageId) {

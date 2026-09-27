@@ -45,9 +45,11 @@ import {
   buildAttachmentCaption,
   buildAttachmentsCaption,
   buildMultiAttachmentAttrs,
-  collectJoinBatchAttachmentMembers,
+  buildJoinAttachmentMediaGroup,
+  resolveReactionMessageIds,
   mergeMediaGroupMessages,
   rebuildEditedMediaGroupMessage,
+  resolveEditedMessageForTurn,
   isServiceMessage,
   exceedsAttachmentLimit,
   buildInboxFilename,
@@ -910,7 +912,7 @@ async function handleEditedMessage(msg) {
   const turnIndex = findTurnIndexByMessageId(turnList, msg.message_id)
   const turn = turnIndex >= 0 ? turnList[turnIndex] : null
   // resolved before any side effect below, since a required @mention can land on any album member, not just the edited one
-  const editedMsg = (turn?.memberMessages?.length ?? 0) > 1 ? rebuildEditedMediaGroupMessage(turn.memberMessages, msg) : msg
+  const editedMsg = resolveEditedMessageForTurn(turn?.memberMessages, msg)
   if (!isAuthorizedMessage(editedMsg)) return
   const session = normalizeSession(state.sessions[key])
 
@@ -2106,7 +2108,7 @@ async function handleMessage(msg) {
   // every authorized message supersedes whatever interrupted turn a Continue button was still offering, regardless of which branch below handles it
   await clearPendingContinue(chatId, key)
   const memberMessages = mediaGroupMembers(msg)
-  const reactionMessageIds = memberMessages.map(m => m.message_id)
+  const reactionMessageIds = resolveReactionMessageIds(memberMessages, msg.message_id)
   const albumMemberMessages = msg.mediaGroupMessages ?? undefined
   const attachments = memberMessages.map(extractAttachment).filter(Boolean)
   const attachment = attachments[0] ?? null
@@ -2191,7 +2193,7 @@ async function handleMessage(msg) {
   if (!promptText && attachment) promptText = buildAttachmentsCaption(attachments)
 
   // every album member gets its own receipt reaction, not just the one whose id anchors this turn
-  await Promise.all(memberMessages.map(m => setReaction(chatId, m.message_id, RECEIPT_REACTION)))
+  await Promise.all(reactionMessageIds.map(id => setReaction(chatId, id, RECEIPT_REACTION)))
 
   const workingStatus = nextWorkingPhrase()
   // every message the bot posts for this turn, so a later rewind past this turn can delete them
@@ -2422,24 +2424,20 @@ function handleJoinTap(chatId, key, run) {
       }
       const joinedText = buildJoinedPromptText([run.promptText, ...fragments])
       const { replyToMessage, quotedText } = resolveJoinedReplyContext(run, last)
-      const attachmentMembers = collectJoinBatchAttachmentMembers(batch)
-      // last must stay reactable even when it carries no attachment itself, or it'd silently lose the receipt/done reaction it always got pre-fix
-      const reactableMembers = attachmentMembers.some(m => m.message_id === last.message_id)
-        ? attachmentMembers
-        : [...attachmentMembers, last]
-      // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText; attachment fields are nulled at the top level so extractAttachment never sees one directly — every non-voice attachment travels via mediaGroupMessages instead, the same plumbing a real Telegram album uses
+      // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText
       const syntheticMsg = {
         ...last,
         text: joinedText,
         entities: undefined,
         caption: undefined,
         caption_entities: undefined,
+        // attachment fields nulled so extractAttachment(syntheticMsg) itself never sees one directly — mediaGroupMessages below is the only path an attachment travels through
         photo: undefined,
         document: undefined,
         audio: undefined,
         video: undefined,
         voice: undefined,
-        mediaGroupMessages: attachmentMembers.length ? reactableMembers : undefined,
+        mediaGroupMessages: buildJoinAttachmentMediaGroup(batch),
         reply_to_message: replyToMessage,
         quote: quotedText != null ? { text: quotedText } : undefined,
         joinedFromActiveRun: true,
