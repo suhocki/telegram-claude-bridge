@@ -372,9 +372,14 @@ test('renderRichTranscript: a history line (no full text) with literal backticks
   assert.ok(!result.includes('<details'), 'a line with no full text has no details wrapper at all')
 })
 
-test('regression: markdown-reserved characters in a summary line (asterisk, underscore, brackets, parens, tilde, backtick, angle bracket, hash, plus, hyphen, equals, pipe, braces, period, exclamation, backslash) are each backslash-escaped', () => {
-  const result = renderRichTranscript(['try _this_ [x](y) ~n~ #1 a+b a-b a=b a|b {c} d.e f! g\\h…'], '', { limit: 30000 })
-  assert.equal(result, 'try \\_this\\_ \\[x\\]\\(y\\) \\~n\\~ \\#1 a\\+b a\\-b a\\=b a\\|b \\{c\\} d\\.e f\\! g\\\\h…')
+test('regression: markdown-reserved characters in a summary line (asterisk, underscore, brackets, parens, tilde, backtick, hash, plus, hyphen, equals, pipe, braces, period, exclamation, dollar, backslash) are each backslash-escaped', () => {
+  const result = renderRichTranscript(['try _this_ [x](y) ~n~ #1 a+b a-b a=b a|b {c} d.e f! g\\h $5…'], '', { limit: 30000 })
+  assert.equal(result, 'try \\_this\\_ \\[x\\]\\(y\\) \\~n\\~ \\#1 a\\+b a\\-b a\\=b a\\|b \\{c\\} d\\.e f\\! g\\\\h \\$5…')
+})
+
+test('regression: a raw ">" in a summary line is already inert via escapeHtml (turned into "&gt;"), so it need not also be in the markdown-reserved backslash-escape set', () => {
+  const result = renderRichTranscript(['a > b'], '', { limit: 30000 })
+  assert.equal(result, 'a &gt; b')
 })
 
 test('renderRichTranscript: a history line with a full-text counterpart becomes its own expandable <details>, summary escaped (not code-span-wrapped), full body markdown intact', () => {

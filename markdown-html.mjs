@@ -389,11 +389,8 @@ function tailPlainTextLines(text, limit) {
   return acc || lines[lines.length - 1].slice(-limit)
 }
 
-// Telegram's rich_message markdown field is parsed for markdown tokens even inside a <details> summary,
-// so a mid-token 80-char cut (e.g. an unclosed **) or a stray reserved character could toggle real
-// formatting or break out of the tag. escapeHtml neutralizes real HTML; backslash-escaping the
-// markdown-reserved characters neutralizes the rest without forcing the line into a monospace code span.
-const MARKDOWN_RESERVED_RE = /[_*[\]()~`>#+=|{}.!\\-]/g
+// MarkdownV2 reserved set plus $ (this file's mathematical_expression block hints at non-MarkdownV2 syntax too); no ">" since escapeHtml below already turns it into "&gt;".
+const MARKDOWN_RESERVED_RE = /[_*[\]()~`#+=|{}.!$\\-]/g
 
 function wrapSafeInline(line) {
   return escapeHtml(line).replace(/\s*\n\s*/g, ' ').replace(MARKDOWN_RESERVED_RE, '\\$&')
