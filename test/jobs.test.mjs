@@ -24,6 +24,11 @@ import {
   buildJobCompletionCheckinInstruction,
   buildJobCompletionCheckin,
   isRecentTimestamp,
+  JOB_STALE_DIAGNOSIS_MIN_INTERVAL_MS,
+  shouldRunStaleDiagnosis,
+  buildStaleDiagnosisPrompt,
+  parseStaleDiagnosisResponse,
+  buildStaleJobAlertMessage,
 } from '../jobs.mjs'
 
 const VALID_SPEC = {
@@ -328,6 +333,100 @@ test('renderJobLine: a stale running job (no recent output) is flagged distinctl
   job.lastHeartbeatAt = 0
   const line = renderJobLine(job, 10 * 60_000, 5 * 60_000)
   assert.match(line, /no output for/)
+})
+
+test('renderJobLine: a stale job with a cached diagnosis phrase shows that phrase instead of the bare "no output" line', () => {
+  let job = markJobRunning(createJobRecord({ id: 'a', spec: VALID_SPEC, now: 0, logPath: '/x.log' }), 1, 0)
+  job.lastHeartbeatAt = 0
+  job.staleDiagnosis = { checkedAt: 9 * 60_000, phrase: 'PR #115 is open — review or merge is probably still running', looksStuckOrFailed: false }
+  const line = renderJobLine(job, 10 * 60_000, 5 * 60_000)
+  assert.match(line, /PR #115 is open/)
+  assert.doesNotMatch(line, /no output for/)
+})
+
+test('renderJobLine: an alive (non-stale) job ignores a leftover cached diagnosis phrase', () => {
+  let job = markJobRunning(createJobRecord({ id: 'a', spec: VALID_SPEC, now: 0, logPath: '/x.log' }), 1, 0)
+  job.lastHeartbeatAt = 9_000
+  job.staleDiagnosis = { checkedAt: 0, phrase: 'stale leftover phrase', looksStuckOrFailed: false }
+  const line = renderJobLine(job, 10_000, 5 * 60_000)
+  assert.doesNotMatch(line, /stale leftover phrase/)
+  assert.match(line, /alive/)
+})
+
+test('shouldRunStaleDiagnosis: true when never checked, or once the throttle interval has fully elapsed', () => {
+  assert.equal(shouldRunStaleDiagnosis({ staleDiagnosis: null }, 1000), true)
+  assert.equal(shouldRunStaleDiagnosis({}, 1000), true)
+  const checkedAt = 0
+  assert.equal(shouldRunStaleDiagnosis({ staleDiagnosis: { checkedAt } }, JOB_STALE_DIAGNOSIS_MIN_INTERVAL_MS - 1), false)
+  assert.equal(shouldRunStaleDiagnosis({ staleDiagnosis: { checkedAt } }, JOB_STALE_DIAGNOSIS_MIN_INTERVAL_MS), true)
+})
+
+test('shouldRunStaleDiagnosis: honors a custom throttle interval', () => {
+  assert.equal(shouldRunStaleDiagnosis({ staleDiagnosis: { checkedAt: 0 } }, 500, 1000), false)
+  assert.equal(shouldRunStaleDiagnosis({ staleDiagnosis: { checkedAt: 0 } }, 1000, 1000), true)
+})
+
+test('buildStaleDiagnosisPrompt: includes the job description, stale duration, and an open PR when given', () => {
+  const prompt = buildStaleDiagnosisPrompt({
+    description: 'PR-plus-review-plus-merge loop',
+    staleSinceMs: 12 * 60_000,
+    logTail: 'opening pull request...\n',
+    branch: 'collapsible-font-fix',
+    prUrl: 'https://github.com/suhocki/telegram-bridge/pull/115',
+    prNumber: 115,
+  })
+  assert.match(prompt, /PR-plus-review-plus-merge loop/)
+  assert.match(prompt, /12m/)
+  assert.match(prompt, /collapsible-font-fix/)
+  assert.match(prompt, /#115/)
+  assert.match(prompt, /pull\/115/)
+  assert.match(prompt, /opening pull request/)
+  assert.match(prompt, /looksStuckOrFailed/)
+})
+
+test('buildStaleDiagnosisPrompt: says plainly when there is no branch/PR/log signal at all', () => {
+  const prompt = buildStaleDiagnosisPrompt({ description: 'some job', staleSinceMs: 60_000, logTail: '', branch: null, prUrl: null, prNumber: null })
+  assert.match(prompt, /Not running inside a git repository/)
+  assert.match(prompt, /\(empty\)/)
+})
+
+test('buildStaleDiagnosisPrompt: notes a branch with no open PR distinctly from no branch at all', () => {
+  const prompt = buildStaleDiagnosisPrompt({ description: 'some job', staleSinceMs: 60_000, logTail: '', branch: 'main', prUrl: null, prNumber: null })
+  assert.match(prompt, /No open pull request currently known/)
+})
+
+test('parseStaleDiagnosisResponse: parses a well-formed JSON reply', () => {
+  const parsed = parseStaleDiagnosisResponse('{"phrase": "still working, PR #115 open", "looksStuckOrFailed": false}')
+  assert.deepEqual(parsed, { phrase: 'still working, PR #115 open', looksStuckOrFailed: false })
+})
+
+test('parseStaleDiagnosisResponse: coerces a truthy looksStuckOrFailed and trims the phrase', () => {
+  const parsed = parseStaleDiagnosisResponse('{"phrase": "  nothing has changed in a long time  ", "looksStuckOrFailed": true}')
+  assert.equal(parsed.phrase, 'nothing has changed in a long time')
+  assert.equal(parsed.looksStuckOrFailed, true)
+})
+
+test('parseStaleDiagnosisResponse: null on malformed JSON, missing/blank phrase, or non-string input', () => {
+  assert.equal(parseStaleDiagnosisResponse('not json'), null)
+  assert.equal(parseStaleDiagnosisResponse('{"looksStuckOrFailed": true}'), null)
+  assert.equal(parseStaleDiagnosisResponse('{"phrase": "   "}'), null)
+  assert.equal(parseStaleDiagnosisResponse(null), null)
+  assert.equal(parseStaleDiagnosisResponse(''), null)
+})
+
+test('buildStaleJobAlertMessage: includes the job description, id, and cached phrase', () => {
+  const job = { id: 'collapsible-font-fix', description: 'fix collapsed summary font', staleDiagnosis: { phrase: 'nothing has changed in 12 minutes' } }
+  const text = buildStaleJobAlertMessage(job)
+  assert.match(text, /fix collapsed summary font/)
+  assert.match(text, /collapsible-font-fix/)
+  assert.match(text, /nothing has changed in 12 minutes/)
+  assert.match(text, /take it from here/)
+})
+
+test('buildStaleJobAlertMessage: still reads sensibly with no cached phrase', () => {
+  const job = { id: 'j1', description: 'some job', staleDiagnosis: null }
+  const text = buildStaleJobAlertMessage(job)
+  assert.match(text, /looks stuck or failed/)
 })
 
 test('renderJobLine: a done job reports its exit code', () => {

@@ -7,6 +7,8 @@ export const DEFAULT_MAX_CONCURRENT_JOBS = 5
 export const DEFAULT_JOB_TIMEOUT_MINUTES = 60
 export const JOB_HEARTBEAT_STALE_MS = 5 * 60 * 1000
 export const DEFAULT_JOB_NOTIFY_THREAD_RECENCY_MS = 15 * 60 * 1000
+// Floor on how often the (subprocess-spawning) one-shot stale-heartbeat diagnosis check may re-run for the same job — it's cheap but not free, and this runs in a shared poll loop across every active job for every bot.
+export const JOB_STALE_DIAGNOSIS_MIN_INTERVAL_MS = 3 * 60 * 1000
 export const JOB_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/
 // __proto__ would reassign state.jobs's own prototype via state.jobs[jobId] = ...; the other two are blocked too, just in case.
 const RESERVED_JOB_IDS = new Set(['__proto__', 'constructor', 'prototype'])
@@ -121,6 +123,7 @@ export function createJobRecord({ id, spec, now, logPath, defaultTimeoutMinutes 
     logPath,
     killedForTimeout: false,
     reported: false,
+    staleDiagnosis: null,
   }
 }
 
@@ -151,6 +154,60 @@ export function computeHeartbeatState(record, now, staleMs = JOB_HEARTBEAT_STALE
   return age > staleMs ? 'stale' : 'alive'
 }
 
+// Throttle gate for the one-shot stale-heartbeat diagnosis check: re-run only every few minutes per job, keyed off the cached result's own timestamp rather than a separate side table.
+export function shouldRunStaleDiagnosis(record, now, minIntervalMs = JOB_STALE_DIAGNOSIS_MIN_INTERVAL_MS) {
+  const checkedAt = record.staleDiagnosis?.checkedAt
+  return checkedAt == null || now - checkedAt >= minIntervalMs
+}
+
+// Prompt for the cheap one-shot model call that turns raw stale-heartbeat signal into a short human-readable status phrase. Pure text formatting — the actual subprocess call lives in bridge.mjs.
+export function buildStaleDiagnosisPrompt({ description, staleSinceMs, logTail, branch, prUrl, prNumber }) {
+  const lines = [
+    'A background job spawned by an automation bridge has not produced new log output in a while.',
+    'The job\'s process is confirmed still alive (its pid exists) — this is NOT a report that the job has died.',
+    '',
+    `Job description: ${description}`,
+    `No new log output for: ${formatDuration(staleSinceMs)}`,
+    '',
+    branch ? `Git working directory branch: ${branch}` : 'Not running inside a git repository (no branch info available).',
+  ]
+  if (prUrl) lines.push(`Open pull request: #${prNumber} — ${prUrl}`)
+  else if (branch) lines.push('No open pull request currently known for this branch.')
+  lines.push(
+    '',
+    'Tail of its log file (may be empty if nothing has been written yet):',
+    '---',
+    logTail?.trim() ? logTail.trim() : '(empty)',
+    '---',
+    '',
+    "Based only on this, write ONE short, honest, human-readable status phrase (under about 20 words, no markdown, no emoji) describing what's probably going on right now — for example noting an open PR number and that review/tests/merge are probably still running, or noting that nothing has visibly changed in a long time and it might be genuinely stuck.",
+    'Do not guess wildly beyond the evidence given — if the signal is too thin to say anything useful, say so plainly instead of inventing detail.',
+    'Also decide: does this genuinely look stuck or failed in a way that is not already obvious, as opposed to plausibly still working?',
+    '',
+    'Respond with ONLY a single-line JSON object, no code fences, no prose: {"phrase": "...", "looksStuckOrFailed": true|false}'
+  )
+  return lines.join('\n')
+}
+
+// Parses the model's own JSON reply from buildStaleDiagnosisPrompt above. Never throws — returns null on any malformed/missing output so the caller falls back to the bare heartbeat line.
+export function parseStaleDiagnosisResponse(rawText) {
+  if (typeof rawText !== 'string' || !rawText.trim()) return null
+  let parsed
+  try {
+    parsed = JSON.parse(rawText.trim())
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed.phrase !== 'string' || !parsed.phrase.trim()) return null
+  return { phrase: parsed.phrase.trim(), looksStuckOrFailed: Boolean(parsed.looksStuckOrFailed) }
+}
+
+// Plain message sent to the job's notify thread (not a status-line edit) the first time a diagnosis concludes the job genuinely looks stuck or failed.
+export function buildStaleJobAlertMessage(job) {
+  const phrase = job.staleDiagnosis?.phrase
+  return `🚨 background job "${job.description}" (id ${job.id}) looks stuck or failed${phrase ? `: ${phrase}` : ''} — I'll leave it running, but you should take it from here.`
+}
+
 export function formatDuration(ms) {
   const totalSeconds = Math.max(0, Math.round(ms / 1000))
   const h = Math.floor(totalSeconds / 3600)
@@ -167,8 +224,12 @@ export function renderJobLine(job, now, staleMs = JOB_HEARTBEAT_STALE_MS) {
   if (job.status === 'pending') return `⏳ ${job.description} — starting…`
   if (job.status === 'running') {
     const since = formatDuration(now - (job.lastHeartbeatAt ?? job.startedAt))
-    const heartbeatText =
-      computeHeartbeatState(job, now, staleMs) === 'stale' ? `⚠️ no output for ${since}` : `alive, last output ${since} ago`
+    const isStale = computeHeartbeatState(job, now, staleMs) === 'stale'
+    const heartbeatText = isStale
+      ? job.staleDiagnosis?.phrase
+        ? `⚠️ ${job.staleDiagnosis.phrase}`
+        : `⚠️ no output for ${since}`
+      : `alive, last output ${since} ago`
     return `⏳ ${job.description} — ${elapsed} elapsed${eta} — ${heartbeatText}`
   }
   if (job.status === 'done') return `✅ ${job.description} — finished after ${elapsed} (exit ${job.exitCode})`
