@@ -410,8 +410,9 @@ export function renderRichTranscript(historyLines, liveText, { limit = 30000, fu
   const live = String(liveText ?? '').trim()
   if (!entries.length) return (live && tailPlainTextLines(live, limit)) || null
 
-  const cappedLive = live ? tailPlainTextLines(live, Math.max(0, limit - 2)) : ''
-  const liveSuffix = cappedLive ? `\n\n${cappedLive}` : ''
+  const liveSeparator = '\n\n'
+  const cappedLive = live ? tailPlainTextLines(live, Math.max(0, limit - liveSeparator.length)) : ''
+  const liveSuffix = cappedLive ? `${liveSeparator}${cappedLive}` : ''
   const bodyBudget = limit - liveSuffix.length
 
   const fullBody = entries.map(e => renderHistoryEntry(e.line, e.full)).join('\n')
