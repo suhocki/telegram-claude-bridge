@@ -392,8 +392,40 @@ function tailPlainTextLines(text, limit) {
 // MarkdownV2 reserved set plus $ (this file's mathematical_expression block hints at non-MarkdownV2 syntax too); no ">" since escapeHtml below already turns it into "&gt;".
 const MARKDOWN_RESERVED_RE = /[_*[\]()~`#+=|{}.!$\\-]/g
 
+function wrapPlainInline(text) {
+  return escapeHtml(text).replace(/\s*\n\s*/g, ' ').replace(MARKDOWN_RESERVED_RE, '\\$&')
+}
+
+function longestBacktickRun(s) {
+  let longest = 0
+  let run = 0
+  for (const ch of s) {
+    run = ch === '`' ? run + 1 : 0
+    if (run > longest) longest = run
+  }
+  return longest
+}
+
+// A tool-call value (command/path/pattern/etc.) rendered as a markdown code span: the fence is
+// one backtick longer than the longest backtick run already inside the value (CommonMark's rule
+// for a fence that can't be confused with the content), and a leading/trailing backtick gets a
+// padding space so it doesn't fuse with the fence. No MARKDOWN_RESERVED_RE here — a code span's
+// content is literal, so backslash-escaping reserved characters would corrupt it (e.g. inject a
+// literal backslash into a grep alternation pattern).
+function renderCodeSpan(raw) {
+  const value = String(raw ?? '').replace(/\s*\n\s*/g, ' ')
+  const fence = '`'.repeat(longestBacktickRun(value) + 1)
+  const padded = value.startsWith('`') || value.endsWith('`') ? ` ${value} ` : value
+  return `${fence}${escapeHtml(padded)}${fence}`
+}
+
+// A historyLines() entry is either a plain string (💬/🤔 lines, always plain prose) or a
+// { prefix, code, suffix } triple (a tool-call line) — only `code` renders as a monospace span.
 function wrapSafeInline(line) {
-  return escapeHtml(line).replace(/\s*\n\s*/g, ' ').replace(MARKDOWN_RESERVED_RE, '\\$&')
+  if (line !== null && typeof line === 'object') {
+    return `${wrapPlainInline(line.prefix)}${renderCodeSpan(line.code)}${wrapPlainInline(line.suffix ?? '')}`
+  }
+  return wrapPlainInline(line)
 }
 
 const detailsBlock = (summary, body) => `<details><summary>${summary}</summary>\n\n${body}\n\n</details>`
@@ -402,18 +434,24 @@ function renderHistoryEntry(line, full) {
   return full ? detailsBlock(wrapSafeInline(line), escapeHtml(full)) : wrapSafeInline(line)
 }
 
+// A single "\n" between two block-level entries reads to Telegram's markdown parser as a soft
+// break within one paragraph — rendered as a plain space, running every entry together into one
+// wrapped, justified block instead of one line each. "\n\n" (a real paragraph break) is what
+// already separates live text from history just below; entries need the same treatment.
+const ENTRY_SEPARATOR = '\n\n'
+
 export function renderRichTranscript(historyLines, liveText, { limit = 30000, fullTexts = [] } = {}) {
   const entries = (historyLines ?? []).map((line, i) => ({ line, full: fullTexts[i] || null })).filter(entry => entry.line)
   const live = String(liveText ?? '').trim()
   if (!entries.length) return (live && tailPlainTextLines(live, limit)) || null
 
-  const liveSeparator = '\n\n'
+  const liveSeparator = ENTRY_SEPARATOR
   const cappedLive = live ? tailPlainTextLines(live, Math.max(0, limit - liveSeparator.length)) : ''
   const liveSuffix = cappedLive ? `${liveSeparator}${cappedLive}` : ''
   const bodyBudget = limit - liveSuffix.length
 
   const fullDetail = entries.map(e => renderHistoryEntry(e.line, e.full))
-  const fullBody = fullDetail.join('\n')
+  const fullBody = fullDetail.join(ENTRY_SEPARATOR)
   if (fullBody.length <= bodyBudget) return `${fullBody}${liveSuffix}`
 
   const shortForm = entries.map(e => renderHistoryEntry(e.line, null))
@@ -426,12 +464,12 @@ export function renderRichTranscript(historyLines, liveText, { limit = 30000, fu
   const pieces = [...fullDetail]
   for (const i of degradeLargestExpansionFirst) {
     pieces[i] = shortForm[i]
-    const body = pieces.join('\n')
+    const body = pieces.join(ENTRY_SEPARATOR)
     if (body.length <= bodyBudget) return `${body}${liveSuffix}`
   }
 
   for (let drop = 1; drop < entries.length; drop++) {
-    const body = shortForm.slice(drop).join('\n')
+    const body = shortForm.slice(drop).join(ENTRY_SEPARATOR)
     if (body.length <= bodyBudget) return `${body}${liveSuffix}`
   }
   return (live && tailPlainTextLines(live, limit)) || null

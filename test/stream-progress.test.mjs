@@ -315,6 +315,28 @@ test('createProgressTracker reports a new status line on a fresh tool_use block'
   assert.equal(tracker.current(), '⏳ Bash: npm test…')
 })
 
+test('createProgressTracker: a tool-call entry passed to renderTranscript carries its value as a raw { prefix, code, suffix } triple, not yet escaped', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
+    renderTranscript: (history, live, fullTexts) => JSON.stringify({ history, fullTexts }),
+  })
+  tracker.ingest({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'grep -n "a\\|b" file.js' } }] },
+  })
+  const { history, fullTexts } = JSON.parse(tracker.snapshot().text)
+  assert.deepEqual(history[0], { prefix: '⏳ Bash: ', code: 'grep -n "a\\|b" file.js', suffix: '…' })
+  assert.equal(fullTexts[0], null, 'tool-call lines never get an expandable full-text companion')
+})
+
+test('createProgressTracker: a tool-call fallback (no summarizable value, e.g. Task/Agent with no description) stays a plain string, not a code-span triple', () => {
+  const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
+    renderTranscript: (history) => JSON.stringify({ history }),
+  })
+  tracker.ingest({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Task', input: {} }] } })
+  const { history } = JSON.parse(tracker.snapshot().text)
+  assert.equal(history[0], '⏳ Task…')
+})
+
 test('createProgressTracker does not re-announce a tool_use block already seen, and appends (not replaces) on a new one', () => {
   const tracker = createProgressTracker()
   const event = {
@@ -450,7 +472,10 @@ test('createProgressTracker: a tool_use event freezes live text into history (pa
   }
   tracker.ingest(toolEvent)
   const snap = tracker.snapshot()
-  assert.deepEqual(JSON.parse(snap.text), { history: ['💬 Hello', '⏳ Bash: npm test…'], live: '' })
+  assert.deepEqual(JSON.parse(snap.text), {
+    history: ['💬 Hello', { prefix: '⏳ Bash: ', code: 'npm test', suffix: '…' }],
+    live: '',
+  })
 })
 
 test('createProgressTracker: renderTranscript receives a 3rd argument (fullTexts) index-aligned with history, null for tool lines', () => {
@@ -469,7 +494,7 @@ test('createProgressTracker: renderTranscript receives a 3rd argument (fullTexts
   assert.equal(history.length, fullTexts.length)
   assert.ok(history[0].startsWith('🤔 a long chain of reasoning'))
   assert.equal(fullTexts[0], longThought.slice(80).trim())
-  assert.equal(history[1], '⏳ Bash: npm test…')
+  assert.deepEqual(history[1], { prefix: '⏳ Bash: ', code: 'npm test', suffix: '…' })
   assert.equal(fullTexts[1], null)
 })
 
@@ -547,8 +572,9 @@ test('createProgressTracker ignores events with nothing new to report', () => {
 
 test('regression: a renderTranscript that returns null does not clobber the prior status with null (and reports no change)', () => {
   let renderNull = false
+  const flatten = h => (typeof h === 'string' ? h : `${h.prefix}${h.code}${h.suffix}`)
   const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
-    renderTranscript: (history, live) => (renderNull ? null : `[${history.join('|')}]${live}`),
+    renderTranscript: (history, live) => (renderNull ? null : `[${history.map(flatten).join('|')}]${live}`),
   })
   const toolEvent = {
     type: 'assistant',

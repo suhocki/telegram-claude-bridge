@@ -132,13 +132,20 @@ export function truncateStatus(text, maxLen = 60) {
 }
 
 // The "Label: summary…" body rendered for a tool line, regardless of its current state emoji.
+// When there's an actual value (command/path/pattern/etc.) worth showing, it's returned as a
+// { prefix, code, suffix } triple instead of a plain string: the renderer puts `code` in a
+// monospace span and leaves prefix/suffix (the label and the trailing ellipsis) as plain text.
 function formatToolBody(name, input, maxLen = 60) {
   const label = name || 'tool'
   const summary = summarizeToolInput(name, input)
   if (!summary) return `${label}…`
   const truncated = truncateStatus(summary, maxLen)
   const suffix = truncated.endsWith('…') ? '' : '…'
-  return `${label}: ${truncated}${suffix}`
+  return { prefix: `${label}: `, code: truncated, suffix }
+}
+
+function flattenToolBody(body) {
+  return typeof body === 'string' ? body : `${body.prefix}${body.code}${body.suffix}`
 }
 
 export function formatTextPreviewStatus(text, maxLen = 80) {
@@ -180,7 +187,9 @@ export const MAX_CHECKPOINT_LINES = 6
 
 function renderEphemeral(entry) {
   if (entry.kind === 'thinking') return entry.text
-  return `${entry.state} ${formatToolBody(entry.name, entry.input)}`
+  const body = formatToolBody(entry.name, entry.input)
+  if (typeof body === 'string') return `${entry.state} ${body}`
+  return { prefix: `${entry.state} ${body.prefix}`, code: body.code, suffix: body.suffix }
 }
 
 // Parallels renderEphemeral, index-for-index: the untruncated text behind a thinking line, or null for anything else.
@@ -252,6 +261,13 @@ export function createProgressTracker(
     return [...checkpoints.map(c => c.line), ...ephemeral.map(renderEphemeral)]
   }
 
+  // historyLines() entries may be { prefix, code, suffix } triples (a tool-call line's
+  // renderTranscript-only monospace shape) — this plain-text fallback path has no notion of
+  // monospace spans, so it flattens those back into one string.
+  function plainHistoryLines() {
+    return historyLines().map(flattenToolBody)
+  }
+
   // Index-aligned with historyLines(): the full untruncated text behind a thinking/said line, or null where there is none.
   function historyFullTexts() {
     return [...checkpoints.map(c => c.full), ...ephemeral.map(ephemeralFullText)]
@@ -263,7 +279,7 @@ export function createProgressTracker(
         ? `🤔 ${truncateStatus(liveText.trim(), HISTORY_LINE_MAX_CHARS)}`
         : formatTextPreviewStatus(liveText)
       : null
-    return truncateStatus([...historyLines(), preview].filter(Boolean).join('\n'), 2000)
+    return truncateStatus([...plainHistoryLines(), preview].filter(Boolean).join('\n'), 2000)
   }
 
   function commit() {
