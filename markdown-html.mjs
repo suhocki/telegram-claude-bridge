@@ -414,15 +414,10 @@ export function renderRichTranscript(historyLines, liveText, { limit = 30000, fu
   const liveSuffix = cappedLive ? `\n\n${cappedLive}` : ''
   const bodyBudget = limit - liveSuffix.length
 
-  const candidates = [
-    entries.map(e => renderHistoryEntry(e.line, e.full)),
-    entries.map(e => renderHistoryEntry(e.line, null)),
-  ]
-  for (let start = 1; start < entries.length; start++) {
-    candidates.push(entries.slice(start).map(e => renderHistoryEntry(e.line, null)))
-  }
-  // ordered most to least preferred: full detail, then every step in short form, then oldest-dropped-first — the first one that fits wins.
-  for (const rendered of candidates) {
+  const fullDetail = entries.map(e => renderHistoryEntry(e.line, e.full))
+  const shortForm = entries.map(e => renderHistoryEntry(e.line, null))
+  const oldestDroppedFirst = Array.from({ length: entries.length - 1 }, (_, i) => shortForm.slice(i + 1))
+  for (const rendered of [fullDetail, shortForm, ...oldestDroppedFirst]) {
     const body = rendered.join('\n')
     if (body.length <= bodyBudget) return `${body}${liveSuffix}`
   }
