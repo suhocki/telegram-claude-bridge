@@ -1591,9 +1591,12 @@ async function runStaleJobDiagnosis(jobId, record) {
 
   // Re-read from state (not the `record` this was triggered with): the job may have finished,
   // been rewound, or been reassigned to a new object identity by finalizeJob/markJobFinished
-  // while this was in flight.
+  // while this was in flight. Also re-check staleness itself — the diagnosis pipeline above can
+  // take tens of seconds, easily long enough for the job to have produced fresh output (and
+  // stopped being stale) in the meantime; without this a just-recovered job could still get
+  // stamped with a now-stale-again diagnosis and, worse, a false "looks stuck" alert.
   const current = state.jobs[jobId]
-  if (!current || !isJobActive(current)) return
+  if (!current || !isJobActive(current) || computeHeartbeatState(current, now) !== 'stale') return
   const shouldNotify = looksStuckOrFailed && !prevNotifiedAt
   current.staleDiagnosis = { checkedAt: now, phrase, looksStuckOrFailed, notifiedAt: shouldNotify ? now : prevNotifiedAt }
   saveState(state)
