@@ -1425,11 +1425,7 @@ async function transcribeVoiceLogged(filePath) {
   return transcription
 }
 
-// Single short-lived `claude -p --output-format json` call, deliberately not runClaude — no
-// session/streaming machinery needed for a one-shot pass. Never rejects; resolves to the
-// assistant's own result text, or null on any failure/timeout/bad-output. Shared by
-// annotateProsody and the stale-job diagnosis check below — both are cheap one-shot text
-// transforms with the same spawn/timeout/parse shape, just a different prompt and model args.
+// Shared one-shot `claude -p --output-format json` runner for annotateProsody and the stale-job diagnosis check below; never rejects, resolves null on any failure/timeout/bad-output.
 function runOneShotClaudePrompt(prompt, authMode, timeoutMs, modelArgs, label) {
   return new Promise(resolve => {
     let settled = false
@@ -1482,9 +1478,7 @@ async function annotateProsody(text, authMode) {
   return runOneShotClaudePrompt(buildProsodyAnnotationPrompt(text), authMode, PROSODY_ANNOTATION_TIMEOUT_MS, ['--model', 'haiku'], 'prosody annotation')
 }
 
-// Captures a short-lived command's stdout for the stale-job diagnosis signal below. Never
-// throws or rejects — resolves '' on any failure/timeout (missing repo, gh not installed or
-// not authenticated, no PR yet, ...): all just "no signal", not errors worth failing over.
+// Never throws — resolves '' on any failure/timeout/missing tool, since that's just "no signal" for the stale-job diagnosis below, not an error worth failing over.
 function captureCommandOutput(cmd, args, cwd, timeoutMs = JOB_STALE_DIAGNOSIS_SUBPROCESS_TIMEOUT_MS) {
   return new Promise(resolve => {
     let out = ''
@@ -1552,20 +1546,16 @@ async function notifyJobLooksStuck(record) {
   await tg('sendMessage', { chat_id: chatId, text: buildStaleJobAlertMessage(record), ...threadIdParam(threadId) })
 }
 
-// The actual diagnosis: gathers real signal (log tail, pid liveness, git branch + open PR) and
-// asks a cheap model to turn it into one short status phrase. Always resolves (never throws) —
-// any failure along the way just means the bare "no output for X" line keeps showing, since
-// this can never be allowed to delay or break the shared sweepJobs loop that every bot uses.
+// Never throws — any failure just leaves the bare no-output line showing, since this must never delay or break the shared sweepJobs loop every bot uses.
 async function runStaleJobDiagnosis(jobId, record) {
   const now = Date.now()
   const prevNotifiedAt = record.staleDiagnosis?.notifiedAt ?? null
+  // Identifies this particular stale spell: lastHeartbeatAt only moves when the job actually recovers, so an unchanged value at write-back time means the same spell is still ongoing.
+  const spellStartedAt = record.lastHeartbeatAt
   let phrase = null
   let looksStuckOrFailed = false
   try {
-    // Re-checked here (not just trusting checkRunningJobs' own earlier-in-this-tick check): this
-    // whole function runs detached from the sweep, so the pid may have died in the meantime — if
-    // so, leave it to the next sweep tick's own alive-check to finalize the job properly instead
-    // of diagnosing a job that's already gone.
+    // Re-checked here (the pid may have died since checkRunningJobs' own check earlier this tick) so a job that's already gone is left to the next sweep tick's alive-check instead of being diagnosed.
     if (isPidAlive(record.pid)) {
       const logTail = readJobLogTail(record.logPath)
       const jobCwd = record.cwd ? expandHome(record.cwd, homedir()) : cwd
@@ -1589,14 +1579,9 @@ async function runStaleJobDiagnosis(jobId, record) {
     log('stale job diagnosis failed', jobId, e.message)
   }
 
-  // Re-read from state (not the `record` this was triggered with): the job may have finished,
-  // been rewound, or been reassigned to a new object identity by finalizeJob/markJobFinished
-  // while this was in flight. Also re-check staleness itself — the diagnosis pipeline above can
-  // take tens of seconds, easily long enough for the job to have produced fresh output (and
-  // stopped being stale) in the meantime; without this a just-recovered job could still get
-  // stamped with a now-stale-again diagnosis and, worse, a false "looks stuck" alert.
+  // Re-read from state, not the `record` this was triggered with, since it may have changed identity while this was in flight; bail if the job finished, recovered, or moved on to a later stale spell than the one just diagnosed.
   const current = state.jobs[jobId]
-  if (!current || !isJobActive(current) || computeHeartbeatState(current, now) !== 'stale') return
+  if (!current || !isJobActive(current) || current.lastHeartbeatAt !== spellStartedAt || computeHeartbeatState(current, now) !== 'stale') return
   const shouldNotify = looksStuckOrFailed && !prevNotifiedAt
   current.staleDiagnosis = { checkedAt: now, phrase, looksStuckOrFailed, notifiedAt: shouldNotify ? now : prevNotifiedAt }
   saveState(state)
