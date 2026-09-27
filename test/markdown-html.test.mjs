@@ -455,6 +455,8 @@ test('regression: when not everything fits, every step degrades to its short for
   assert.ok(result.includes('step 19'), 'the most recent entry survives, even though its own expansion had to degrade to make room')
   assert.ok(!result.includes('the full text of the most recent step'), 'showing every step in short form outranks any single expansion')
   assert.ok(!result.includes('step 0…'), 'once even the fully degraded set does not fit, the oldest whole entries drop first')
+  const survivingCount = result.split('\n').filter(line => line.startsWith('`⏳')).length
+  assert.equal(survivingCount, 16, 'pins the exact number kept, so a mutant that over-drops (e.g. down to just the newest) cannot pass unnoticed')
 })
 
 test('regression: a huge expansion on one entry does not evict short older entries that would easily fit — the expansion degrades first', () => {
@@ -465,6 +467,14 @@ test('regression: a huge expansion on one entry does not evict short older entri
   assert.ok(result.includes('`⏳ Bash: npm test…`'), 'an older short entry must not be dropped just because a newer one has a huge expansion')
   assert.ok(result.includes('`✅ Read: foo.py…`'), 'same for the second older entry')
   assert.ok(!result.includes('xxxx'), 'the oversized expansion itself must not appear once degraded')
+})
+
+test('regression: degrade order is by actual rendered contribution, not raw pre-escape text length, so HTML-heavy content is ranked correctly', () => {
+  const history = ['A', 'B']
+  const fullTexts = ['&'.repeat(500), 'y'.repeat(600)]
+  const result = renderRichTranscript(history, '', { limit: 700, fullTexts })
+  assert.ok(result.length <= 700, `result length ${result.length} exceeds the 700 limit`)
+  assert.ok(result.includes('y'.repeat(600)), "B's raw text is longer, but A's escaped '&amp;'-expansion is the real (larger) cost and must degrade first")
 })
 
 test('regression: a small expansion survives even when a larger, unrelated expansion is what forces degradation', () => {
