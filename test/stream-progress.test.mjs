@@ -13,6 +13,7 @@ import {
   extractTextDelta,
   extractThinkingDelta,
   extractToolResults,
+  extractAssistantContentBlocks,
   extractNewSubagentBlocks,
   extractFinishedSubagentIds,
   SUBAGENT_TOOL_NAME,
@@ -121,6 +122,50 @@ test('extractThinkingDelta ignores other delta/event types', () => {
   assert.equal(extractThinkingDelta({ type: 'stream_event', event: { type: 'message_start' } }), null)
   assert.equal(extractThinkingDelta({ type: 'assistant' }), null)
   assert.equal(extractThinkingDelta(null), null)
+})
+
+test('extractAssistantContentBlocks reads text/thinking blocks off a subagent-owned assistant event', () => {
+  const event = {
+    type: 'assistant',
+    parent_tool_use_id: 'toolu_sub1',
+    message: { content: [{ type: 'thinking', thinking: 'checking the diff' }, { type: 'text', text: 'CONFIRMED' }] },
+  }
+  assert.deepEqual(extractAssistantContentBlocks(event), [
+    { kind: 'thinking', text: 'checking the diff' },
+    { kind: 'text', text: 'CONFIRMED' },
+  ])
+})
+
+test('extractAssistantContentBlocks ignores a root-owned assistant event (no parent_tool_use_id)', () => {
+  // the root's own thinking/text already arrives live via extractTextDelta/extractThinkingDelta;
+  // picking this up too would render every root reply twice
+  const event = { type: 'assistant', message: { content: [{ type: 'text', text: 'DONE' }] } }
+  assert.deepEqual(extractAssistantContentBlocks(event), [])
+})
+
+test('extractAssistantContentBlocks returns empty for non-assistant events or malformed content', () => {
+  assert.deepEqual(extractAssistantContentBlocks({ type: 'user', parent_tool_use_id: 'toolu_1' }), [])
+  assert.deepEqual(extractAssistantContentBlocks({ type: 'assistant', parent_tool_use_id: 'toolu_1' }), [])
+  assert.deepEqual(extractAssistantContentBlocks(null), [])
+})
+
+test('createProgressTracker: a subagent turn with no tool calls (only thinking+text) still moves off the default working status', () => {
+  // reproduces the "verify finding" style subagent from the code-review skill: it just
+  // reasons and answers, never calling a tool — before this fix its placeholder was
+  // stuck on DEFAULT_WORKING_STATUS for the whole run
+  const tracker = createProgressTracker()
+  const event = {
+    type: 'assistant',
+    parent_tool_use_id: 'toolu_sub1',
+    message: {
+      content: [
+        { type: 'thinking', thinking: 'checking the diff against the claim' },
+        { type: 'text', text: 'Verdict: CONFIRMED' },
+      ],
+    },
+  }
+  assert.notEqual(tracker.ingest(event), null)
+  assert.equal(tracker.current(), '💬 Verdict: CONFIRMED')
 })
 
 test('extractToolResults reads tool_result blocks off a user message', () => {
