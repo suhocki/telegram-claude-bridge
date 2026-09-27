@@ -2293,14 +2293,15 @@ test('collectJoinBatchAttachmentMembers: a voice message is never picked up, eve
   assert.deepEqual(collectJoinBatchAttachmentMembers([voiceMsg, photoMsg]), [photoMsg])
 })
 
-test('collectJoinBatchAttachmentMembers: caps at MEDIA_GROUP_MAX_ITEMS, since a Join batch has no protocol-level bound like a real album does', () => {
+test('collectJoinBatchAttachmentMembers: caps at MEDIA_GROUP_MAX_ITEMS, keeping the most recent ones so the batch anchor (always last) is never the one dropped', () => {
   const photos = Array.from({ length: MEDIA_GROUP_MAX_ITEMS + 5 }, (_, i) => ({
     message_id: i + 1,
     photo: [{ file_id: `f${i + 1}`, file_size: 10 }],
   }))
   const result = collectJoinBatchAttachmentMembers(photos)
   assert.equal(result.length, MEDIA_GROUP_MAX_ITEMS)
-  assert.deepEqual(result, photos.slice(0, MEDIA_GROUP_MAX_ITEMS))
+  assert.deepEqual(result, photos.slice(-MEDIA_GROUP_MAX_ITEMS))
+  assert.equal(result.at(-1), photos.at(-1))
 })
 
 test('buildJoinAttachmentMediaGroup: a plain text/voice-only batch returns undefined, not an empty array', () => {
