@@ -234,6 +234,27 @@ export function mergeMediaGroupMessages(messages) {
   return { ...first, caption: withCaption?.caption, caption_entities: withCaption?.caption_entities, mediaGroupMessages: messages }
 }
 
+// voice is excluded here since it's transcribed into text instead, never carried as a raw attachment; capped at MEDIA_GROUP_MAX_ITEMS since, unlike a real Telegram album, a Join batch has no protocol-level bound on how many attachments can accumulate while a turn runs — keeping the most recent ones (not the oldest) so the anchor (batch's last message) is never the one the cap drops
+export function collectJoinBatchAttachmentMembers(batch) {
+  const members = batch.filter(msg => {
+    const attachment = extractAttachment(msg)
+    return attachment && attachment.kind !== 'voice'
+  })
+  return members.slice(-MEDIA_GROUP_MAX_ITEMS)
+}
+
+// the anchor itself may be excluded from memberMessages (see buildJoinAttachmentMediaGroup), but it must still get a reaction
+export function resolveReactionMessageIds(memberMessages, anchorMessageId) {
+  const ids = memberMessages.map(m => m.message_id)
+  return ids.some(id => String(id) === String(anchorMessageId)) ? ids : [...ids, anchorMessageId]
+}
+
+// never includes a non-attachment message — mergeMediaGroupMessages/rebuildEditedMediaGroupMessage only ever read .caption, never .text, so one would have its later edits silently discarded
+export function buildJoinAttachmentMediaGroup(batch) {
+  const attachmentMembers = collectJoinBatchAttachmentMembers(batch)
+  return attachmentMembers.length ? attachmentMembers : undefined
+}
+
 export function buildAttachmentsCaption(attachments) {
   if (!attachments?.length) return ''
   if (attachments.length === 1) return buildAttachmentCaption(attachments[0])
@@ -721,11 +742,10 @@ export function buildJoinedPromptText(texts) {
   return texts.filter(t => t != null && t !== '').join('\n')
 }
 
-// non-voice attachments are still excluded — folding them in would silently drop the attachment
+// non-voice attachments flow through via mediaGroupMessages on the synthetic join message (handleJoinTap), the same plumbing a real Telegram album already uses, so nothing is silently dropped
 export function isJoinableMessage(msg, botUsername) {
   if (isServiceMessage(msg)) return false
   const attachment = extractAttachment(msg)
-  if (attachment && attachment.kind !== 'voice') return false
   const text = attachment ? msg?.caption : msg?.text
   const hasText = typeof text === 'string' && text.trim()
   if (!attachment && !hasText) return false
@@ -1329,6 +1349,13 @@ export function rebuildEditedMediaGroupMessage(memberMessages, editedMsg) {
     return { ...merged, caption: editedMsg.caption, caption_entities: editedMsg.caption_entities }
   }
   return merged
+}
+
+// a turn's own anchor can lack an attachment of its own (see buildJoinAttachmentMediaGroup), so it may not be one of memberMessages — rebuilding around it anyway would replay a stale attachment caption instead of this edit
+export function resolveEditedMessageForTurn(memberMessages, editedMsg) {
+  const members = memberMessages ?? []
+  const rebuildable = members.length > 1 && members.some(m => String(m.message_id) === String(editedMsg.message_id))
+  return rebuildable ? rebuildEditedMediaGroupMessage(members, editedMsg) : editedMsg
 }
 
 export function findTurnIndexByBotMessageId(turnList, messageId) {
