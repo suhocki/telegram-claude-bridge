@@ -410,14 +410,10 @@ export function renderRichTranscript(historyLines, liveText, { limit = 30000, fu
   const live = String(liveText ?? '').trim()
   if (!entries.length) return (live && tailPlainTextLines(live, limit)) || null
 
-  const summaryFor = count => `🔧 ${count} step${count === 1 ? '' : 's'}`
-  const wrap = (body, liveSuffix, count) => `${detailsBlock(summaryFor(count), body)}${liveSuffix}`
-  const emptyBudget = limit - wrap('', '', entries.length).length
-  if (emptyBudget < 0) return null
-
-  const cappedLive = live ? tailPlainTextLines(live, Math.max(0, emptyBudget - 2)) : ''
+  const cappedLive = live ? tailPlainTextLines(live, Math.max(0, limit - 2)) : ''
   const liveSuffix = cappedLive ? `\n\n${cappedLive}` : ''
-  const bodyBudget = emptyBudget - liveSuffix.length
+  const bodyBudget = limit - liveSuffix.length
+  if (bodyBudget < 0) return (live && tailPlainTextLines(live, limit)) || null
 
   const rendered = entries.map(e => renderHistoryEntry(e.line, e.full))
   let start = 0
@@ -427,9 +423,9 @@ export function renderRichTranscript(historyLines, liveText, { limit = 30000, fu
     body = rendered.slice(start).join('\n')
   }
   if (body.length > bodyBudget) body = renderHistoryEntry(entries[start].line, null)
-  // even the single most recent, degraded (no-expansion) entry doesn't fit — an empty-bodied "N steps" wrapper would be misleading, so drop history and fall back to live-only against the full limit.
+  // even the single most recent, degraded (no-expansion) entry doesn't fit — drop history and fall back to live-only against the full limit rather than returning a partial line that violates it.
   if (body.length > bodyBudget) return (live && tailPlainTextLines(live, limit)) || null
-  return wrap(body, liveSuffix, entries.length - start)
+  return `${body}${liveSuffix}`
 }
 
 export function htmlToPlainFallback(html) {
