@@ -2321,6 +2321,11 @@ test('resolveReactionMessageIds: an anchor excluded from memberMessages (e.g. a 
   assert.deepEqual(resolveReactionMessageIds(memberMessages, 5), [1, 5])
 })
 
+test('resolveReactionMessageIds: a numeric member id and a string anchor id of the same value are recognized as the same message', () => {
+  const memberMessages = [{ message_id: 1 }, { message_id: 2 }]
+  assert.deepEqual(resolveReactionMessageIds(memberMessages, '2'), [1, 2])
+})
+
 test('resolveEditedMessageForTurn: fewer than two tracked members returns the edited message as-is', () => {
   const editedMsg = { message_id: 1, text: 'edited' }
   assert.equal(resolveEditedMessageForTurn([{ message_id: 1 }], editedMsg), editedMsg)

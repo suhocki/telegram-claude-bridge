@@ -245,7 +245,7 @@ export function collectJoinBatchAttachmentMembers(batch) {
 // the anchor itself may be excluded from memberMessages (see buildJoinAttachmentMediaGroup), but it must still get a reaction
 export function resolveReactionMessageIds(memberMessages, anchorMessageId) {
   const ids = memberMessages.map(m => m.message_id)
-  return ids.includes(anchorMessageId) ? ids : [...ids, anchorMessageId]
+  return ids.some(id => String(id) === String(anchorMessageId)) ? ids : [...ids, anchorMessageId]
 }
 
 // never includes a non-attachment message — mergeMediaGroupMessages/rebuildEditedMediaGroupMessage only ever read .caption, never .text, so one would have its later edits silently discarded

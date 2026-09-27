@@ -2109,7 +2109,8 @@ async function handleMessage(msg) {
   await clearPendingContinue(chatId, key)
   const memberMessages = mediaGroupMembers(msg)
   const reactionMessageIds = resolveReactionMessageIds(memberMessages, msg.message_id)
-  const albumMemberMessages = msg.mediaGroupMessages ?? undefined
+  // a Join turn's mediaGroupMessages is only its attachment subset, not the full batch, so it must never be tracked as a rebuildable album for future edits (a real Telegram album's mediaGroupMessages, by contrast, always covers every message in it)
+  const albumMemberMessages = msg.joinedFromActiveRun ? undefined : msg.mediaGroupMessages ?? undefined
   const attachments = memberMessages.map(extractAttachment).filter(Boolean)
   const attachment = attachments[0] ?? null
   const content = msg.text ?? msg.caption ?? null
