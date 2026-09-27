@@ -147,10 +147,30 @@ export function formatTextPreviewStatus(text, maxLen = 80) {
   return `✍️ ${truncateStatus(t, maxLen)}`
 }
 
-const HISTORY_LINE_MAX_CHARS = 80
+// Rough chars-per-rendered-line at Telegram's default mobile width, used only to tell
+// "fits without truncation", "fits truncated to one plain line", and "needs an actual
+// collapsible section" apart — not meant to be pixel-exact.
+const LINE_CHARS = 40
+const HISTORY_LINE_MAX_CHARS = LINE_CHARS * 2 // 80: the always-visible prefix once a checkpoint needs to actually collapse
+const NO_TRUNCATE_CHARS = LINE_CHARS * 3 // 120: short enough to show as-is, no ellipsis, no collapse
+const TRUNCATE_ONLY_CHARS = LINE_CHARS * 4 // 160: still not worth collapsing — truncate to NO_TRUNCATE_CHARS with an ellipsis instead
 
-function needsFullTextCompanion(trimmed) {
-  return trimmed.length > HISTORY_LINE_MAX_CHARS || trimmed.includes('\n')
+// Splits frozen 💬/🤔 text into what's always visible ("line") and, only when a real
+// collapsible section is warranted, the rest to reveal on expand ("full"). "full" is the
+// continuation past "line", never a repeat of it — the reader has already seen "line".
+function splitCheckpointText(trimmed) {
+  const hasBreak = trimmed.includes('\n')
+  if (!hasBreak && trimmed.length <= NO_TRUNCATE_CHARS) return { line: trimmed, full: null }
+  if (!hasBreak && trimmed.length <= TRUNCATE_ONLY_CHARS) return { line: truncateStatus(trimmed, NO_TRUNCATE_CHARS), full: null }
+
+  const headRaw = trimmed.slice(0, HISTORY_LINE_MAX_CHARS)
+  const remainder = trimmed.slice(headRaw.length).trim()
+  if (remainder) return { line: `${headRaw.trimEnd()}…`, full: remainder }
+
+  // Nothing was actually truncated away (a short-but-multiline text, e.g. "Done.\nNext: X.") —
+  // the single-row summary still collapses its embedded newline to a space, so it still needs
+  // a companion, just the whole text rather than a continuation, to recover the line break.
+  return { line: headRaw, full: hasBreak ? trimmed : null }
 }
 
 // How many "still working" lines (tool calls + frozen thinking) stay visible below the last checkpoint before the oldest ones scroll off.
@@ -208,11 +228,11 @@ export function createProgressTracker(
   // streamed deltas in the first place)
   function commitFrozenText(kind, trimmed) {
     if (!trimmed) return
-    const full = needsFullTextCompanion(trimmed) ? trimmed : null
+    const { line, full } = splitCheckpointText(trimmed)
     if (kind === 'thinking') {
-      pushEphemeral({ kind: 'thinking', text: `🤔 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, full })
+      pushEphemeral({ kind: 'thinking', text: `🤔 ${line}`, full })
     } else {
-      pushCheckpoint(`💬 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, full)
+      pushCheckpoint(`💬 ${line}`, full)
       ephemeral = [] // a checkpoint is the summary of everything that led to it — collapse the rest
     }
   }

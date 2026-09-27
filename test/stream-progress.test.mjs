@@ -462,18 +462,18 @@ test('createProgressTracker: renderTranscript receives a 3rd argument (fullTexts
     type: 'assistant',
     message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
   }
-  const longThought = 'a long chain of reasoning about the problem'.repeat(3)
+  const longThought = 'a long chain of reasoning about the problem'.repeat(5)
   tracker.ingest(thinkingDelta(longThought))
   tracker.ingest(toolEvent)
   const { history, fullTexts } = JSON.parse(tracker.snapshot().text)
   assert.equal(history.length, fullTexts.length)
   assert.ok(history[0].startsWith('🤔 a long chain of reasoning'))
-  assert.equal(fullTexts[0], longThought)
+  assert.equal(fullTexts[0], longThought.slice(80).trim())
   assert.equal(history[1], '⏳ Bash: npm test…')
   assert.equal(fullTexts[1], null)
 })
 
-test('createProgressTracker: a frozen thinking/text line truncated in the display keeps its full text unabridged', () => {
+test('createProgressTracker: a frozen thinking/text line truncated in the display continues past the visible preview, without repeating it', () => {
   const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
     renderTranscript: (history, live, fullTexts) => JSON.stringify({ history, fullTexts }),
   })
@@ -484,10 +484,10 @@ test('createProgressTracker: a frozen thinking/text line truncated in the displa
   tracker.ingest(textDelta('switching to a text segment freezes the thinking one'))
   const { history, fullTexts } = JSON.parse(tracker.snapshot().text)
   assert.ok(history[0].length < longText.length, 'the display line is truncated')
-  assert.equal(fullTexts[0], longText, 'the full text is preserved unabridged')
+  assert.equal(fullTexts[0], longText.slice(80), 'full is only the continuation past the visible preview, not the whole text again')
 })
 
-test('createProgressTracker: a frozen 💬 checkpoint also keeps its full, untruncated text', () => {
+test('createProgressTracker: a frozen 💬 checkpoint truncated in the display continues past the visible preview, without repeating it', () => {
   const tracker = createProgressTracker(DEFAULT_WORKING_STATUS, {
     renderTranscript: (history, live, fullTexts) => JSON.stringify({ history, fullTexts }),
   })
@@ -502,7 +502,26 @@ test('createProgressTracker: a frozen 💬 checkpoint also keeps its full, untru
   const { history, fullTexts } = JSON.parse(tracker.snapshot().text)
   assert.ok(history[0].startsWith('💬 '))
   assert.ok(history[0].length < longAnswer.length, 'the display line is truncated')
-  assert.equal(fullTexts[0], longAnswer, 'the checkpoint keeps its full, untruncated text')
+  assert.equal(fullTexts[0], longAnswer.slice(80), 'full is only the continuation past the visible preview, not the whole text again')
+})
+
+test('regression: a checkpoint that fits within three lines is shown in full, with no truncation and no collapsible section at all', () => {
+  const tracker = createProgressTracker()
+  const textDelta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
+  const shortish = 'Good, main is clean. Let me look at the existing test for context before editing.'
+  tracker.ingest(textDelta(shortish))
+  assert.deepEqual(tracker.historySnapshot(), [{ line: `💬 ${shortish}`, full: null }])
+})
+
+test('regression: a checkpoint only slightly over three lines is truncated to a plain ellipsis, not wrapped in a collapsible section', () => {
+  const tracker = createProgressTracker()
+  const textDelta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
+  const justOver = 'z'.repeat(140)
+  tracker.ingest(textDelta(justOver))
+  const [{ line, full }] = tracker.historySnapshot()
+  assert.ok(line.endsWith('…'))
+  assert.ok(line.length < justOver.length + 2)
+  assert.equal(full, null, 'truncated-with-ellipsis, not collapsible')
 })
 
 test('createProgressTracker: initialCheckpointLines (a resumed turn) seed with null full text, not carried over from a discarded tracker', () => {
@@ -792,7 +811,7 @@ test('regression: a full-text expansion is only carried when the preview was act
   tracker.ingest(text(longText))
   const snapshot = tracker.historySnapshot()
   assert.equal(snapshot[0].full, null, 'a preview that already shows everything gets no redundant full-text companion')
-  assert.equal(snapshot[1].full, longText, 'a genuinely truncated preview still carries its full text')
+  assert.equal(snapshot[1].full, longText.slice(80), 'a genuinely truncated preview carries only the continuation, not the whole text again')
 })
 
 test('regression: a short checkpoint still keeps its full-text companion when it contains a newline, since the preview line collapses it to a single line', () => {
@@ -805,11 +824,11 @@ test('regression: a short checkpoint still keeps its full-text companion when it
 
 test('regression: historySnapshot seeded back in via initialCheckpointLines round-trips correctly (fallback/resume from a live tracker keeps its full text)', () => {
   const tracker = createProgressTracker()
-  const longAnswer = 'a long enough answer to actually exceed the truncation threshold and keep its own full-text companion'
+  const longAnswer = 'a long enough answer to actually exceed the truncation threshold and keep its own full-text companion, well past the collapsible cutoff, with plenty of extra words to spare'
   tracker.ingest({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'reasoning' } } })
   tracker.ingest({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: longAnswer } } })
   const snapshot = tracker.historySnapshot()
-  assert.equal(snapshot[0].full, longAnswer, 'sanity check: this fixture must actually carry a non-null full text to be worth round-tripping')
+  assert.equal(snapshot[0].full, longAnswer.slice(80).trim(), 'sanity check: this fixture must actually carry a non-null full text to be worth round-tripping')
   const resumed = createProgressTracker(DEFAULT_WORKING_STATUS, { initialCheckpointLines: snapshot })
   assert.deepEqual(resumed.historySnapshot(), snapshot)
 })
