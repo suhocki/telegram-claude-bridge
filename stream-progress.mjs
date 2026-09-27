@@ -54,6 +54,22 @@ export function extractThinkingDelta(event) {
   return typeof inner.delta.thinking === 'string' ? inner.delta.thinking : null
 }
 
+// A subagent's own thinking/text turns never arrive as incremental `stream_event` deltas
+// (only its tool_use/tool_result do) — they're only ever relayed as complete blocks on
+// its `assistant` snapshot event, batched all at once. The root turn's own thinking/text
+// already streams live via extractTextDelta/extractThinkingDelta, so this only needs to
+// apply to events carrying a parent_tool_use_id (i.e. a subagent's own turn), or the
+// same content would render twice.
+export function extractAssistantContentBlocks(event) {
+  if (event?.type !== 'assistant') return []
+  if (event.parent_tool_use_id == null) return []
+  const content = event.message?.content
+  if (!Array.isArray(content)) return []
+  return content
+    .filter(block => block?.type === 'text' || block?.type === 'thinking')
+    .map(block => ({ kind: block.type, text: block.type === 'thinking' ? block.thinking : block.text }))
+}
+
 // tool_result blocks come back as a `user` message once a tool finishes running
 export function extractToolResults(event) {
   if (event?.type !== 'user') return []
@@ -187,17 +203,22 @@ export function createProgressTracker(
     pushBounded(checkpoints, maxCheckpointLines, { line, full })
   }
 
-  function freezeLive() {
-    const trimmed = liveText.trim()
-    if (trimmed) {
-      const full = needsFullTextCompanion(trimmed) ? trimmed : null
-      if (liveKind === 'thinking') {
-        pushEphemeral({ kind: 'thinking', text: `🤔 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, full })
-      } else {
-        pushCheckpoint(`💬 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, full)
-        ephemeral = [] // a checkpoint is the summary of everything that led to it — collapse the rest
-      }
+  // shared by freezeLive (a live-accumulated delta stream going quiet) and the
+  // complete-block path below (a subagent's batched assistant turn, which never
+  // streamed deltas in the first place)
+  function commitFrozenText(kind, trimmed) {
+    if (!trimmed) return
+    const full = needsFullTextCompanion(trimmed) ? trimmed : null
+    if (kind === 'thinking') {
+      pushEphemeral({ kind: 'thinking', text: `🤔 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, full })
+    } else {
+      pushCheckpoint(`💬 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, full)
+      ephemeral = [] // a checkpoint is the summary of everything that led to it — collapse the rest
     }
+  }
+
+  function freezeLive() {
+    commitFrozenText(liveKind, liveText.trim())
     liveText = ''
     liveKind = null
   }
@@ -239,6 +260,14 @@ export function createProgressTracker(
 
   function ingest(event) {
     let changed = false
+
+    for (const block of extractAssistantContentBlocks(event)) {
+      const trimmed = String(block.text ?? '').trim()
+      if (!trimmed) continue
+      freezeLive()
+      commitFrozenText(block.kind, trimmed)
+      changed = true
+    }
 
     for (const block of extractToolUseBlocks(event)) {
       if (seenToolIds.has(block.id)) continue
