@@ -1414,6 +1414,12 @@ test('buildJobMarkerInstructions: tells a nested `claude -p` command to stream, 
   assert.match(text, /no output/)
 })
 
+test('buildJobMarkerInstructions: warns that a nested `claude -p` cannot rely on a background Agent/Skill completion notification', () => {
+  const text = buildJobMarkerInstructions('/state/jobs/tldr', '520378507')
+  assert.match(text, /background Agent\/Task\/Skill completion notification/)
+  assert.match(text, /foreground \(blocking\)/)
+})
+
 test('checkinChainExceeded: false at and below the hop cap, true above it', () => {
   assert.equal(checkinChainExceeded(1), false)
   assert.equal(checkinChainExceeded(CHECKIN_MAX_CHAINED_HOPS), false)
