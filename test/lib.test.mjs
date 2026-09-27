@@ -1408,6 +1408,12 @@ test('buildJobMarkerInstructions: documents the exact jobs dir path, the notifyT
   assert.match(text, /"timeoutMinutes"/)
 })
 
+test('buildJobMarkerInstructions: tells a nested `claude -p` command to stream, so a healthy silent stretch is not misreported as stuck', () => {
+  const text = buildJobMarkerInstructions('/state/jobs/tldr', '520378507')
+  assert.match(text, /--output-format stream-json --include-partial-messages --verbose/)
+  assert.match(text, /no output/)
+})
+
 test('checkinChainExceeded: false at and below the hop cap, true above it', () => {
   assert.equal(checkinChainExceeded(1), false)
   assert.equal(checkinChainExceeded(CHECKIN_MAX_CHAINED_HOPS), false)
