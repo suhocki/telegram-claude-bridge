@@ -234,12 +234,13 @@ export function mergeMediaGroupMessages(messages) {
   return { ...first, caption: withCaption?.caption, caption_entities: withCaption?.caption_entities, mediaGroupMessages: messages }
 }
 
-// voice is excluded here since it's transcribed into text instead, never carried as a raw attachment
+// voice is excluded here since it's transcribed into text instead, never carried as a raw attachment; capped at MEDIA_GROUP_MAX_ITEMS since, unlike a real Telegram album, a Join batch has no protocol-level bound on how many attachments can accumulate while a turn runs
 export function collectJoinBatchAttachmentMembers(batch) {
-  return batch.filter(msg => {
+  const members = batch.filter(msg => {
     const attachment = extractAttachment(msg)
     return attachment && attachment.kind !== 'voice'
   })
+  return members.slice(0, MEDIA_GROUP_MAX_ITEMS)
 }
 
 // the anchor itself may be excluded from memberMessages (see buildJoinAttachmentMediaGroup), but it must still get a reaction
