@@ -133,6 +133,10 @@ export function formatTextPreviewStatus(text, maxLen = 80) {
 
 const HISTORY_LINE_MAX_CHARS = 80
 
+function needsFullTextCompanion(trimmed) {
+  return trimmed.length > HISTORY_LINE_MAX_CHARS || trimmed.includes('\n')
+}
+
 // How many "still working" lines (tool calls + frozen thinking) stay visible below the last checkpoint before the oldest ones scroll off.
 export const MAX_EPHEMERAL_LINES = 6
 // Same idea for frozen 💬 checkpoints themselves — without a cap, a long-running turn's live status grows without bound.
@@ -186,10 +190,11 @@ export function createProgressTracker(
   function freezeLive() {
     const trimmed = liveText.trim()
     if (trimmed) {
+      const full = needsFullTextCompanion(trimmed) ? trimmed : null
       if (liveKind === 'thinking') {
-        pushEphemeral({ kind: 'thinking', text: `🤔 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, full: trimmed })
+        pushEphemeral({ kind: 'thinking', text: `🤔 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, full })
       } else {
-        pushCheckpoint(`💬 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, trimmed)
+        pushCheckpoint(`💬 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, full)
         ephemeral = [] // a checkpoint is the summary of everything that led to it — collapse the rest
       }
     }

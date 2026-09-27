@@ -417,12 +417,13 @@ test('createProgressTracker: renderTranscript receives a 3rd argument (fullTexts
     type: 'assistant',
     message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
   }
-  tracker.ingest(thinkingDelta('a long chain of reasoning about the problem'))
+  const longThought = 'a long chain of reasoning about the problem'.repeat(3)
+  tracker.ingest(thinkingDelta(longThought))
   tracker.ingest(toolEvent)
   const { history, fullTexts } = JSON.parse(tracker.snapshot().text)
   assert.equal(history.length, fullTexts.length)
-  assert.equal(history[0], '🤔 a long chain of reasoning about the problem')
-  assert.equal(fullTexts[0], 'a long chain of reasoning about the problem')
+  assert.ok(history[0].startsWith('🤔 a long chain of reasoning'))
+  assert.equal(fullTexts[0], longThought)
   assert.equal(history[1], '⏳ Bash: npm test…')
   assert.equal(fullTexts[1], null)
 })
@@ -717,13 +718,13 @@ test('createProgressTracker: a tool_result for a line already evicted by the cap
   assert.equal(tracker.current(), '⏳ Bash: b…\n⏳ Bash: c…')
 })
 
-test('createProgressTracker.historySnapshot freezes any trailing live text into a checkpoint before returning, with its full text alongside', () => {
+test('createProgressTracker.historySnapshot freezes any trailing live text into a checkpoint before returning', () => {
   const tracker = createProgressTracker()
   tracker.ingest({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'still going' } } })
-  assert.deepEqual(tracker.historySnapshot(), [{ line: '💬 still going', full: 'still going' }])
+  assert.deepEqual(tracker.historySnapshot(), [{ line: '💬 still going', full: null }])
 })
 
-test('createProgressTracker.historySnapshot returns the checkpoint lines seen so far, oldest first, each with its full text', () => {
+test('createProgressTracker.historySnapshot returns the checkpoint lines seen so far, oldest first', () => {
   const tracker = createProgressTracker()
   const tool = (id, name, input) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } })
   const text = t => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: t } } })
@@ -731,16 +732,39 @@ test('createProgressTracker.historySnapshot returns the checkpoint lines seen so
   tracker.ingest(tool('toolu_1', 'Bash', { command: 'a' }))
   tracker.ingest(text('second'))
   assert.deepEqual(tracker.historySnapshot(), [
-    { line: '💬 first', full: 'first' },
-    { line: '💬 second', full: 'second' },
+    { line: '💬 first', full: null },
+    { line: '💬 second', full: null },
   ])
+})
+
+test('regression: a full-text expansion is only carried when the preview was actually truncated, not for text that already fits in full', () => {
+  const tracker = createProgressTracker()
+  const tool = (id, name, input) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } })
+  const text = t => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: t } } })
+  const longText = 'y'.repeat(200)
+  tracker.ingest(text('short'))
+  tracker.ingest(tool('toolu_1', 'Bash', { command: 'a' }))
+  tracker.ingest(text(longText))
+  const snapshot = tracker.historySnapshot()
+  assert.equal(snapshot[0].full, null, 'a preview that already shows everything gets no redundant full-text companion')
+  assert.equal(snapshot[1].full, longText, 'a genuinely truncated preview still carries its full text')
+})
+
+test('regression: a short checkpoint still keeps its full-text companion when it contains a newline, since the preview line collapses it to a single line', () => {
+  const tracker = createProgressTracker()
+  const multiline = 'Done.\nNext: refactor X.'
+  tracker.ingest({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: multiline } } })
+  const snapshot = tracker.historySnapshot()
+  assert.equal(snapshot[0].full, multiline, 'the preview alone would lose the line break, so it must not be the only surviving copy of this text')
 })
 
 test('regression: historySnapshot seeded back in via initialCheckpointLines round-trips correctly (fallback/resume from a live tracker keeps its full text)', () => {
   const tracker = createProgressTracker()
+  const longAnswer = 'a long enough answer to actually exceed the truncation threshold and keep its own full-text companion'
   tracker.ingest({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'reasoning' } } })
-  tracker.ingest({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'a long enough answer' } } })
+  tracker.ingest({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: longAnswer } } })
   const snapshot = tracker.historySnapshot()
+  assert.equal(snapshot[0].full, longAnswer, 'sanity check: this fixture must actually carry a non-null full text to be worth round-tripping')
   const resumed = createProgressTracker(DEFAULT_WORKING_STATUS, { initialCheckpointLines: snapshot })
   assert.deepEqual(resumed.historySnapshot(), snapshot)
 })

@@ -410,26 +410,34 @@ export function renderRichTranscript(historyLines, liveText, { limit = 30000, fu
   const live = String(liveText ?? '').trim()
   if (!entries.length) return (live && tailPlainTextLines(live, limit)) || null
 
-  const summaryFor = count => `🔧 ${count} step${count === 1 ? '' : 's'}`
-  const wrap = (body, liveSuffix, count) => `${detailsBlock(summaryFor(count), body)}${liveSuffix}`
-  const emptyBudget = limit - wrap('', '', entries.length).length
-  if (emptyBudget < 0) return null
+  const liveSeparator = '\n\n'
+  const cappedLive = live ? tailPlainTextLines(live, Math.max(0, limit - liveSeparator.length)) : ''
+  const liveSuffix = cappedLive ? `${liveSeparator}${cappedLive}` : ''
+  const bodyBudget = limit - liveSuffix.length
 
-  const cappedLive = live ? tailPlainTextLines(live, Math.max(0, emptyBudget - 2)) : ''
-  const liveSuffix = cappedLive ? `\n\n${cappedLive}` : ''
-  const bodyBudget = emptyBudget - liveSuffix.length
+  const fullDetail = entries.map(e => renderHistoryEntry(e.line, e.full))
+  const fullBody = fullDetail.join('\n')
+  if (fullBody.length <= bodyBudget) return `${fullBody}${liveSuffix}`
 
-  const rendered = entries.map(e => renderHistoryEntry(e.line, e.full))
-  let start = 0
-  let body = rendered.join('\n')
-  while (start < rendered.length - 1 && body.length > bodyBudget) {
-    start++
-    body = rendered.slice(start).join('\n')
+  const shortForm = entries.map(e => renderHistoryEntry(e.line, null))
+  const degradeLargestExpansionFirst = entries
+    .map((e, i) => ({ i, size: fullDetail[i].length - shortForm[i].length }))
+    .filter(e => e.size > 0)
+    .sort((a, b) => b.size - a.size)
+    .map(e => e.i)
+
+  const pieces = [...fullDetail]
+  for (const i of degradeLargestExpansionFirst) {
+    pieces[i] = shortForm[i]
+    const body = pieces.join('\n')
+    if (body.length <= bodyBudget) return `${body}${liveSuffix}`
   }
-  if (body.length > bodyBudget) body = renderHistoryEntry(entries[start].line, null)
-  // even the single most recent, degraded (no-expansion) entry doesn't fit — an empty-bodied "N steps" wrapper would be misleading, so drop history and fall back to live-only against the full limit.
-  if (body.length > bodyBudget) return (live && tailPlainTextLines(live, limit)) || null
-  return wrap(body, liveSuffix, entries.length - start)
+
+  for (let drop = 1; drop < entries.length; drop++) {
+    const body = shortForm.slice(drop).join('\n')
+    if (body.length <= bodyBudget) return `${body}${liveSuffix}`
+  }
+  return (live && tailPlainTextLines(live, limit)) || null
 }
 
 export function htmlToPlainFallback(html) {
