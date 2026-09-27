@@ -186,10 +186,12 @@ export function createProgressTracker(
   function freezeLive() {
     const trimmed = liveText.trim()
     if (trimmed) {
+      // an untruncated preview already shows the whole text, so a full-text expansion would just be a pointless empty-gain wrapper around a copy of the same line
+      const full = trimmed.length > HISTORY_LINE_MAX_CHARS ? trimmed : null
       if (liveKind === 'thinking') {
-        pushEphemeral({ kind: 'thinking', text: `🤔 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, full: trimmed })
+        pushEphemeral({ kind: 'thinking', text: `🤔 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, full })
       } else {
-        pushCheckpoint(`💬 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, trimmed)
+        pushCheckpoint(`💬 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, full)
         ephemeral = [] // a checkpoint is the summary of everything that led to it — collapse the rest
       }
     }
