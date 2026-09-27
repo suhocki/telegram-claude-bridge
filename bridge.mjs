@@ -45,6 +45,7 @@ import {
   buildAttachmentCaption,
   buildAttachmentsCaption,
   buildMultiAttachmentAttrs,
+  collectJoinBatchAttachmentMembers,
   mergeMediaGroupMessages,
   rebuildEditedMediaGroupMessage,
   isServiceMessage,
@@ -2421,14 +2422,24 @@ function handleJoinTap(chatId, key, run) {
       }
       const joinedText = buildJoinedPromptText([run.promptText, ...fragments])
       const { replyToMessage, quotedText } = resolveJoinedReplyContext(run, last)
-      // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText
+      const attachmentMembers = collectJoinBatchAttachmentMembers(batch)
+      // last must stay reactable even when it carries no attachment itself, or it'd silently lose the receipt/done reaction it always got pre-fix
+      const reactableMembers = attachmentMembers.some(m => m.message_id === last.message_id)
+        ? attachmentMembers
+        : [...attachmentMembers, last]
+      // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText; attachment fields are nulled at the top level so extractAttachment never sees one directly — every non-voice attachment travels via mediaGroupMessages instead, the same plumbing a real Telegram album uses
       const syntheticMsg = {
         ...last,
         text: joinedText,
         entities: undefined,
         caption: undefined,
         caption_entities: undefined,
+        photo: undefined,
+        document: undefined,
+        audio: undefined,
+        video: undefined,
         voice: undefined,
+        mediaGroupMessages: attachmentMembers.length ? reactableMembers : undefined,
         reply_to_message: replyToMessage,
         quote: quotedText != null ? { text: quotedText } : undefined,
         joinedFromActiveRun: true,

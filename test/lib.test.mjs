@@ -33,6 +33,7 @@ import {
   buildAttachmentCaption,
   buildAttachmentsCaption,
   buildMultiAttachmentAttrs,
+  collectJoinBatchAttachmentMembers,
   mergeMediaGroupMessages,
   rebuildEditedMediaGroupMessage,
   exceedsAttachmentLimit,
@@ -2182,8 +2183,8 @@ test('isJoinableMessage: a message with no text at all is not joinable', () => {
   assert.equal(isJoinableMessage({ caption: 'a photo caption' }, 'mybot'), false)
 })
 
-test('isJoinableMessage: a message carrying an attachment is not joinable, even with text', () => {
-  assert.equal(isJoinableMessage({ text: 'check this out', photo: [{ file_id: 'f1', file_size: 10 }] }, 'mybot'), false)
+test('isJoinableMessage: a message carrying a photo attachment is joinable, even with text', () => {
+  assert.equal(isJoinableMessage({ text: 'check this out', photo: [{ file_id: 'f1', file_size: 10 }] }, 'mybot'), true)
 })
 
 test('isJoinableMessage: a recognized command (e.g. /new) is not joinable', () => {
@@ -2202,10 +2203,14 @@ test('isJoinableMessage: a plain voice message is joinable, even without any tex
   assert.equal(isJoinableMessage({ voice: { file_id: 'v1', file_size: 10 } }, 'mybot'), true)
 })
 
-test('isJoinableMessage: a non-voice attachment (photo/document/audio/video) stays excluded', () => {
-  assert.equal(isJoinableMessage({ document: { file_id: 'd1', file_size: 10 } }, 'mybot'), false)
-  assert.equal(isJoinableMessage({ audio: { file_id: 'a1', file_size: 10 } }, 'mybot'), false)
-  assert.equal(isJoinableMessage({ video: { file_id: 'vv1', file_size: 10 } }, 'mybot'), false)
+test('isJoinableMessage: a non-voice attachment (document/audio/video) is joinable even without any text', () => {
+  assert.equal(isJoinableMessage({ document: { file_id: 'd1', file_size: 10 } }, 'mybot'), true)
+  assert.equal(isJoinableMessage({ audio: { file_id: 'a1', file_size: 10 } }, 'mybot'), true)
+  assert.equal(isJoinableMessage({ video: { file_id: 'vv1', file_size: 10 } }, 'mybot'), true)
+})
+
+test('isJoinableMessage: a photo captioned with a recognized command (e.g. /reset) is not joinable, so the command still runs on its own', () => {
+  assert.equal(isJoinableMessage({ photo: [{ file_id: 'f1', file_size: 10 }], caption: '/reset' }, 'mybot'), false)
 })
 
 test('isJoinableMessage: a service message carrying a voice attachment is still not joinable', () => {
@@ -2254,6 +2259,36 @@ test('resolveJoinFragmentText: a voice message with a real caption falls back to
 test('resolveJoinFragmentText: a voice message with a real caption still uses the transcript (not the caption) when transcription succeeds', () => {
   const msg = { voice: { file_id: 'v1', file_size: 10 }, caption: 'check invoice #4521' }
   assert.equal(resolveJoinFragmentText(msg, { text: 'buy some milk' }), buildVoiceTranscriptText('buy some milk'))
+})
+
+test('resolveJoinFragmentText: a photo with a caption returns the caption, not a placeholder', () => {
+  const msg = { photo: [{ file_id: 'f1', file_size: 10 }], caption: 'check this out' }
+  assert.equal(resolveJoinFragmentText(msg, null), 'check this out')
+})
+
+test('resolveJoinFragmentText: a photo with no caption returns an empty string, not a placeholder', () => {
+  const msg = { photo: [{ file_id: 'f1', file_size: 10 }] }
+  assert.equal(resolveJoinFragmentText(msg, null), '')
+})
+
+test('collectJoinBatchAttachmentMembers: a plain text batch has no attachment members', () => {
+  const batch = [{ message_id: 1, text: 'hi' }, { message_id: 2, text: 'there' }]
+  assert.deepEqual(collectJoinBatchAttachmentMembers(batch), [])
+})
+
+test('collectJoinBatchAttachmentMembers: picks out only the non-voice-attachment-bearing messages, preserving batch order', () => {
+  const textMsg = { message_id: 1, text: 'hi' }
+  const photoMsg = { message_id: 2, photo: [{ file_id: 'f1', file_size: 10 }] }
+  const voiceMsg = { message_id: 3, voice: { file_id: 'v1', file_size: 10 } }
+  const docMsg = { message_id: 4, document: { file_id: 'd1', file_size: 10 } }
+  assert.deepEqual(collectJoinBatchAttachmentMembers([textMsg, photoMsg, voiceMsg, docMsg]), [photoMsg, docMsg])
+})
+
+test('collectJoinBatchAttachmentMembers: flattens a batch entry that is itself a real album into its individual members', () => {
+  const albumMember1 = { message_id: 10, photo: [{ file_id: 'f1', file_size: 10 }] }
+  const albumMember2 = { message_id: 11, photo: [{ file_id: 'f2', file_size: 10 }], caption: 'the pair' }
+  const album = { message_id: 10, photo: [{ file_id: 'f1', file_size: 10 }], caption: 'the pair', mediaGroupMessages: [albumMember1, albumMember2] }
+  assert.deepEqual(collectJoinBatchAttachmentMembers([album]), [albumMember1, albumMember2])
 })
 
 test('buildPlaceholderEditParams: with a keyboard, attaches reply_markup so editMessageText does not drop the Cancel button', () => {

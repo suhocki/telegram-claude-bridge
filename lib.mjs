@@ -234,6 +234,18 @@ export function mergeMediaGroupMessages(messages) {
   return { ...first, caption: withCaption?.caption, caption_entities: withCaption?.caption_entities, mediaGroupMessages: messages }
 }
 
+// flattens a Join batch into the non-voice-attachment-bearing messages within it (expanding any batch entry that was itself a real album), for use as a synthetic join message's mediaGroupMessages; voice never appears here since it's transcribed into text instead
+export function collectJoinBatchAttachmentMembers(batch) {
+  const members = []
+  for (const msg of batch) {
+    for (const member of mediaGroupMembers(msg)) {
+      const attachment = extractAttachment(member)
+      if (attachment && attachment.kind !== 'voice') members.push(member)
+    }
+  }
+  return members
+}
+
 export function buildAttachmentsCaption(attachments) {
   if (!attachments?.length) return ''
   if (attachments.length === 1) return buildAttachmentCaption(attachments[0])
@@ -721,11 +733,10 @@ export function buildJoinedPromptText(texts) {
   return texts.filter(t => t != null && t !== '').join('\n')
 }
 
-// non-voice attachments are still excluded — folding them in would silently drop the attachment
+// non-voice attachments flow through via mediaGroupMessages on the synthetic join message (handleJoinTap), the same plumbing a real Telegram album already uses, so nothing is silently dropped
 export function isJoinableMessage(msg, botUsername) {
   if (isServiceMessage(msg)) return false
   const attachment = extractAttachment(msg)
-  if (attachment && attachment.kind !== 'voice') return false
   const text = attachment ? msg?.caption : msg?.text
   const hasText = typeof text === 'string' && text.trim()
   if (!attachment && !hasText) return false
