@@ -443,17 +443,28 @@ test('renderRichTranscript: a mix of tool-call lines (no full text) and a thinki
 
 test('regression: falsy entries in fullTexts (missing index, null, undefined, empty string) all fall back to the safe inline wrap, not an empty expandable body', () => {
   const result = renderRichTranscript(['💬 said something…'], '', { limit: 30000, fullTexts: [''] })
-  assert.ok(!result.includes('<details><summary>💬'), 'an empty full text must not produce a pointless nested expandable section')
-  assert.ok(result.includes('`💬 said something…`'))
+  assert.ok(!result.includes('<details'), 'an empty full text must not produce a pointless nested expandable section')
+  assert.equal(result, '`💬 said something…`')
 })
 
-test('regression: oldest whole entries drop first under a tight budget, keeping the most recent ones (with their expansion) intact', () => {
+test('regression: when not everything fits, every step degrades to its short form before any step is dropped entirely', () => {
   const history = Array.from({ length: 20 }, (_, i) => `⏳ Bash: step ${i}…`)
   const fullTexts = history.map((_, i) => (i === 19 ? 'the full text of the most recent step' : null))
   const result = renderRichTranscript(history, '', { limit: 300, fullTexts })
   assert.ok(result.length <= 300, `result length ${result.length} exceeds the 300 limit`)
-  assert.ok(result.includes('the full text of the most recent step'), 'the most recent entry, and its expansion, survives')
-  assert.ok(!result.includes('step 0…'), 'the oldest entries are dropped first, as whole entries')
+  assert.ok(result.includes('step 19'), 'the most recent entry survives, even though its own expansion had to degrade to make room')
+  assert.ok(!result.includes('the full text of the most recent step'), 'showing every step in short form outranks any single expansion')
+  assert.ok(!result.includes('step 0…'), 'once even the fully degraded set does not fit, the oldest whole entries drop first')
+})
+
+test('regression: a huge expansion on one entry does not evict short older entries that would easily fit — the expansion degrades first', () => {
+  const history = ['⏳ Bash: npm test…', '✅ Read: foo.py…', '🤔 a long reconsideration…']
+  const fullTexts = [null, null, 'x'.repeat(6000)]
+  const result = renderRichTranscript(history, '', { limit: 200, fullTexts })
+  assert.ok(result.length <= 200, `result length ${result.length} exceeds the 200 limit`)
+  assert.ok(result.includes('`⏳ Bash: npm test…`'), 'an older short entry must not be dropped just because a newer one has a huge expansion')
+  assert.ok(result.includes('`✅ Read: foo.py…`'), 'same for the second older entry')
+  assert.ok(!result.includes('xxxx'), 'the oversized expansion itself must not appear once degraded')
 })
 
 test('regression: when even the single most recent entry (with its own expandable body) cannot fit, it degrades to its plain short line instead of vanishing', () => {
@@ -472,7 +483,7 @@ test('regression: when even the degraded plain short line cannot fit at all, his
 test('regression: a large in-flight live answer that leaves no room for even one degraded history line drops history, not just live text', () => {
   const live = 'x'.repeat(35000)
   const result = renderRichTranscript(['⏳ Bash: npm test…'], live, { limit: 30000 })
-  assert.ok(!result.includes('<details'), 'no history rendering survives when there is truly no room left')
+  assert.ok(!result.includes('Bash: npm test'), 'no history rendering survives when there is truly no room left')
   assert.ok(result.length <= 30000)
   assert.ok(live.endsWith(result))
 })
@@ -481,7 +492,7 @@ test('regression: renderRichTranscript with limit 0 (or negative) returns null r
   const history = ['a very long history line that would normally need truncating down to size']
   for (const limit of [0, -1, -100]) {
     const result = renderRichTranscript(history, 'some live text too', { limit })
-    assert.equal(result, null, `limit ${limit}: expected null (the <details> wrapper alone can't fit), got ${JSON.stringify(result)}`)
+    assert.equal(result, null, `limit ${limit}: expected null (nothing can fit within a non-positive limit), got ${JSON.stringify(result)}`)
   }
 })
 

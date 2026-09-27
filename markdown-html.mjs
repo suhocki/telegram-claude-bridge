@@ -413,19 +413,20 @@ export function renderRichTranscript(historyLines, liveText, { limit = 30000, fu
   const cappedLive = live ? tailPlainTextLines(live, Math.max(0, limit - 2)) : ''
   const liveSuffix = cappedLive ? `\n\n${cappedLive}` : ''
   const bodyBudget = limit - liveSuffix.length
-  if (bodyBudget < 0) return (live && tailPlainTextLines(live, limit)) || null
 
-  const rendered = entries.map(e => renderHistoryEntry(e.line, e.full))
-  let start = 0
-  let body = rendered.join('\n')
-  while (start < rendered.length - 1 && body.length > bodyBudget) {
-    start++
-    body = rendered.slice(start).join('\n')
+  const candidates = [
+    entries.map(e => renderHistoryEntry(e.line, e.full)),
+    entries.map(e => renderHistoryEntry(e.line, null)),
+  ]
+  for (let start = 1; start < entries.length; start++) {
+    candidates.push(entries.slice(start).map(e => renderHistoryEntry(e.line, null)))
   }
-  if (body.length > bodyBudget) body = renderHistoryEntry(entries[start].line, null)
-  // even the single most recent, degraded (no-expansion) entry doesn't fit — drop history and fall back to live-only against the full limit rather than returning a partial line that violates it.
-  if (body.length > bodyBudget) return (live && tailPlainTextLines(live, limit)) || null
-  return `${body}${liveSuffix}`
+  // ordered most to least preferred: full detail, then every step in short form, then oldest-dropped-first — the first one that fits wins.
+  for (const rendered of candidates) {
+    const body = rendered.join('\n')
+    if (body.length <= bodyBudget) return `${body}${liveSuffix}`
+  }
+  return (live && tailPlainTextLines(live, limit)) || null
 }
 
 export function htmlToPlainFallback(html) {
