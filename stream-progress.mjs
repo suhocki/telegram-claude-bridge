@@ -133,6 +133,10 @@ export function formatTextPreviewStatus(text, maxLen = 80) {
 
 const HISTORY_LINE_MAX_CHARS = 80
 
+function needsFullTextCompanion(trimmed) {
+  return trimmed.length > HISTORY_LINE_MAX_CHARS || trimmed.includes('\n')
+}
+
 // How many "still working" lines (tool calls + frozen thinking) stay visible below the last checkpoint before the oldest ones scroll off.
 export const MAX_EPHEMERAL_LINES = 6
 // Same idea for frozen 💬 checkpoints themselves — without a cap, a long-running turn's live status grows without bound.
@@ -186,8 +190,7 @@ export function createProgressTracker(
   function freezeLive() {
     const trimmed = liveText.trim()
     if (trimmed) {
-      // an untruncated preview already shows the whole text, so a full-text expansion would just be a pointless empty-gain wrapper around a copy of the same line
-      const full = trimmed.length > HISTORY_LINE_MAX_CHARS ? trimmed : null
+      const full = needsFullTextCompanion(trimmed) ? trimmed : null
       if (liveKind === 'thinking') {
         pushEphemeral({ kind: 'thinking', text: `🤔 ${truncateStatus(trimmed, HISTORY_LINE_MAX_CHARS)}`, full })
       } else {
