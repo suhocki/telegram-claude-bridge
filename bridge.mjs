@@ -1534,7 +1534,9 @@ function readJobLogTail(logPath, maxBytes = JOB_STALE_DIAGNOSIS_LOG_TAIL_BYTES) 
     const buf = Buffer.alloc(length)
     fd = openSync(logPath, 'r')
     const bytesRead = readSync(fd, buf, 0, length, size - length)
-    return buf.toString('utf8', 0, bytesRead)
+    const text = buf.toString('utf8', 0, bytesRead)
+    // a tail read starting mid-file can land inside a multi-byte UTF-8 character, decoding as a leading replacement char rather than a truncated one
+    return size - length > 0 ? text.replace(/^�+/, '') : text
   } catch {
     return ''
   } finally {
