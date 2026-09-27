@@ -415,10 +415,24 @@ export function renderRichTranscript(historyLines, liveText, { limit = 30000, fu
   const liveSuffix = cappedLive ? `${liveSeparator}${cappedLive}` : ''
   const bodyBudget = limit - liveSuffix.length
 
-  const fullBody = entries.map(e => renderHistoryEntry(e.line, e.full)).join('\n')
+  const fullDetail = entries.map(e => renderHistoryEntry(e.line, e.full))
+  const fullBody = fullDetail.join('\n')
   if (fullBody.length <= bodyBudget) return `${fullBody}${liveSuffix}`
 
   const shortForm = entries.map(e => renderHistoryEntry(e.line, null))
+  const degradeLargestExpansionFirst = entries
+    .map((e, i) => ({ i, size: e.full ? e.full.length : 0 }))
+    .filter(e => e.size > 0)
+    .sort((a, b) => b.size - a.size)
+    .map(e => e.i)
+
+  const pieces = [...fullDetail]
+  for (const i of degradeLargestExpansionFirst) {
+    pieces[i] = shortForm[i]
+    const body = pieces.join('\n')
+    if (body.length <= bodyBudget) return `${body}${liveSuffix}`
+  }
+
   for (let drop = 0; drop < entries.length; drop++) {
     const body = shortForm.slice(drop).join('\n')
     if (body.length <= bodyBudget) return `${body}${liveSuffix}`

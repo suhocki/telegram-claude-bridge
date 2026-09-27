@@ -467,6 +467,15 @@ test('regression: a huge expansion on one entry does not evict short older entri
   assert.ok(!result.includes('xxxx'), 'the oversized expansion itself must not appear once degraded')
 })
 
+test('regression: a small expansion survives even when a larger, unrelated expansion is what forces degradation', () => {
+  const history = ['🤔 an old, longer thought…', '💬 a tiny recent note…']
+  const fullTexts = ['x'.repeat(300), 'tiny-full-B']
+  const result = renderRichTranscript(history, '', { limit: 250, fullTexts })
+  assert.ok(result.length <= 250, `result length ${result.length} exceeds the 250 limit`)
+  assert.ok(result.includes('tiny-full-B'), "the small entry's own cheap expansion must not be collateral damage from degrading the larger one")
+  assert.ok(!result.includes('xxxx'), 'the oversized expansion is what degrades, not the small one')
+})
+
 test('regression: when even the single most recent entry (with its own expandable body) cannot fit, it degrades to its plain short line instead of vanishing', () => {
   const result = renderRichTranscript(['🤔 a short preview…'], '', { limit: 120, fullTexts: ['x'.repeat(500)] })
   assert.notEqual(result, null, 'the entry itself must still show up, just without the expansion')
