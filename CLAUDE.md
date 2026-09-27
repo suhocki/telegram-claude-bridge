@@ -11,9 +11,15 @@ Every change (an issue from the GitHub tracker, a bugfix, whatever) goes through
 2. Open a PR (`gh pr create`). Never push straight to `main`.
 3. Review the PR with a **fresh agent that did not write the code** — no shared context with the
    implementation. Use the `code-review` skill with `--comment` so findings land as inline PR
-   comments, not just prose.
+   comments, not just prose. Use a high/max effort level for this first pass on a new or
+   architecturally significant change.
 4. Fix what the review raises, push, re-review. Repeat steps 3-4 until only minor/nit-level
-   comments remain (or none at all).
+   comments remain (or none at all) — but drop to a **low/medium** effort level for re-review
+   rounds on the same PR once the first pass already caught the significant issues; re-running a
+   full high/max multi-agent sweep after every small follow-up commit has diminishing returns
+   (2026-09-27: PR #113 took 6 full high-effort rounds to land a fairly small UX change — the
+   first 1-2 caught real bugs, the rest mostly found dormant-in-production or nit-level issues).
+   Escalate back to a heavier level only if a lighter round itself turns up something substantial.
 5. Merge it yourself once review is clean (`gh pr merge --merge --delete-branch`) — the user
    explicitly authorized self-merge in this repo (2026-07-29, reconfirmed 2026-07-30,
    2026-08-06/2026-08-16, and again 2026-08-23 after Claude wrongly deferred the merge to the
