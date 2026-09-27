@@ -389,14 +389,14 @@ function tailPlainTextLines(text, limit) {
   return acc || lines[lines.length - 1].slice(-limit)
 }
 
-// Guards a short summary line against a mid-token 80-char cut (e.g. an unclosed **), an embedded newline, or a literal HTML tag (e.g. a grep pattern containing "</details>") — escaped and newline-collapsed before an inline span (not markdown/HTML-parsed) wraps it, padded against a boundary backtick fusing with the delimiter.
+// Telegram's rich_message markdown field is parsed for markdown tokens even inside a <details> summary,
+// so a mid-token 80-char cut (e.g. an unclosed **) or a stray reserved character could toggle real
+// formatting or break out of the tag. escapeHtml neutralizes real HTML; backslash-escaping the
+// markdown-reserved characters neutralizes the rest without forcing the line into a monospace code span.
+const MARKDOWN_RESERVED_RE = /[_*[\]()~`>#+=|{}.!\\-]/g
+
 function wrapSafeInline(line) {
-  const singleLine = escapeHtml(line).replace(/\s*\n\s*/g, ' ')
-  const runs = singleLine.match(/`+/g)
-  const longest = runs ? runs.reduce((max, r) => Math.max(max, r.length), 0) : 0
-  const tick = '`'.repeat(longest + 1)
-  const pad = singleLine.startsWith('`') || singleLine.endsWith('`') ? ' ' : ''
-  return `${tick}${pad}${singleLine}${pad}${tick}`
+  return escapeHtml(line).replace(/\s*\n\s*/g, ' ').replace(MARKDOWN_RESERVED_RE, '\\$&')
 }
 
 const detailsBlock = (summary, body) => `<details><summary>${summary}</summary>\n\n${body}\n\n</details>`
