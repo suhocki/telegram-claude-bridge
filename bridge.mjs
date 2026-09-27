@@ -1483,6 +1483,7 @@ function captureCommandOutput(cmd, args, cwd, timeoutMs = JOB_STALE_DIAGNOSIS_SU
   return new Promise(resolve => {
     let out = ''
     let done = false
+    let timer
     const finish = value => {
       if (done) return
       done = true
@@ -1491,13 +1492,14 @@ function captureCommandOutput(cmd, args, cwd, timeoutMs = JOB_STALE_DIAGNOSIS_SU
     }
     let child
     try {
-      child = spawn(cmd, args, { cwd })
+      // detached, same as runOneShotClaudePrompt/runSpawn, so a timeout SIGKILLs the whole process group rather than leaking a reparented grandchild (e.g. a hung gh credential helper)
+      child = spawn(cmd, args, { cwd, detached: true })
     } catch {
       return finish('')
     }
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       try {
-        child.kill('SIGKILL')
+        process.kill(-child.pid, 'SIGKILL')
       } catch {}
       finish('')
     }, timeoutMs)
@@ -1531,8 +1533,8 @@ function readJobLogTail(logPath, maxBytes = JOB_STALE_DIAGNOSIS_LOG_TAIL_BYTES) 
     const length = Math.min(size, maxBytes)
     const buf = Buffer.alloc(length)
     fd = openSync(logPath, 'r')
-    readSync(fd, buf, 0, length, size - length)
-    return buf.toString('utf8')
+    const bytesRead = readSync(fd, buf, 0, length, size - length)
+    return buf.toString('utf8', 0, bytesRead)
   } catch {
     return ''
   } finally {
