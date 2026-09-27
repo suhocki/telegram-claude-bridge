@@ -15,6 +15,7 @@ import {
   realpathSync,
   openSync,
   closeSync,
+  readSync,
 } from 'node:fs'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
@@ -174,6 +175,11 @@ import {
   markJobRunning,
   markJobFinished,
   reconcileJobsOnBoot,
+  computeHeartbeatState,
+  shouldRunStaleDiagnosis,
+  buildStaleDiagnosisPrompt,
+  parseStaleDiagnosisResponse,
+  buildStaleJobAlertMessage,
   renderJobsStatusMessage,
   selectStatusRenderJobs,
   groupJobsByThread,
@@ -256,6 +262,11 @@ const MEDIA_GROUP_PER_FILE_TIMEOUT_MS = 15000
 const TTS_REQUEST_TIMEOUT_MS = 30000
 // Short by design: a preprocessing nicety, not a conversation turn — must never delay a voice reply.
 const PROSODY_ANNOTATION_TIMEOUT_MS = 6000
+// Cheap model call turning raw stale-heartbeat signal into one short status phrase — bounded so a slow/hung call can never delay the shared job sweep loop (it always runs detached from sweepJobs, never awaited by it).
+const JOB_STALE_DIAGNOSIS_MODEL_TIMEOUT_MS = 20000
+// git/gh calls gathering signal for the check above; short since a missing repo or unauthenticated gh should resolve to "no signal" quickly, not hang.
+const JOB_STALE_DIAGNOSIS_SUBPROCESS_TIMEOUT_MS = 5000
+const JOB_STALE_DIAGNOSIS_LOG_TAIL_BYTES = 4000
 // Telegram rate-limits editMessageText to roughly 1/sec per chat; this stays safely under
 // that while still feeling "live" for the growing-text placeholder preview.
 const STREAM_EDIT_INTERVAL_MS = 1300
@@ -1244,6 +1255,12 @@ function checkRunningJobs() {
     } catch {
       // log file not created yet (or briefly missing) — leave the previous heartbeat timestamp
     }
+    if (computeHeartbeatState(record, now) === 'stale') {
+      maybeRunStaleJobDiagnosis(jobId, record, now)
+    } else if (record.staleDiagnosis) {
+      // heartbeat recovered — drop the stale cache so a later stale spell starts its own fresh diagnosis (and can re-notify) instead of reusing a now-irrelevant phrase.
+      record.staleDiagnosis = null
+    }
     if (!record.killedForTimeout && now >= record.startedAt + record.timeoutMinutes * 60_000) {
       log('background job timed out, killing its process group', jobId, record.description)
       record.killedForTimeout = true
@@ -1408,9 +1425,8 @@ async function transcribeVoiceLogged(filePath) {
   return transcription
 }
 
-// Single short-lived `claude -p` call, deliberately not runClaude — no session/streaming machinery needed for a one-shot tagging pass. Never rejects; resolves to null on any failure/timeout/bad-output.
-async function annotateProsody(text, authMode) {
-  const prompt = buildProsodyAnnotationPrompt(text)
+// Shared one-shot `claude -p --output-format json` runner for annotateProsody and the stale-job diagnosis check below; never rejects, resolves null on any failure/timeout/bad-output.
+function runOneShotClaudePrompt(prompt, authMode, timeoutMs, modelArgs, label) {
   return new Promise(resolve => {
     let settled = false
     const finish = value => {
@@ -1420,42 +1436,176 @@ async function annotateProsody(text, authMode) {
       resolve(value)
     }
     // detached, same as runClaude/runSpawn, so a timeout SIGKILLs the whole process group rather than leaving a reparented tool-call subprocess running
-    const child = spawn(
-      'claude',
-      ['-p', prompt, '--model', 'haiku', '--output-format', 'json', '--permission-mode', 'bypassPermissions'],
-      { cwd, env: buildChildEnv(process.env, authMode), detached: true }
-    )
+    const child = spawn('claude', ['-p', prompt, ...modelArgs, '--output-format', 'json', '--permission-mode', 'bypassPermissions'], {
+      cwd,
+      env: buildChildEnv(process.env, authMode),
+      detached: true,
+    })
     let out = ''
     let err = ''
     const timer = setTimeout(() => {
-      log('prosody annotation timed out')
+      log(`${label} timed out`)
       try {
         process.kill(-child.pid, 'SIGKILL')
       } catch (e) {
-        log('prosody annotation: kill failed', e.message)
+        log(`${label}: kill failed`, e.message)
       }
       finish(null)
-    }, PROSODY_ANNOTATION_TIMEOUT_MS)
+    }, timeoutMs)
     child.stdout.on('data', d => (out += d))
     child.stderr.on('data', d => (err += d))
     child.on('error', e => {
-      log('prosody annotation spawn failed', e.message)
+      log(`${label} spawn failed`, e.message)
       finish(null)
     })
     child.on('close', code => {
       if (code !== 0) {
-        log('prosody annotation exited', code, err.slice(0, 500))
+        log(`${label} exited`, code, err.slice(0, 500))
         return finish(null)
       }
       try {
         const parsed = JSON.parse(out)
         finish(typeof parsed.result === 'string' ? parsed.result.trim() : null)
       } catch (e) {
-        log('prosody annotation: failed to parse result', e.message)
+        log(`${label}: failed to parse result`, e.message)
         finish(null)
       }
     })
   })
+}
+
+async function annotateProsody(text, authMode) {
+  return runOneShotClaudePrompt(buildProsodyAnnotationPrompt(text), authMode, PROSODY_ANNOTATION_TIMEOUT_MS, ['--model', 'haiku'], 'prosody annotation')
+}
+
+// Never throws — resolves '' on any failure/timeout/missing tool, since that's just "no signal" for the stale-job diagnosis below, not an error worth failing over.
+function captureCommandOutput(cmd, args, cwd, timeoutMs = JOB_STALE_DIAGNOSIS_SUBPROCESS_TIMEOUT_MS) {
+  return new Promise(resolve => {
+    let out = ''
+    let done = false
+    let timer
+    const finish = value => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    let child
+    try {
+      // detached, same as runOneShotClaudePrompt/runSpawn, so a timeout SIGKILLs the whole process group rather than leaking a reparented grandchild (e.g. a hung gh credential helper)
+      child = spawn(cmd, args, { cwd, detached: true })
+    } catch {
+      return finish('')
+    }
+    timer = setTimeout(() => {
+      try {
+        process.kill(-child.pid, 'SIGKILL')
+      } catch {}
+      finish('')
+    }, timeoutMs)
+    child.stdout?.on('data', d => (out += d))
+    child.on('error', () => finish(''))
+    child.on('close', code => finish(code === 0 ? out.trim() : ''))
+  })
+}
+
+// Best-effort git branch + open-PR lookup for the job's own working directory, for the stale-job diagnosis prompt. Resolves { branch: null, prUrl: null, prNumber: null } for anything that isn't a git repo, or where gh has nothing to say.
+async function gatherJobGitSignal(jobCwd) {
+  const isRepo = await captureCommandOutput('git', ['rev-parse', '--is-inside-work-tree'], jobCwd)
+  if (isRepo !== 'true') return { branch: null, prUrl: null, prNumber: null }
+  const branch = (await captureCommandOutput('git', ['rev-parse', '--abbrev-ref', 'HEAD'], jobCwd)) || null
+  if (!branch || branch === 'HEAD') return { branch, prUrl: null, prNumber: null }
+  const prJson = await captureCommandOutput('gh', ['pr', 'view', branch, '--json', 'number,url'], jobCwd)
+  if (!prJson) return { branch, prUrl: null, prNumber: null }
+  try {
+    const pr = JSON.parse(prJson)
+    return { branch, prUrl: pr.url ?? null, prNumber: pr.number ?? null }
+  } catch {
+    return { branch, prUrl: null, prNumber: null }
+  }
+}
+
+// Only reads the trailing chunk of a job's log file, not the whole thing — a long streaming job's log can be large, and this runs on a recurring (if throttled) timer.
+function readJobLogTail(logPath, maxBytes = JOB_STALE_DIAGNOSIS_LOG_TAIL_BYTES) {
+  let fd
+  try {
+    const size = statSync(logPath).size
+    const length = Math.min(size, maxBytes)
+    const buf = Buffer.alloc(length)
+    fd = openSync(logPath, 'r')
+    const bytesRead = readSync(fd, buf, 0, length, size - length)
+    const text = buf.toString('utf8', 0, bytesRead)
+    // a tail read starting mid-file can land inside a multi-byte UTF-8 character, decoding as a leading replacement char rather than a truncated one
+    return size - length > 0 ? text.replace(/^�+/, '') : text
+  } catch {
+    return ''
+  } finally {
+    if (fd != null) closeSync(fd)
+  }
+}
+
+async function notifyJobLooksStuck(record) {
+  if (!isThreadKeyAuthorized(record.notifyThreadKey)) return
+  const { chatId, threadId } = parseThreadKey(record.notifyThreadKey)
+  await tg('sendMessage', { chat_id: chatId, text: buildStaleJobAlertMessage(record), ...threadIdParam(threadId) })
+}
+
+// Never throws — any failure just leaves the bare no-output line showing, since this must never delay or break the shared sweepJobs loop every bot uses.
+async function runStaleJobDiagnosis(jobId, record) {
+  const now = Date.now()
+  const prevNotifiedAt = record.staleDiagnosis?.notifiedAt ?? null
+  // Identifies this particular stale spell: lastHeartbeatAt only moves when the job actually recovers, so an unchanged value at write-back time means the same spell is still ongoing.
+  const spellStartedAt = record.lastHeartbeatAt
+  let phrase = null
+  let looksStuckOrFailed = false
+  try {
+    // Re-checked here (the pid may have died since checkRunningJobs' own check earlier this tick) so a job that's already gone is left to the next sweep tick's alive-check instead of being diagnosed.
+    if (isPidAlive(record.pid)) {
+      const logTail = readJobLogTail(record.logPath)
+      const jobCwd = record.cwd ? expandHome(record.cwd, homedir()) : cwd
+      const { branch, prUrl, prNumber } = await gatherJobGitSignal(jobCwd)
+      const staleSinceMs = now - (record.lastHeartbeatAt ?? record.startedAt ?? now)
+      const prompt = buildStaleDiagnosisPrompt({ description: record.description, staleSinceMs, logTail, branch, prUrl, prNumber })
+      const raw = await runOneShotClaudePrompt(
+        prompt,
+        currentAuthMode(),
+        JOB_STALE_DIAGNOSIS_MODEL_TIMEOUT_MS,
+        ['--model', 'haiku'],
+        'stale job diagnosis'
+      )
+      const diagnosis = raw ? parseStaleDiagnosisResponse(raw) : null
+      if (diagnosis) {
+        phrase = diagnosis.phrase
+        looksStuckOrFailed = diagnosis.looksStuckOrFailed
+      }
+    }
+  } catch (e) {
+    log('stale job diagnosis failed', jobId, e.message)
+  }
+
+  // Re-read from state, not the `record` this was triggered with, since it may have changed identity while this was in flight; bail if the job finished, recovered, or moved on to a later stale spell than the one just diagnosed.
+  const current = state.jobs[jobId]
+  if (!current || !isJobActive(current) || current.lastHeartbeatAt !== spellStartedAt || computeHeartbeatState(current, now) !== 'stale') return
+  const shouldNotify = looksStuckOrFailed && !prevNotifiedAt
+  current.staleDiagnosis = { checkedAt: now, phrase, looksStuckOrFailed, notifiedAt: shouldNotify ? now : prevNotifiedAt }
+  saveState(state)
+  updateJobStatusMessages().catch(e => log('updateJobStatusMessages failed', e.message))
+  if (shouldNotify) {
+    await notifyJobLooksStuck(current).catch(e => log('failed to send stale-job alert', jobId, e.message))
+  }
+}
+
+// jobId -> in-flight stale-heartbeat diagnosis promise guard, so an overlapping sweep tick (the diagnosis call itself can run longer than one JOB_SWEEP_INTERVAL_MS tick) can't spawn a second concurrent check for the same job before the first lands.
+const jobStaleDiagnosisInFlight = new Set()
+
+// Fire-and-forget by design: checkRunningJobs (and therefore sweepJobs) must never wait on this.
+function maybeRunStaleJobDiagnosis(jobId, record, now) {
+  if (jobStaleDiagnosisInFlight.has(jobId)) return
+  if (!shouldRunStaleDiagnosis(record, now)) return
+  jobStaleDiagnosisInFlight.add(jobId)
+  runStaleJobDiagnosis(jobId, record)
+    .catch(e => log('stale job diagnosis failed', jobId, e.message))
+    .finally(() => jobStaleDiagnosisInFlight.delete(jobId))
 }
 
 // Fish's S2-family models (incl. the s2.1-pro-free default) read [bracket] tags as markup; older/other model ids may just speak them literally.
