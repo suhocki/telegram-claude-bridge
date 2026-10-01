@@ -1488,8 +1488,7 @@ async function annotateProsody(text, authMode) {
   return runOneShotClaudePrompt(buildProsodyAnnotationPrompt(text), authMode, PROSODY_ANNOTATION_TIMEOUT_MS, ['--model', 'haiku'], 'prosody annotation')
 }
 
-// Keyed by thread key, not a boolean flag: guards against two turns in the same still-untitled
-// topic (e.g. two quick messages before the first rename lands) both deciding to rename at once.
+// Keyed by thread key so two quick turns in the same still-untitled topic can't both rename it at once.
 const topicRenamesInFlight = new Set()
 
 // Fire-and-forget: called without awaiting at the turn's call site, so this never delays the user's reply. Never throws — every failure (generation, editForumTopic) is caught and logged.
@@ -2055,8 +2054,8 @@ async function runClaudeTurn(
         botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, originMessageId, threadId)).messageIds)
       }
       if (checkin) scheduleCheckin(key, newSession?.id ?? sessionId, checkin)
-      // isResume (a Continue turn) has no real user message of its own — run.promptText is just the synthetic "pick up where you left off" marker, not something worth titling a topic from
-      if (threadId != null && config.autoRenameTopics && !isCompact && !isResume) {
+      // isResume (a Continue turn) has no real user message of its own — run.promptText is just the synthetic "pick up where you left off" marker, not something worth titling a topic from; cleanedResult must be non-empty too, so a NO_REPLY/empty-reply turn doesn't burn the one-shot-per-session rename on no real assistant content
+      if (threadId != null && config.autoRenameTopics && !isCompact && !isResume && cleanedResult) {
         maybeRenameTopic(key, chatId, threadId, newSession?.id ?? sessionId, run.promptText, cleanedResult, authMode)
       }
     }
