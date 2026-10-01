@@ -9,6 +9,10 @@ import {
   resolveThreadId,
   parseThreadKey,
   threadIdParam,
+  shouldRenameTopic,
+  shouldAttemptTopicRename,
+  buildTopicTitlePrompt,
+  sanitizeTopicTitle,
   queuedMessageKey,
   isMessageGoneError,
   mediaGroupMembers,
@@ -234,6 +238,84 @@ test('parseThreadKey: round-trips with threadKey for both a plain chat and a top
 
 test('parseThreadKey: a negative group chatId (no colon of its own) is not mistaken for the separator', () => {
   assert.deepEqual(parseThreadKey('-1001234567890:5'), { chatId: '-1001234567890', threadId: 5 })
+})
+
+test('shouldRenameTopic: no stored title yet means a brand-new topic — rename', () => {
+  assert.equal(shouldRenameTopic({ storedSessionId: null, currentSessionId: 'sess-1' }), true)
+  assert.equal(shouldRenameTopic({ storedSessionId: undefined, currentSessionId: 'sess-1' }), true)
+})
+
+test('shouldRenameTopic: a changed session id (e.g. after /new) means rename again', () => {
+  assert.equal(shouldRenameTopic({ storedSessionId: 'sess-1', currentSessionId: 'sess-2' }), true)
+})
+
+test('shouldRenameTopic: same session id as last time means skip', () => {
+  assert.equal(shouldRenameTopic({ storedSessionId: 'sess-1', currentSessionId: 'sess-1' }), false)
+})
+
+test('shouldRenameTopic: no current session id at all means skip', () => {
+  assert.equal(shouldRenameTopic({ storedSessionId: null, currentSessionId: null }), false)
+  assert.equal(shouldRenameTopic({ storedSessionId: 'sess-1', currentSessionId: undefined }), false)
+})
+
+const BASE_RENAME_ATTEMPT = { threadId: 99, autoRenameTopics: true, isCompact: false, isResume: false, cleanedResult: 'here is the answer' }
+
+test('shouldAttemptTopicRename: all conditions met allows the attempt', () => {
+  assert.equal(shouldAttemptTopicRename(BASE_RENAME_ATTEMPT), true)
+})
+
+test('shouldAttemptTopicRename: a plain chat (no threadId) never attempts', () => {
+  assert.equal(shouldAttemptTopicRename({ ...BASE_RENAME_ATTEMPT, threadId: null }), false)
+})
+
+test('shouldAttemptTopicRename: the feature flag off never attempts', () => {
+  assert.equal(shouldAttemptTopicRename({ ...BASE_RENAME_ATTEMPT, autoRenameTopics: false }), false)
+  assert.equal(shouldAttemptTopicRename({ ...BASE_RENAME_ATTEMPT, autoRenameTopics: undefined }), false)
+})
+
+test('shouldAttemptTopicRename: a /compact turn never attempts', () => {
+  assert.equal(shouldAttemptTopicRename({ ...BASE_RENAME_ATTEMPT, isCompact: true }), false)
+})
+
+test('shouldAttemptTopicRename: a Continue (isResume) turn never attempts — its promptText is a synthetic marker, not real user text', () => {
+  assert.equal(shouldAttemptTopicRename({ ...BASE_RENAME_ATTEMPT, isResume: true }), false)
+})
+
+test('shouldAttemptTopicRename: an empty cleanedResult (NO_REPLY/empty turn) never attempts', () => {
+  assert.equal(shouldAttemptTopicRename({ ...BASE_RENAME_ATTEMPT, cleanedResult: '' }), false)
+  assert.equal(shouldAttemptTopicRename({ ...BASE_RENAME_ATTEMPT, cleanedResult: null }), false)
+})
+
+test('buildTopicTitlePrompt: includes both the user message and the assistant reply', () => {
+  const prompt = buildTopicTitlePrompt('how do I deploy this?', 'run npm run deploy from the repo root')
+  assert.match(prompt, /how do I deploy this\?/)
+  assert.match(prompt, /run npm run deploy from the repo root/)
+  assert.match(prompt, /3 to 6 words/)
+})
+
+test('buildTopicTitlePrompt: truncates very long source text instead of inlining it in full', () => {
+  const longText = 'x'.repeat(5000)
+  const prompt = buildTopicTitlePrompt(longText, 'short reply')
+  assert.ok(prompt.length < longText.length)
+  assert.match(prompt, /…/)
+})
+
+test('sanitizeTopicTitle: strips surrounding quotes and collapses whitespace', () => {
+  assert.equal(sanitizeTopicTitle('"Deploy pipeline setup"'), 'Deploy pipeline setup')
+  assert.equal(sanitizeTopicTitle('  Deploy   pipeline\n setup  '), 'Deploy pipeline setup')
+})
+
+test('sanitizeTopicTitle: caps at Telegram\'s 128-char topic name limit', () => {
+  const title = sanitizeTopicTitle('a'.repeat(200))
+  assert.equal(title.length, 128)
+})
+
+test('sanitizeTopicTitle: empty or whitespace/quote-only input sanitizes to empty, signaling "skip the rename"', () => {
+  assert.equal(sanitizeTopicTitle(''), '')
+  assert.equal(sanitizeTopicTitle(null), '')
+  assert.equal(sanitizeTopicTitle(undefined), '')
+  assert.equal(sanitizeTopicTitle('   '), '')
+  assert.equal(sanitizeTopicTitle('""'), '')
 })
 
 test('threadIdParam: null/undefined threadId spreads to nothing', () => {

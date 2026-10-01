@@ -77,6 +77,7 @@ persistent session per Telegram chat.
    | `jobDefaultTimeoutMinutes` | Default per-job timeout before the bridge kills it, default 60 |
    | `jobSweepIntervalMs` | How often the bridge scans for new job specs and re-checks running jobs, default 15000 |
    | `jobNotifyThreadRecencyMs` | A job spec's `notifyThreadKey` is rejected if that thread hasn't had a turn within this long, default 900000 (15 min); always raised to at least `claudeTurnAbsoluteTimeoutMs` (or, if that's disabled via `0`, to the max delay Node allows) so a slow-but-legitimate turn's own job never gets rejected as stale — the effective default is therefore `claudeTurnAbsoluteTimeoutMs`'s own default of 4h, not 15 min |
+   | `autoRenameTopics` | In threads mode, auto-rename each forum topic's title from what the conversation turns out to be about, once per session (first turn, or after `/new`). Default `false`. Requires the bot to have "Manage Topics" admin rights in that forum group, granted by hand in Telegram — the bridge cannot grant itself admin rights |
 
    `.gitignore` already excludes `*.config.json` (except `*.config.example.json`) and `state/`, so real tokens never get committed.
 

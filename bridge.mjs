@@ -68,6 +68,10 @@ import {
   buildNoReplyMarkerInstructions,
   buildJobMarkerInstructions,
   buildCheckinFollowupPrompt,
+  shouldRenameTopic,
+  shouldAttemptTopicRename,
+  buildTopicTitlePrompt,
+  sanitizeTopicTitle,
   extractResponseMarkers,
   shouldRetryEmptyResult,
   MAX_EMPTY_RESULT_RETRIES,
@@ -267,6 +271,8 @@ const MEDIA_GROUP_PER_FILE_TIMEOUT_MS = 15000
 const TTS_REQUEST_TIMEOUT_MS = 30000
 // Short by design: a preprocessing nicety, not a conversation turn — must never delay a voice reply.
 const PROSODY_ANNOTATION_TIMEOUT_MS = 6000
+// Fire-and-forget background nicety, never awaited by the turn that triggers it — a slow/hung call just skips the rename.
+const TOPIC_TITLE_TIMEOUT_MS = 10000
 // Cheap model call turning raw stale-heartbeat signal into one short status phrase — bounded so a slow/hung call can never delay the shared job sweep loop (it always runs detached from sweepJobs, never awaited by it).
 const JOB_STALE_DIAGNOSIS_MODEL_TIMEOUT_MS = 20000
 // git/gh calls gathering signal for the check above; short since a missing repo or unauthenticated gh should resolve to "no signal" quickly, not hang.
@@ -320,6 +326,7 @@ function emptyState() {
     jobStatusMessages: {},
     threadActivity: {},
     configPinMessages: {},
+    topicTitles: {},
   }
 }
 
@@ -338,6 +345,7 @@ function loadState() {
     state.jobStatusMessages ??= {}
     state.threadActivity ??= {}
     state.configPinMessages ??= {}
+    state.topicTitles ??= {}
     return state
   } catch {
     return emptyState()
@@ -1483,6 +1491,46 @@ async function annotateProsody(text, authMode) {
   return runOneShotClaudePrompt(buildProsodyAnnotationPrompt(text), authMode, PROSODY_ANNOTATION_TIMEOUT_MS, ['--model', 'haiku'], 'prosody annotation')
 }
 
+// Keyed by thread key so two quick turns in the same still-untitled topic can't both rename it at once.
+const topicRenamesInFlight = new Set()
+
+// Fire-and-forget: called without awaiting at the turn's call site, so this never delays the user's reply. Never throws — every failure (generation, editForumTopic) is caught and logged.
+async function renameTopic(key, chatId, threadId, sessionId, userText, assistantText, authMode) {
+  const stored = state.topicTitles[key]
+  if (!shouldRenameTopic({ storedSessionId: stored?.sessionId ?? null, currentSessionId: sessionId })) return
+  if (topicRenamesInFlight.has(key)) return
+  topicRenamesInFlight.add(key)
+  try {
+    const raw = await runOneShotClaudePrompt(
+      buildTopicTitlePrompt(userText, assistantText),
+      authMode,
+      TOPIC_TITLE_TIMEOUT_MS,
+      ['--model', 'haiku'],
+      'topic title generation'
+    )
+    const title = sanitizeTopicTitle(raw)
+    // every branch below records the attempt under this session id (title null on failure) — even a bad generation or a persistent editForumTopic failure (e.g. the bot lacks "Manage Topics" rights) must not be retried every turn for the rest of this session
+    if (!title) {
+      state.topicTitles[key] = { sessionId, title: null }
+    } else {
+      try {
+        await tg('editForumTopic', { chat_id: chatId, message_thread_id: threadId, name: title })
+        state.topicTitles[key] = { sessionId, title }
+      } catch (e) {
+        log('editForumTopic failed', key, e.message)
+        state.topicTitles[key] = { sessionId, title: null }
+      }
+    }
+    saveState(state)
+  } finally {
+    topicRenamesInFlight.delete(key)
+  }
+}
+
+function maybeRenameTopic(key, chatId, threadId, sessionId, userText, assistantText, authMode) {
+  renameTopic(key, chatId, threadId, sessionId, userText, assistantText, authMode).catch(e => log('topic rename failed', key, e.message))
+}
+
 // Never throws — resolves '' on any failure/timeout/missing tool, since that's just "no signal" for the stale-job diagnosis below, not an error worth failing over.
 function captureCommandOutput(cmd, args, cwd, timeoutMs = JOB_STALE_DIAGNOSIS_SUBPROCESS_TIMEOUT_MS) {
   return new Promise(resolve => {
@@ -2002,6 +2050,10 @@ async function runClaudeTurn(
       }
     }
     if (!result.is_error) {
+      // kicked off first, before any awaited Telegram call below, since it's fire-and-forget and the sooner it starts the sooner it lands
+      if (shouldAttemptTopicRename({ threadId, autoRenameTopics: config.autoRenameTopics, isCompact, isResume, cleanedResult })) {
+        maybeRenameTopic(key, chatId, threadId, newSession?.id ?? sessionId, run.promptText, cleanedResult, authMode)
+      }
       botMessageIds.push(...(await sendAttachments(chatId, attachPaths, originMessageId, threadId)))
       if (isVoiceReplyEnabled(state.voiceReply, key)) {
         botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, originMessageId, threadId)).messageIds)
