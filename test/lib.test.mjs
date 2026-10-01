@@ -3345,7 +3345,13 @@ test('hasTrackedTurnAtOrAfter: true when a tracked turn already covers that id o
   assert.equal(hasTrackedTurnAtOrAfter(list, 5), true)
 })
 
-test('hasTrackedTurnAtOrAfter: true for a non-anchor member of an already-completed Join batch (memberMessages left undefined, but the anchor id is higher)', () => {
+test('hasTrackedTurnAtOrAfter: true when the needle matches one of a turn\'s memberMessages, not just its userMessageId', () => {
+  const list = [{ userMessageId: 20, memberMessages: [{ message_id: 18 }, { message_id: 19 }, { message_id: 20 }] }]
+  assert.equal(hasTrackedTurnAtOrAfter(list, 19), true)
+  assert.equal(hasTrackedTurnAtOrAfter(list, 25), false)
+})
+
+test('hasTrackedTurnAtOrAfter: true for an edit of an already-completed Join batch (memberMessages left undefined there, so only the higher anchor id is compared)', () => {
   const list = [{ userMessageId: 15, memberMessages: undefined }]
   assert.equal(hasTrackedTurnAtOrAfter(list, 12), true)
 })

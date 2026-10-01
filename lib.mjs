@@ -1341,10 +1341,7 @@ export function findTurnIndexByMessageId(turnList, messageId) {
   return turnList.findIndex(t => String(t?.userMessageId) === needle || (t?.memberMessages ?? []).some(m => String(m?.message_id) === needle))
 }
 
-// true when some tracked turn already covers a message at or after `messageId` — distinguishes an
-// edit of a message whose own turn just hasn't finished yet (nothing to rewind, safe to just
-// reprocess) from one that's unrewindable because it was evicted by MAX_TRACKED_TURNS or is a
-// non-anchor member of an already-completed Join batch (memberMessages left undefined there)
+// distinguishes a message whose own turn just hasn't finished yet from one that's unrewindable (evicted, or a non-anchor Join-batch member)
 export function hasTrackedTurnAtOrAfter(turnList, messageId) {
   if (!Array.isArray(turnList)) return false
   const needle = Number(messageId)
