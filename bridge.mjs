@@ -143,6 +143,8 @@ import {
   buildBotMenuCalls,
   TELEGRAM_ALLOWED_UPDATES,
   appendTurn,
+  buildMediaGroupBufferKey,
+  findBufferedMessageIndex,
   findTurnIndexByMessageId,
   findTurnIndexByBotMessageId,
   collectBotMessageIdsFrom,
@@ -2760,8 +2762,7 @@ function flushMediaGroup(bufferKey) {
 }
 
 function bufferMediaGroupMessage(chatId, msg) {
-  // chat-scoped even though media_group_id is already effectively unique platform-wide, so a collision can never merge two chats' albums
-  const bufferKey = `${chatId}:${msg.media_group_id}`
+  const bufferKey = buildMediaGroupBufferKey(chatId, msg.media_group_id)
   let buf = mediaGroupBuffers.get(bufferKey)
   if (!buf) {
     buf = { chatId, messages: [] }
@@ -2812,6 +2813,14 @@ async function poll() {
         } else if (u.edited_message) {
           const chatId = String(u.edited_message.chat.id)
           const key = threadKey(chatId, u.edited_message)
+          const bufferKey = u.edited_message.media_group_id ? buildMediaGroupBufferKey(chatId, u.edited_message.media_group_id) : null
+          const buffered = bufferKey ? mediaGroupBuffers.get(bufferKey) : null
+          const bufferedIndex = buffered ? findBufferedMessageIndex(buffered.messages, u.edited_message.message_id) : -1
+          if (bufferedIndex !== -1) {
+            // album hasn't flushed yet — patch the buffered copy in place instead of racing the pending flush with a separate handleEditedMessage run on just this one photo
+            buffered.messages[bufferedIndex] = u.edited_message
+            continue
+          }
           const qKey = queuedMessageKey(chatId, u.edited_message.message_id)
           const priorQueued = queuedMessageContent.get(qKey)
           // rebuilt before the authorization check below, since a required mention can live on any album member's caption, not just the edited one (mirrors handleEditedMessage's own ordering)

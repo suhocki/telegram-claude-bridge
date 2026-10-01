@@ -1327,6 +1327,15 @@ export function buildBotMenuCalls() {
   ]
 }
 
+// chat-scoped even though media_group_id is already effectively unique platform-wide, so a collision can never merge two chats' albums
+export function buildMediaGroupBufferKey(chatId, mediaGroupId) {
+  return `${chatId}:${mediaGroupId}`
+}
+
+export function findBufferedMessageIndex(messages, messageId) {
+  return (messages ?? []).findIndex(m => m.message_id === messageId)
+}
+
 export const MAX_TRACKED_TURNS = 40
 
 export function appendTurn(turns, chatId, turn, maxTurns = MAX_TRACKED_TURNS) {

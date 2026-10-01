@@ -160,6 +160,8 @@ import {
   buildBotMenuCalls,
   TELEGRAM_COMMAND_SCOPES_TO_CLEAR,
   appendTurn,
+  buildMediaGroupBufferKey,
+  findBufferedMessageIndex,
   findTurnIndexByMessageId,
   findTurnIndexByBotMessageId,
   collectBotMessageIdsFrom,
@@ -3329,6 +3331,19 @@ test('findTurnIndexByMessageId: also matches a merged album turn by any of its m
   assert.equal(findTurnIndexByMessageId(list, 11), 0)
   assert.equal(findTurnIndexByMessageId(list, 12), 0)
   assert.equal(findTurnIndexByMessageId(list, 13), -1)
+})
+
+test('buildMediaGroupBufferKey: chat-scoped so two chats sharing a media_group_id never collide', () => {
+  assert.equal(buildMediaGroupBufferKey('111', 'abc'), '111:abc')
+  assert.notEqual(buildMediaGroupBufferKey('111', 'abc'), buildMediaGroupBufferKey('222', 'abc'))
+})
+
+test('findBufferedMessageIndex: finds a member by message_id, or -1 when absent/empty', () => {
+  const messages = [{ message_id: 10 }, { message_id: 11 }, { message_id: 12 }]
+  assert.equal(findBufferedMessageIndex(messages, 11), 1)
+  assert.equal(findBufferedMessageIndex(messages, 99), -1)
+  assert.equal(findBufferedMessageIndex([], 11), -1)
+  assert.equal(findBufferedMessageIndex(undefined, 11), -1)
 })
 
 test('rebuildEditedMediaGroupMessage: swaps in the edited copy of one member without dropping the others', () => {
