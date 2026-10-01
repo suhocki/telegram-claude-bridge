@@ -185,11 +185,12 @@ export const MAX_EPHEMERAL_LINES = 6
 // Same idea for frozen 💬 checkpoints themselves — without a cap, a long-running turn's live status grows without bound.
 export const MAX_CHECKPOINT_LINES = 6
 
+// entry.state (⏳/✅/❌) tracks tool completion internally (see the ingest() loop below) but is
+// no longer rendered — it added no information the reader didn't already have (a finished tool
+// call reads the same as a running one) and just churned space as it flipped to ✅ a tick later.
 function renderEphemeral(entry) {
   if (entry.kind === 'thinking') return entry.text
-  const body = formatToolBody(entry.name, entry.input)
-  if (typeof body === 'string') return `${entry.state} ${body}`
-  return { prefix: `${entry.state} ${body.prefix}`, code: body.code, suffix: body.suffix }
+  return formatToolBody(entry.name, entry.input)
 }
 
 // Parallels renderEphemeral, index-for-index: the untruncated text behind a thinking line, or null for anything else.
