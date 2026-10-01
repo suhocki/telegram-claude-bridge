@@ -161,6 +161,7 @@ import {
   TELEGRAM_COMMAND_SCOPES_TO_CLEAR,
   appendTurn,
   findTurnIndexByMessageId,
+  isEditStillInFlight,
   findTurnIndexByBotMessageId,
   collectBotMessageIdsFrom,
   claudeProjectDirName,
@@ -3329,6 +3330,14 @@ test('findTurnIndexByMessageId: also matches a merged album turn by any of its m
   assert.equal(findTurnIndexByMessageId(list, 11), 0)
   assert.equal(findTurnIndexByMessageId(list, 12), 0)
   assert.equal(findTurnIndexByMessageId(list, 13), -1)
+})
+
+test('isEditStillInFlight: true only when the active run is for this exact message id', () => {
+  assert.equal(isEditStillInFlight({ messageId: 42 }, 42), true)
+  assert.equal(isEditStillInFlight({ messageId: 42 }, '42'), true)
+  assert.equal(isEditStillInFlight({ messageId: 42 }, 43), false)
+  assert.equal(isEditStillInFlight(null, 42), false)
+  assert.equal(isEditStillInFlight(undefined, 42), false)
 })
 
 test('rebuildEditedMediaGroupMessage: swaps in the edited copy of one member without dropping the others', () => {

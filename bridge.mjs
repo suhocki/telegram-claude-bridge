@@ -144,6 +144,7 @@ import {
   TELEGRAM_ALLOWED_UPDATES,
   appendTurn,
   findTurnIndexByMessageId,
+  isEditStillInFlight,
   findTurnIndexByBotMessageId,
   collectBotMessageIdsFrom,
   buildSessionTranscriptPath,
@@ -911,13 +912,14 @@ async function handleEditedMessage(msg) {
   const turnList = state.turns[key] ?? []
   const turnIndex = findTurnIndexByMessageId(turnList, msg.message_id)
   const turn = turnIndex >= 0 ? turnList[turnIndex] : null
-  // resolved before any side effect below, since a required @mention can land on any album member, not just the edited one
-  const editedMsg = resolveEditedMessageForTurn(turn?.memberMessages, msg)
+  const active = !turn ? activeRuns.get(key) : null
+  const inFlight = isEditStillInFlight(active, msg.message_id) ? active : null
+  // resolved before any side effect below, since a required @mention can land on any album member, not just the edited one — the in-flight run's own memberMessages covers the still-unrecorded-turn case, same as turn.memberMessages does once it exists
+  const editedMsg = resolveEditedMessageForTurn(turn?.memberMessages ?? inFlight?.memberMessages, msg)
   if (!isAuthorizedMessage(editedMsg)) return
 
   if (!turn) {
-    const active = activeRuns.get(key)
-    if (active && String(active.messageId) === String(msg.message_id)) {
+    if (inFlight) {
       // this exact message's own run hasn't settled yet, so there's nothing recorded to rewind — just run the edited text as a new message
       log('rewind skipped, turn still in flight for', key, msg.message_id)
       await handleMessage(editedMsg)
@@ -2218,6 +2220,7 @@ async function handleMessage(msg) {
       run.finished = true
     },
     messageId: msg.message_id,
+    memberMessages: albumMemberMessages,
     promptText,
     // built from meta, not msg directly, so a CONFIRMed run's Join still threads to the original message, not the CONFIRM reply
     replyToMessage: meta.replyToMessageId != null ? { message_id: meta.replyToMessageId } : undefined,
@@ -2346,6 +2349,7 @@ async function handleContinue(chatId, key, threadId, pending) {
       run.finished = true
     },
     messageId: pending.originMessageId,
+    memberMessages: pending.memberMessages,
     promptText: buildContinuePrompt(),
     // a Continue tap has no originating message of its own to reply-thread from
     replyToMessage: undefined,
