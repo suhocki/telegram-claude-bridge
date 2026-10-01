@@ -10,6 +10,7 @@ import {
   parseThreadKey,
   threadIdParam,
   shouldRenameTopic,
+  shouldAttemptTopicRename,
   buildTopicTitlePrompt,
   sanitizeTopicTitle,
   queuedMessageKey,
@@ -253,6 +254,34 @@ test('shouldRenameTopic: same session id as last time means skip', () => {
 test('shouldRenameTopic: no current session id at all means skip', () => {
   assert.equal(shouldRenameTopic({ storedSessionId: null, currentSessionId: null }), false)
   assert.equal(shouldRenameTopic({ storedSessionId: 'sess-1', currentSessionId: undefined }), false)
+})
+
+const BASE_RENAME_ATTEMPT = { threadId: 99, autoRenameTopics: true, isCompact: false, isResume: false, cleanedResult: 'here is the answer' }
+
+test('shouldAttemptTopicRename: all conditions met allows the attempt', () => {
+  assert.equal(shouldAttemptTopicRename(BASE_RENAME_ATTEMPT), true)
+})
+
+test('shouldAttemptTopicRename: a plain chat (no threadId) never attempts', () => {
+  assert.equal(shouldAttemptTopicRename({ ...BASE_RENAME_ATTEMPT, threadId: null }), false)
+})
+
+test('shouldAttemptTopicRename: the feature flag off never attempts', () => {
+  assert.equal(shouldAttemptTopicRename({ ...BASE_RENAME_ATTEMPT, autoRenameTopics: false }), false)
+  assert.equal(shouldAttemptTopicRename({ ...BASE_RENAME_ATTEMPT, autoRenameTopics: undefined }), false)
+})
+
+test('shouldAttemptTopicRename: a /compact turn never attempts', () => {
+  assert.equal(shouldAttemptTopicRename({ ...BASE_RENAME_ATTEMPT, isCompact: true }), false)
+})
+
+test('shouldAttemptTopicRename: a Continue (isResume) turn never attempts — its promptText is a synthetic marker, not real user text', () => {
+  assert.equal(shouldAttemptTopicRename({ ...BASE_RENAME_ATTEMPT, isResume: true }), false)
+})
+
+test('shouldAttemptTopicRename: an empty cleanedResult (NO_REPLY/empty turn) never attempts', () => {
+  assert.equal(shouldAttemptTopicRename({ ...BASE_RENAME_ATTEMPT, cleanedResult: '' }), false)
+  assert.equal(shouldAttemptTopicRename({ ...BASE_RENAME_ATTEMPT, cleanedResult: null }), false)
 })
 
 test('buildTopicTitlePrompt: includes both the user message and the assistant reply', () => {

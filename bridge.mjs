@@ -69,6 +69,7 @@ import {
   buildJobMarkerInstructions,
   buildCheckinFollowupPrompt,
   shouldRenameTopic,
+  shouldAttemptTopicRename,
   buildTopicTitlePrompt,
   sanitizeTopicTitle,
   extractResponseMarkers,
@@ -2054,8 +2055,7 @@ async function runClaudeTurn(
         botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, originMessageId, threadId)).messageIds)
       }
       if (checkin) scheduleCheckin(key, newSession?.id ?? sessionId, checkin)
-      // isResume (a Continue turn) has no real user message of its own — run.promptText is just the synthetic "pick up where you left off" marker, not something worth titling a topic from; cleanedResult must be non-empty too, so a NO_REPLY/empty-reply turn doesn't burn the one-shot-per-session rename on no real assistant content
-      if (threadId != null && config.autoRenameTopics && !isCompact && !isResume && cleanedResult) {
+      if (shouldAttemptTopicRename({ threadId, autoRenameTopics: config.autoRenameTopics, isCompact, isResume, cleanedResult })) {
         maybeRenameTopic(key, chatId, threadId, newSession?.id ?? sessionId, run.promptText, cleanedResult, authMode)
       }
     }

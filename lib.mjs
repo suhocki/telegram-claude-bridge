@@ -57,6 +57,11 @@ export function shouldRenameTopic({ storedSessionId, currentSessionId }) {
   return storedSessionId == null || storedSessionId !== currentSessionId
 }
 
+// isResume (a Continue turn) has no real user message of its own, and an empty cleanedResult (NO_REPLY, empty response) isn't representative of the conversation — neither is worth burning the one-shot-per-session rename on.
+export function shouldAttemptTopicRename({ threadId, autoRenameTopics, isCompact, isResume, cleanedResult }) {
+  return threadId != null && !!autoRenameTopics && !isCompact && !isResume && !!cleanedResult
+}
+
 // Keeps only the tail once a growing buffer (stdout/stderr from a long-running subprocess) exceeds limit.
 export function appendCapped(acc, piece, limit) {
   return (acc + piece).slice(-limit)
