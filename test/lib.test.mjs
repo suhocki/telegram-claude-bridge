@@ -290,7 +290,7 @@ test('buildTopicTitlePrompt: includes both the user message and the assistant re
   const prompt = buildTopicTitlePrompt('how do I deploy this?', 'run npm run deploy from the repo root')
   assert.match(prompt, /how do I deploy this\?/)
   assert.match(prompt, /run npm run deploy from the repo root/)
-  assert.match(prompt, /3 to 6 words/)
+  assert.match(prompt, /1 to 2 words/)
 })
 
 test('buildTopicTitlePrompt: truncates very long source text instead of inlining it in full', () => {
@@ -301,13 +301,19 @@ test('buildTopicTitlePrompt: truncates very long source text instead of inlining
 })
 
 test('sanitizeTopicTitle: strips surrounding quotes and collapses whitespace', () => {
-  assert.equal(sanitizeTopicTitle('"Deploy pipeline setup"'), 'Deploy pipeline setup')
-  assert.equal(sanitizeTopicTitle('  Deploy   pipeline\n setup  '), 'Deploy pipeline setup')
+  assert.equal(sanitizeTopicTitle('"Deploy pipeline"'), 'Deploy pipeline')
+  assert.equal(sanitizeTopicTitle('  Deploy   pipeline  '), 'Deploy pipeline')
 })
 
 test('sanitizeTopicTitle: caps at Telegram\'s 128-char topic name limit', () => {
   const title = sanitizeTopicTitle('a'.repeat(200))
   assert.equal(title.length, 128)
+})
+
+test('sanitizeTopicTitle: truncates a too-long model output down to at most 2 words as a safety net', () => {
+  assert.equal(sanitizeTopicTitle('Deploy pipeline setup now'), 'Deploy pipeline')
+  assert.equal(sanitizeTopicTitle('"Deploy pipeline setup"'), 'Deploy pipeline')
+  assert.equal(sanitizeTopicTitle('  Deploy   pipeline\n setup  '), 'Deploy pipeline')
 })
 
 test('sanitizeTopicTitle: empty or whitespace/quote-only input sanitizes to empty, signaling "skip the rename"', () => {

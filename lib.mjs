@@ -1099,7 +1099,7 @@ export function buildTopicTitlePrompt(userText, assistantText) {
   return [
     'Generate a short title for a Telegram forum topic, summarizing what this conversation is about.',
     'Rules:',
-    '- 3 to 6 words.',
+    '- 1 to 2 words. Prefer 2 only when 1 word would be ambiguous.',
     '- Plain text only: no surrounding quotes, no trailing punctuation, no markdown, no emoji.',
     '- Output ONLY the title, nothing else.',
     '',
@@ -1117,6 +1117,7 @@ export function sanitizeTopicTitle(raw) {
     .replace(/\s+/g, ' ')
     .trim()
   title = title.replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, '').trim()
+  title = title.split(' ').slice(0, 2).join(' ')
   return title.slice(0, TOPIC_TITLE_MAX_CHARS)
 }
 
