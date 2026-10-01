@@ -406,18 +406,27 @@ function longestBacktickRun(s) {
   return longest
 }
 
-// A tool-call line rendered as a fenced code block (Telegram's monospace-on-tinted-background block, not just an inline span); fence length follows the same longest-backtick-run rule as a span, with a 3-backtick floor.
-function renderToolCodeBlock(prefix, code, suffix) {
-  const text = `${prefix ?? ''}${code ?? ''}${suffix ?? ''}`
+// A tool-call line's raw text (no fence yet — adjacent tool-call lines share one fence, built by
+// wrapCodeBlock below). Not HTML-escaped: unlike the surrounding prose, a fenced block's content
+// is opaque to the markdown parser (same as any CommonMark code fence), so Telegram shows it
+// completely literally — entity-escaping it would leak raw "&amp;" etc. into the display.
+function renderToolLine(prefix, code, suffix) {
+  return `${prefix ?? ''}${code ?? ''}${suffix ?? ''}`
+}
+
+// Wraps one or more already-joined tool-call lines in a single fenced code block (Telegram's
+// monospace-on-tinted-background block). Fence length is one backtick longer than the longest
+// backtick run anywhere in the combined text, 3-backtick floor, so embedded backticks can't close it early.
+function wrapCodeBlock(text) {
   const fence = '`'.repeat(Math.max(3, longestBacktickRun(text) + 1))
-  return `${fence}\n${escapeHtml(text)}\n${fence}`
+  return `${fence}\n${text}\n${fence}`
 }
 
 // A historyLines() entry is either a plain string (💬/🤔 lines, always plain prose) or a
-// { prefix, code, suffix } triple (a tool-call line) — the whole triple renders as one code block.
+// { prefix, code, suffix } triple (a tool-call line) — the raw line text only, not yet fenced.
 function wrapSafeInline(line) {
   if (line !== null && typeof line === 'object') {
-    return renderToolCodeBlock(line.prefix, line.code, line.suffix)
+    return renderToolLine(line.prefix, line.code, line.suffix)
   }
   return wrapPlainInline(line)
 }
@@ -434,6 +443,31 @@ function renderHistoryEntry(line, full) {
 // already separates live text from history just below; entries need the same treatment.
 const ENTRY_SEPARATOR = '\n\n'
 
+// Joins rendered pieces into the final body, merging every run of consecutive tool-call lines
+// (isCode[i] true) into one shared fenced block instead of one per line — "all commands are part
+// of one field," not a separate box per command. Non-code entries (💬/🤔, with or without their
+// own <details> wrapper) are untouched and still separated the normal way.
+function assembleBody(pieces, isCode) {
+  const parts = []
+  let i = 0
+  while (i < pieces.length) {
+    if (!isCode[i]) {
+      parts.push(pieces[i])
+      i += 1
+      continue
+    }
+    let j = i
+    const lines = []
+    while (j < pieces.length && isCode[j]) {
+      lines.push(pieces[j])
+      j += 1
+    }
+    parts.push(wrapCodeBlock(lines.join('\n')))
+    i = j
+  }
+  return parts.join(ENTRY_SEPARATOR)
+}
+
 export function renderRichTranscript(historyLines, liveText, { limit = 30000, fullTexts = [] } = {}) {
   const entries = (historyLines ?? []).map((line, i) => ({ line, full: fullTexts[i] || null })).filter(entry => entry.line)
   const live = String(liveText ?? '').trim()
@@ -444,8 +478,9 @@ export function renderRichTranscript(historyLines, liveText, { limit = 30000, fu
   const liveSuffix = cappedLive ? `${liveSeparator}${cappedLive}` : ''
   const bodyBudget = limit - liveSuffix.length
 
+  const isCode = entries.map(e => e.line !== null && typeof e.line === 'object')
   const fullDetail = entries.map(e => renderHistoryEntry(e.line, e.full))
-  const fullBody = fullDetail.join(ENTRY_SEPARATOR)
+  const fullBody = assembleBody(fullDetail, isCode)
   if (fullBody.length <= bodyBudget) return `${fullBody}${liveSuffix}`
 
   const shortForm = entries.map(e => renderHistoryEntry(e.line, null))
@@ -458,12 +493,12 @@ export function renderRichTranscript(historyLines, liveText, { limit = 30000, fu
   const pieces = [...fullDetail]
   for (const i of degradeLargestExpansionFirst) {
     pieces[i] = shortForm[i]
-    const body = pieces.join(ENTRY_SEPARATOR)
+    const body = assembleBody(pieces, isCode)
     if (body.length <= bodyBudget) return `${body}${liveSuffix}`
   }
 
   for (let drop = 1; drop < entries.length; drop++) {
-    const body = shortForm.slice(drop).join(ENTRY_SEPARATOR)
+    const body = assembleBody(shortForm.slice(drop), isCode.slice(drop))
     if (body.length <= bodyBudget) return `${body}${liveSuffix}`
   }
   return (live && tailPlainTextLines(live, limit)) || null
