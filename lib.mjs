@@ -1095,12 +1095,6 @@ const FISH_PROSODY_TAGS_REFERENCE = `Allowed tags (Fish Audio square-bracket pro
 const TOPIC_TITLE_SOURCE_MAX_CHARS = 600
 const TOPIC_TITLE_MAX_CHARS = 128
 
-function truncateForTopicTitlePrompt(text) {
-  const t = String(text ?? '').trim()
-  if (t.length <= TOPIC_TITLE_SOURCE_MAX_CHARS) return t
-  return `${t.slice(0, TOPIC_TITLE_SOURCE_MAX_CHARS - 1).trimEnd()}…`
-}
-
 export function buildTopicTitlePrompt(userText, assistantText) {
   return [
     'Generate a short title for a Telegram forum topic, summarizing what this conversation is about.',
@@ -1110,10 +1104,10 @@ export function buildTopicTitlePrompt(userText, assistantText) {
     '- Output ONLY the title, nothing else.',
     '',
     'User message:',
-    truncateForTopicTitlePrompt(userText),
+    truncateForSpeech(String(userText ?? '').trim(), TOPIC_TITLE_SOURCE_MAX_CHARS),
     '',
     'Assistant reply:',
-    truncateForTopicTitlePrompt(assistantText),
+    truncateForSpeech(String(assistantText ?? '').trim(), TOPIC_TITLE_SOURCE_MAX_CHARS),
   ].join('\n')
 }
 

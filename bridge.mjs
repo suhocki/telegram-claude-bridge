@@ -1507,19 +1507,17 @@ async function renameTopic(key, chatId, threadId, sessionId, userText, assistant
       'topic title generation'
     )
     const title = sanitizeTopicTitle(raw)
+    // every branch below records the attempt under this session id (title null on failure) — even a bad generation or a persistent editForumTopic failure (e.g. the bot lacks "Manage Topics" rights) must not be retried every turn for the rest of this session
     if (!title) {
-      // record the attempt anyway, keyed to this session id, so a bad/empty generation doesn't get retried on every single turn of the same session
       state.topicTitles[key] = { sessionId, title: null }
-      saveState(state)
-      return
-    }
-    try {
-      await tg('editForumTopic', { chat_id: chatId, message_thread_id: threadId, name: title })
-      state.topicTitles[key] = { sessionId, title }
-    } catch (e) {
-      // same reasoning: a persistent failure (e.g. the bot lacks "Manage Topics" rights) must not be retried every turn for the rest of this session
-      log('editForumTopic failed', key, e.message)
-      state.topicTitles[key] = { sessionId, title: null }
+    } else {
+      try {
+        await tg('editForumTopic', { chat_id: chatId, message_thread_id: threadId, name: title })
+        state.topicTitles[key] = { sessionId, title }
+      } catch (e) {
+        log('editForumTopic failed', key, e.message)
+        state.topicTitles[key] = { sessionId, title: null }
+      }
     }
     saveState(state)
   } finally {
@@ -2050,14 +2048,15 @@ async function runClaudeTurn(
       }
     }
     if (!result.is_error) {
+      // kicked off first, before any awaited Telegram call below, since it's fire-and-forget and the sooner it starts the sooner it lands
+      if (shouldAttemptTopicRename({ threadId, autoRenameTopics: config.autoRenameTopics, isCompact, isResume, cleanedResult })) {
+        maybeRenameTopic(key, chatId, threadId, newSession?.id ?? sessionId, run.promptText, cleanedResult, authMode)
+      }
       botMessageIds.push(...(await sendAttachments(chatId, attachPaths, originMessageId, threadId)))
       if (isVoiceReplyEnabled(state.voiceReply, key)) {
         botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, originMessageId, threadId)).messageIds)
       }
       if (checkin) scheduleCheckin(key, newSession?.id ?? sessionId, checkin)
-      if (shouldAttemptTopicRename({ threadId, autoRenameTopics: config.autoRenameTopics, isCompact, isResume, cleanedResult })) {
-        maybeRenameTopic(key, chatId, threadId, newSession?.id ?? sessionId, run.promptText, cleanedResult, authMode)
-      }
     }
     if (reactionMessageIds.length) {
       // on success, clear the 👀 receipt reaction instead of swapping in a 👍 — the reply itself is the signal now
