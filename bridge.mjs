@@ -143,6 +143,8 @@ import {
   buildBotMenuCalls,
   TELEGRAM_ALLOWED_UPDATES,
   appendTurn,
+  buildMediaGroupBufferKey,
+  findBufferedMessageIndex,
   findTurnIndexByMessageId,
   findTurnIndexByBotMessageId,
   collectBotMessageIdsFrom,
@@ -914,8 +916,8 @@ async function handleEditedMessage(msg) {
   // resolved before any side effect below, since a required @mention can land on any album member, not just the edited one
   const editedMsg = resolveEditedMessageForTurn(turn?.memberMessages, msg)
   if (!isAuthorizedMessage(editedMsg)) return
-
   const session = normalizeSession(state.sessions[key])
+
   if (!turn || !session || turn.sessionId !== session.id) {
     log('rewind unavailable', key, msg.message_id, 'turn=', Boolean(turn), 'session=', session?.id)
     await sendReply(chatId, buildRewindUnavailableNotice(), msg.message_id, null, resolveThreadId(msg)).catch(() => {})
@@ -2760,8 +2762,7 @@ function flushMediaGroup(bufferKey) {
 }
 
 function bufferMediaGroupMessage(chatId, msg) {
-  // chat-scoped even though media_group_id is already effectively unique platform-wide, so a collision can never merge two chats' albums
-  const bufferKey = `${chatId}:${msg.media_group_id}`
+  const bufferKey = buildMediaGroupBufferKey(chatId, msg.media_group_id)
   let buf = mediaGroupBuffers.get(bufferKey)
   if (!buf) {
     buf = { chatId, messages: [] }
@@ -2812,9 +2813,9 @@ async function poll() {
         } else if (u.edited_message) {
           const chatId = String(u.edited_message.chat.id)
           const key = threadKey(chatId, u.edited_message)
-          const bufferKey = u.edited_message.media_group_id ? `${chatId}:${u.edited_message.media_group_id}` : null
+          const bufferKey = u.edited_message.media_group_id ? buildMediaGroupBufferKey(chatId, u.edited_message.media_group_id) : null
           const buffered = bufferKey ? mediaGroupBuffers.get(bufferKey) : null
-          const bufferedIndex = buffered?.messages.findIndex(m => m.message_id === u.edited_message.message_id) ?? -1
+          const bufferedIndex = buffered ? findBufferedMessageIndex(buffered.messages, u.edited_message.message_id) : -1
           if (bufferedIndex !== -1) {
             // album hasn't flushed yet — patch the buffered copy in place instead of racing the pending flush with a separate handleEditedMessage run on just this one photo
             buffered.messages[bufferedIndex] = u.edited_message
