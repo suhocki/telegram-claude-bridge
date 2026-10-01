@@ -281,7 +281,7 @@ test('createProgressTracker falls back to just the tool name when there is no su
   const tracker = createProgressTracker()
   assert.equal(
     tracker.ingest({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Task', input: {} }] } }),
-    '⏳ Task…'
+    'Task…'
   )
 })
 
@@ -311,8 +311,8 @@ test('createProgressTracker reports a new status line on a fresh tool_use block'
     type: 'assistant',
     message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
   }
-  assert.equal(tracker.ingest(event), '⏳ Bash: npm test…')
-  assert.equal(tracker.current(), '⏳ Bash: npm test…')
+  assert.equal(tracker.ingest(event), 'Bash: npm test…')
+  assert.equal(tracker.current(), 'Bash: npm test…')
 })
 
 test('createProgressTracker: a tool-call entry passed to renderTranscript carries its value as a raw { prefix, code, suffix } triple, not yet escaped', () => {
@@ -324,7 +324,7 @@ test('createProgressTracker: a tool-call entry passed to renderTranscript carrie
     message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'grep -n "a\\|b" file.js' } }] },
   })
   const { history, fullTexts } = JSON.parse(tracker.snapshot().text)
-  assert.deepEqual(history[0], { prefix: '⏳ Bash: ', code: 'grep -n "a\\|b" file.js', suffix: '…' })
+  assert.deepEqual(history[0], { prefix: 'Bash: ', code: 'grep -n "a\\|b" file.js', suffix: '…' })
   assert.equal(fullTexts[0], null, 'tool-call lines never get an expandable full-text companion')
 })
 
@@ -334,7 +334,7 @@ test('createProgressTracker: a tool-call fallback (no summarizable value, e.g. T
   })
   tracker.ingest({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Task', input: {} }] } })
   const { history } = JSON.parse(tracker.snapshot().text)
-  assert.equal(history[0], '⏳ Task…')
+  assert.equal(history[0], 'Task…')
 })
 
 test('createProgressTracker does not re-announce a tool_use block already seen, and appends (not replaces) on a new one', () => {
@@ -354,10 +354,10 @@ test('createProgressTracker does not re-announce a tool_use block already seen, 
       ],
     },
   }
-  assert.equal(tracker.ingest(grown), '⏳ Bash: npm test…\n⏳ Edit: foo.py…')
+  assert.equal(tracker.ingest(grown), 'Bash: npm test…\nEdit: foo.py…')
 })
 
-test('createProgressTracker: a tool_result marks its history line done (✅) or failed (❌)', () => {
+test('createProgressTracker: a tool_result no longer reports a change — done/failed state is tracked internally but not rendered, so marking it must not force a wasted same-text re-render', () => {
   const tracker = createProgressTracker()
   tracker.ingest({
     type: 'assistant',
@@ -369,9 +369,10 @@ test('createProgressTracker: a tool_result marks its history line done (✅) or 
     },
   })
   const status = tracker.ingest({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok', is_error: false }] } })
-  assert.equal(status, '✅ Bash: npm test…\n⏳ Edit: foo.py…')
+  assert.equal(status, null, 'a successful result changes nothing visible, so ingest must report no change')
   const status2 = tracker.ingest({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_2', content: 'boom', is_error: true }] } })
-  assert.equal(status2, '✅ Bash: npm test…\n❌ Edit: foo.py…')
+  assert.equal(status2, null, 'same for an error result — it is still not rendered')
+  assert.equal(tracker.current(), 'Bash: npm test…\nEdit: foo.py…', 'both tool lines remain, unaffected by either result')
 })
 
 test('createProgressTracker: a tool_result for an unknown or already-finished id is ignored', () => {
@@ -383,7 +384,7 @@ test('createProgressTracker: a tool_result for an unknown or already-finished id
   assert.equal(tracker.ingest({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_unknown', is_error: false }] } }), null)
   tracker.ingest({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: false }] } })
   assert.equal(tracker.ingest({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: true }] } }), null)
-  assert.equal(tracker.current(), '✅ Bash: npm test…')
+  assert.equal(tracker.current(), 'Bash: npm test…')
 })
 
 test('createProgressTracker: a thinking delta accumulates as a live preview distinct from the text preview', () => {
@@ -410,7 +411,7 @@ test('createProgressTracker: a tool call after live text freezes it into history
     type: 'assistant',
     message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
   })
-  assert.equal(status, '💬 Looking into it\n⏳ Bash: npm test…')
+  assert.equal(status, '💬 Looking into it\nBash: npm test…')
 })
 
 test('createProgressTracker accumulates text deltas into a growing preview', () => {
@@ -432,7 +433,7 @@ test('createProgressTracker.snapshot reflects a tool status line', () => {
     message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
   }
   tracker.ingest(event)
-  assert.deepEqual(tracker.snapshot(), { text: '⏳ Bash: npm test…' })
+  assert.deepEqual(tracker.snapshot(), { text: 'Bash: npm test…' })
 })
 
 test('createProgressTracker.snapshot returns the same object reference across ingests that report no change', () => {
@@ -473,7 +474,7 @@ test('createProgressTracker: a tool_use event freezes live text into history (pa
   tracker.ingest(toolEvent)
   const snap = tracker.snapshot()
   assert.deepEqual(JSON.parse(snap.text), {
-    history: ['💬 Hello', { prefix: '⏳ Bash: ', code: 'npm test', suffix: '…' }],
+    history: ['💬 Hello', { prefix: 'Bash: ', code: 'npm test', suffix: '…' }],
     live: '',
   })
 })
@@ -494,7 +495,7 @@ test('createProgressTracker: renderTranscript receives a 3rd argument (fullTexts
   assert.equal(history.length, fullTexts.length)
   assert.ok(history[0].startsWith('🤔 a long chain of reasoning'))
   assert.equal(fullTexts[0], longThought.slice(80).trim())
-  assert.deepEqual(history[1], { prefix: '⏳ Bash: ', code: 'npm test', suffix: '…' })
+  assert.deepEqual(history[1], { prefix: 'Bash: ', code: 'npm test', suffix: '…' })
   assert.equal(fullTexts[1], null)
 })
 
@@ -581,7 +582,7 @@ test('regression: a renderTranscript that returns null does not clobber the prio
     message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'npm test' } }] },
   }
   const first = tracker.ingest(toolEvent)
-  assert.equal(first, '[⏳ Bash: npm test…]')
+  assert.equal(first, '[Bash: npm test…]')
 
   renderNull = true
   const delta = text => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } })
@@ -747,19 +748,19 @@ test('createProgressTracker: a checkpoint (💬) collapses every ephemeral tool/
   tracker.ingest(tool('toolu_1', 'Bash', { command: 'grep -rn foo' }))
   tracker.ingest(tool('toolu_2', 'Edit', { file_path: '/a/foo.py' }))
   tracker.ingest({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: false }] } })
-  assert.equal(tracker.current(), '✅ Bash: grep -rn foo…\n⏳ Edit: foo.py…')
+  assert.equal(tracker.current(), 'Bash: grep -rn foo…\nEdit: foo.py…')
 
   const status = tracker.ingest(text('Found it, writing the fix'))
   assert.equal(
     status,
-    '✅ Bash: grep -rn foo…\n⏳ Edit: foo.py…\n✍️ Found it, writing the fix',
+    'Bash: grep -rn foo…\nEdit: foo.py…\n✍️ Found it, writing the fix',
     'the working tail stays visible alongside the streaming live preview — nothing collapses yet'
   )
 
   const nextTool = tracker.ingest(tool('toolu_3', 'Bash', { command: 'npm test' }))
   assert.equal(
     nextTool,
-    '💬 Found it, writing the fix\n⏳ Bash: npm test…',
+    '💬 Found it, writing the fix\nBash: npm test…',
     'freezing the text turns it into a permanent checkpoint and drops the two earlier tool lines entirely'
   )
 })
@@ -773,8 +774,8 @@ test('createProgressTracker: ephemeral lines are capped at MAX_EPHEMERAL_LINES, 
   }
   const lines = last.split('\n')
   assert.equal(lines.length, MAX_EPHEMERAL_LINES)
-  assert.equal(lines[0], '⏳ Bash: step 3…', 'the two oldest calls (1 and 2) should have scrolled off')
-  assert.equal(lines[lines.length - 1], `⏳ Bash: step ${MAX_EPHEMERAL_LINES + 2}…`)
+  assert.equal(lines[0], 'Bash: step 3…', 'the two oldest calls (1 and 2) should have scrolled off')
+  assert.equal(lines[lines.length - 1], `Bash: step ${MAX_EPHEMERAL_LINES + 2}…`)
 })
 
 test('createProgressTracker: checkpoint (💬) lines are capped at MAX_CHECKPOINT_LINES, oldest first', () => {
@@ -805,7 +806,7 @@ test('createProgressTracker: a tool_result for a line already evicted by the cap
     message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', is_error: false }] },
   })
   assert.equal(status, null)
-  assert.equal(tracker.current(), '⏳ Bash: b…\n⏳ Bash: c…')
+  assert.equal(tracker.current(), 'Bash: b…\nBash: c…')
 })
 
 test('createProgressTracker.historySnapshot freezes any trailing live text into a checkpoint before returning', () => {

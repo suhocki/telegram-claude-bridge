@@ -350,78 +350,78 @@ test('regression: renderRichTranscript truncates live-only text (no history yet)
 })
 
 test('renderRichTranscript: history (no full text) is always visible, not collapsed, each line has markdown-reserved characters backslash-escaped so they are not interpreted as formatting, and stays in the normal (non-monospace) font', () => {
-  const result = renderRichTranscript(['⏳ Bash: echo **not bold**…', '✅ Read: foo.py…'], '', { limit: 30000 })
-  assert.equal(result, '⏳ Bash: echo \\*\\*not bold\\*\\*…\n\n✅ Read: foo\\.py…')
+  const result = renderRichTranscript(['Bash: echo **not bold**…', 'Read: foo.py…'], '', { limit: 30000 })
+  assert.equal(result, 'Bash: echo \\*\\*not bold\\*\\*…\n\nRead: foo\\.py…')
   assert.ok(!result.includes('<details'), 'the progress list itself is never wrapped in a collapsed section')
   assert.ok(!result.includes('`'), 'no inline code span (monospace) wraps the line')
 })
 
 test('renderRichTranscript: live text is appended after the (always-visible) history', () => {
-  const result = renderRichTranscript(['⏳ Bash: npm test…'], '**done**', { limit: 30000 })
-  assert.equal(result, '⏳ Bash: npm test…\n\n**done**')
+  const result = renderRichTranscript(['Bash: npm test…'], '**done**', { limit: 30000 })
+  assert.equal(result, 'Bash: npm test…\n\n**done**')
 })
 
 test('renderRichTranscript: falsy history entries are filtered out', () => {
-  const result = renderRichTranscript(['⏳ Bash: npm test…', '', null, undefined], '', { limit: 30000 })
-  assert.equal(result, '⏳ Bash: npm test…')
+  const result = renderRichTranscript(['Bash: npm test…', '', null, undefined], '', { limit: 30000 })
+  assert.equal(result, 'Bash: npm test…')
 })
 
 test('renderRichTranscript: a history line (no full text) with literal backticks gets each one backslash-escaped instead of being turned into a monospace code span', () => {
-  const result = renderRichTranscript(["⏳ Bash: grep '```' file.js…"], '', { limit: 30000 })
-  assert.equal(result, "⏳ Bash: grep '\\`\\`\\`' file\\.js…")
+  const result = renderRichTranscript(["Bash: grep '```' file.js…"], '', { limit: 30000 })
+  assert.equal(result, "Bash: grep '\\`\\`\\`' file\\.js…")
   assert.ok(!result.includes('<details'), 'a line with no full text has no details wrapper at all')
 })
 
-test('renderRichTranscript: a tool-call entry ({ prefix, code, suffix }) renders its value as a monospace code span, prefix/suffix stay plain text', () => {
-  const result = renderRichTranscript([{ prefix: '⏳ Bash: ', code: 'npm test', suffix: '…' }], '', { limit: 30000 })
-  assert.equal(result, '⏳ Bash: `npm test`…')
+test('renderRichTranscript: a tool-call entry ({ prefix, code, suffix }) renders as a fenced code block (monospace, tinted background), not just an inline span', () => {
+  const result = renderRichTranscript([{ prefix: 'Bash: ', code: 'npm test', suffix: '…' }], '', { limit: 30000 })
+  assert.equal(result, '```\nBash: npm test…\n```')
 })
 
-test('renderRichTranscript: a code-span value containing a run of backticks gets a fence one backtick longer than the longest run inside it', () => {
-  const result = renderRichTranscript([{ prefix: '⏳ Bash: ', code: 'grep "```" file.js', suffix: '…' }], '', { limit: 30000 })
-  assert.equal(result, '⏳ Bash: ````grep "```" file.js````…')
+test('renderRichTranscript: a code-block value containing a run of backticks gets a fence one backtick longer than the longest run inside it', () => {
+  const result = renderRichTranscript([{ prefix: 'Bash: ', code: 'grep "```" file.js', suffix: '…' }], '', { limit: 30000 })
+  assert.equal(result, '````\nBash: grep "```" file.js…\n````')
 })
 
-test('renderRichTranscript: a code-span value starting or ending with a literal backtick gets a padding space so it cannot fuse with the fence', () => {
-  const leading = renderRichTranscript([{ prefix: '⏳ Bash: ', code: '`ls -la', suffix: '…' }], '', { limit: 30000 })
-  assert.equal(leading, '⏳ Bash: `` `ls -la ``…')
-  const trailing = renderRichTranscript([{ prefix: '⏳ Bash: ', code: 'open the file`', suffix: '…' }], '', { limit: 30000 })
-  assert.equal(trailing, '⏳ Bash: `` open the file` ``…')
+test('renderRichTranscript: a code-block value starting or ending with a literal backtick does not need any padding — the fence sits on its own line, so it cannot fuse with the content', () => {
+  const leading = renderRichTranscript([{ prefix: 'Bash: ', code: '`ls -la', suffix: '…' }], '', { limit: 30000 })
+  assert.equal(leading, '```\nBash: `ls -la…\n```')
+  const trailing = renderRichTranscript([{ prefix: 'Bash: ', code: 'open the file`', suffix: '…' }], '', { limit: 30000 })
+  assert.equal(trailing, '```\nBash: open the file`…\n```')
 })
 
-test('renderRichTranscript: markdown-reserved characters inside a code-span value are left completely literal (no backslash-escaping), unlike the surrounding prose', () => {
+test('renderRichTranscript: markdown-reserved characters inside a code-block value are left completely literal (no backslash-escaping), unlike the surrounding prose', () => {
   const result = renderRichTranscript(
-    [{ prefix: '⏳ Bash: ', code: 'grep -n "Read:\\|⏳\\|mergePendingCheckin\\|pendingCheckins\\b"', suffix: '…' }],
+    [{ prefix: 'Bash: ', code: 'grep -n "Read:\\|⏳\\|mergePendingCheckin\\|pendingCheckins\\b"', suffix: '…' }],
     '',
     { limit: 30000 }
   )
-  assert.equal(result, '⏳ Bash: `grep -n "Read:\\|⏳\\|mergePendingCheckin\\|pendingCheckins\\b"`…')
+  assert.equal(result, '```\nBash: grep -n "Read:\\|⏳\\|mergePendingCheckin\\|pendingCheckins\\b"…\n```')
   assert.ok(!result.includes('\\\\|'), 'a literal backslash must not have been injected in front of the pipes')
 })
 
-test('renderRichTranscript: HTML-sensitive characters inside a code-span value are still entity-escaped, matching this file\'s existing defensive posture', () => {
-  const result = renderRichTranscript([{ prefix: '⏳ Bash: ', code: 'grep "<script>" file', suffix: '…' }], '', { limit: 30000 })
-  assert.equal(result, '⏳ Bash: `grep "&lt;script&gt;" file`…')
+test('renderRichTranscript: HTML-sensitive characters inside a code-block value are still entity-escaped, matching this file\'s existing defensive posture', () => {
+  const result = renderRichTranscript([{ prefix: 'Bash: ', code: 'grep "<script>" file', suffix: '…' }], '', { limit: 30000 })
+  assert.equal(result, '```\nBash: grep "&lt;script&gt;" file…\n```')
 })
 
-test('renderRichTranscript: an embedded newline inside a code-span value (e.g. a multi-line command) collapses to a space instead of breaking the single-line code span', () => {
-  const result = renderRichTranscript([{ prefix: '⏳ Bash: ', code: 'line one\nline two', suffix: '…' }], '', { limit: 30000 })
-  assert.equal(result, '⏳ Bash: `line one line two`…')
+test('renderRichTranscript: an embedded newline inside a code-block value (e.g. a multi-line command) is preserved as a real line break inside the block', () => {
+  const result = renderRichTranscript([{ prefix: 'Bash: ', code: 'line one\nline two', suffix: '…' }], '', { limit: 30000 })
+  assert.equal(result, '```\nBash: line one\nline two…\n```')
 })
 
-test('renderRichTranscript: a 💬/🤔 line stays plain prose even when other entries in the same transcript are code-span tool calls', () => {
+test('renderRichTranscript: a 💬/🤔 line stays plain prose even when other entries in the same transcript are code-block tool calls', () => {
   const result = renderRichTranscript(
-    ['💬 Found it, writing the fix', { prefix: '⏳ Bash: ', code: 'npm test', suffix: '…' }],
+    ['💬 Found it, writing the fix', { prefix: 'Bash: ', code: 'npm test', suffix: '…' }],
     '',
     { limit: 30000 }
   )
-  assert.equal(result, '💬 Found it, writing the fix\n\n⏳ Bash: `npm test`…')
+  assert.equal(result, '💬 Found it, writing the fix\n\n```\nBash: npm test…\n```')
 })
 
-test('renderRichTranscript: the size budget measures a code-span entry by its rendered (fenced + escaped) length, not the raw value length', () => {
+test('renderRichTranscript: the size budget measures a code-block entry by its rendered (fenced + escaped) length, not the raw value length', () => {
   const history = [
-    { prefix: '⏳ Bash: ', code: '&'.repeat(50), suffix: '…' }, // escapes to 5x length: &amp; each
-    { prefix: '⏳ Bash: ', code: 'y'.repeat(50), suffix: '…' },
+    { prefix: 'Bash: ', code: '&'.repeat(50), suffix: '…' }, // escapes to 5x length: &amp; each
+    { prefix: 'Bash: ', code: 'y'.repeat(50), suffix: '…' },
   ]
   const result = renderRichTranscript(history, '', { limit: 120 })
   assert.ok(result.length <= 120, `result length ${result.length} exceeds the 120 limit`)
@@ -453,13 +453,13 @@ test('regression: a summary line truncated mid-markdown-token (e.g. an unclosed 
 })
 
 test('regression: a summary line with an embedded newline (e.g. a multi-line tool command) is collapsed to one line before being inline-wrapped', () => {
-  const result = renderRichTranscript(['⏳ Bash: line one\nline two…'], '', { limit: 30000 })
+  const result = renderRichTranscript(['Bash: line one\nline two…'], '', { limit: 30000 })
   assert.ok(!result.includes('\nline two'), 'no literal newline survives inside the inline span')
   assert.ok(result.includes('line one line two'))
 })
 
 test('regression: a summary line containing a literal HTML tag (e.g. a grep pattern for "</details>") is escaped, not left able to fake a real closing tag', () => {
-  const result = renderRichTranscript(['⏳ Bash: grep "</details><b>x</b>" file.js…'], '', { limit: 30000 })
+  const result = renderRichTranscript(['Bash: grep "</details><b>x</b>" file.js…'], '', { limit: 30000 })
   assert.equal(result.match(/<\/details>/g), null, 'no real closing tag exists at all for a line with no full text')
   assert.ok(result.includes('&lt;/details&gt;&lt;b&gt;x&lt;/b&gt;'), 'the literal tag text is escaped, not left as real markup')
 })
@@ -489,24 +489,24 @@ test('regression: a literal "</details>" inside the model\'s own full text canno
 
 test('renderRichTranscript: a mix of tool-call lines (no full text) and a thinking line (with full text) renders each appropriately', () => {
   const result = renderRichTranscript(
-    ['⏳ Bash: npm test…', '🤔 short…', '✅ Read: foo.py…'],
+    ['Bash: npm test…', '🤔 short…', 'Read: foo.py…'],
     '',
     { limit: 30000, fullTexts: [null, 'the full thinking text', undefined] }
   )
-  assert.ok(result.includes('⏳ Bash: npm test…'), 'tool line stays unwrapped, no expansion')
+  assert.ok(result.includes('Bash: npm test…'), 'tool line stays unwrapped, no expansion')
   assert.ok(result.includes('<details><summary>🤔 short…</summary>\n\nthe full thinking text\n\n</details>'), 'thinking line becomes its own nested expandable section')
-  assert.ok(result.includes('✅ Read: foo\\.py…'), 'tool line stays unwrapped, no expansion')
+  assert.ok(result.includes('Read: foo\\.py…'), 'tool line stays unwrapped, no expansion')
 })
 
-test('renderRichTranscript: a code-span tool-call entry never gets an expandable <details> wrapper, even mixed with a thinking line that does', () => {
+test('renderRichTranscript: a code-block tool-call entry never gets an expandable <details> wrapper, even mixed with a thinking line that does', () => {
   const result = renderRichTranscript(
-    [{ prefix: '⏳ Bash: ', code: 'npm test', suffix: '…' }, '🤔 short…'],
+    [{ prefix: 'Bash: ', code: 'npm test', suffix: '…' }, '🤔 short…'],
     '',
     { limit: 30000, fullTexts: [null, 'the full thinking text'] }
   )
-  assert.ok(result.includes('⏳ Bash: `npm test`…'), 'the code-span line renders monospace, unwrapped')
+  assert.ok(result.includes('```\nBash: npm test…\n```'), 'the code-block line renders monospace, unwrapped')
   assert.ok(result.includes('<details><summary>🤔 short…</summary>\n\nthe full thinking text\n\n</details>'), 'the thinking line still gets its own expandable section')
-  assert.equal(result.match(/<details>/g).length, 1, 'exactly one <details> wrapper — the code-span entry contributes none')
+  assert.equal(result.match(/<details>/g).length, 1, 'exactly one <details> wrapper — the code-block entry contributes none')
 })
 
 test('regression: falsy entries in fullTexts (missing index, null, undefined, empty string) all fall back to the safe escaped line, not an empty expandable body', () => {
@@ -516,24 +516,24 @@ test('regression: falsy entries in fullTexts (missing index, null, undefined, em
 })
 
 test('regression: when not everything fits, every step degrades to its short form before any step is dropped entirely', () => {
-  const history = Array.from({ length: 20 }, (_, i) => `⏳ Bash: step ${i}…`)
+  const history = Array.from({ length: 20 }, (_, i) => `Bash: step ${i}…`)
   const fullTexts = history.map((_, i) => (i === 19 ? 'the full text of the most recent step' : null))
   const result = renderRichTranscript(history, '', { limit: 300, fullTexts })
   assert.ok(result.length <= 300, `result length ${result.length} exceeds the 300 limit`)
   assert.ok(result.includes('step 19'), 'the most recent entry survives, even though its own expansion had to degrade to make room')
   assert.ok(!result.includes('the full text of the most recent step'), 'showing every step in short form outranks any single expansion')
   assert.ok(!result.includes('step 0…'), 'once even the fully degraded set does not fit, the oldest whole entries drop first')
-  const survivingCount = result.split('\n').filter(line => line.startsWith('⏳')).length
-  assert.equal(survivingCount, 17, 'pins the exact number kept, so a mutant that over-drops (e.g. down to just the newest) cannot pass unnoticed')
+  const survivingCount = result.split('\n').filter(line => line.startsWith('Bash:')).length
+  assert.equal(survivingCount, 19, 'pins the exact number kept, so a mutant that over-drops (e.g. down to just the newest) cannot pass unnoticed')
 })
 
 test('regression: a huge expansion on one entry does not evict short older entries that would easily fit — the expansion degrades first', () => {
-  const history = ['⏳ Bash: npm test…', '✅ Read: foo.py…', '🤔 a long reconsideration…']
+  const history = ['Bash: npm test…', 'Read: foo.py…', '🤔 a long reconsideration…']
   const fullTexts = [null, null, 'x'.repeat(6000)]
   const result = renderRichTranscript(history, '', { limit: 200, fullTexts })
   assert.ok(result.length <= 200, `result length ${result.length} exceeds the 200 limit`)
-  assert.ok(result.includes('⏳ Bash: npm test…'), 'an older short entry must not be dropped just because a newer one has a huge expansion')
-  assert.ok(result.includes('✅ Read: foo\\.py…'), 'same for the second older entry')
+  assert.ok(result.includes('Bash: npm test…'), 'an older short entry must not be dropped just because a newer one has a huge expansion')
+  assert.ok(result.includes('Read: foo\\.py…'), 'same for the second older entry')
   assert.ok(!result.includes('xxxx'), 'the oversized expansion itself must not appear once degraded')
 })
 
@@ -563,13 +563,13 @@ test('regression: when even the single most recent entry (with its own expandabl
 })
 
 test('regression: when even the degraded plain short line cannot fit at all, history is dropped entirely instead of returning a partial line that violates the limit', () => {
-  const result = renderRichTranscript(['⏳ Bash: npm test…'], '', { limit: 10 })
+  const result = renderRichTranscript(['Bash: npm test…'], '', { limit: 10 })
   assert.equal(result, null, 'a line that cannot fit within the limit must not be returned partially')
 })
 
 test('regression: a large in-flight live answer that leaves no room for even one degraded history line drops history, not just live text', () => {
   const live = 'x'.repeat(35000)
-  const result = renderRichTranscript(['⏳ Bash: npm test…'], live, { limit: 30000 })
+  const result = renderRichTranscript(['Bash: npm test…'], live, { limit: 30000 })
   assert.ok(!result.includes('Bash: npm test'), 'no history rendering survives when there is truly no room left')
   assert.ok(result.length <= 30000)
   assert.ok(live.endsWith(result))
@@ -584,7 +584,7 @@ test('regression: renderRichTranscript with limit 0 (or negative) returns null r
 })
 
 test('regression: renderRichTranscript never returns text longer than the given limit', () => {
-  const history = Array.from({ length: 50 }, (_, i) => `⏳ Bash: a fairly long step description number ${i}…`)
+  const history = Array.from({ length: 50 }, (_, i) => `Bash: a fairly long step description number ${i}…`)
   for (const limit of [80, 200, 1000, 30000]) {
     const result = renderRichTranscript(history, 'some live text too', { limit })
     assert.ok(result === null || result.length <= limit, `limit ${limit}: got length ${result?.length}`)
@@ -592,7 +592,7 @@ test('regression: renderRichTranscript never returns text longer than the given 
 })
 
 test('renderRichTranscript: under a tight limit, the live text is always kept in full, and history is tail-truncated by whole lines to make room', () => {
-  const history = Array.from({ length: 50 }, (_, i) => `⏳ Bash: a fairly long step description number ${i}…`)
+  const history = Array.from({ length: 50 }, (_, i) => `Bash: a fairly long step description number ${i}…`)
   const result = renderRichTranscript(history, 'this must always appear', { limit: 400 })
   assert.ok(result.length <= 400, `result length ${result.length} exceeds the 400 limit`)
   assert.ok(result.includes('this must always appear'), 'the live tail is the "front line" of activity and is never dropped')
@@ -600,7 +600,7 @@ test('renderRichTranscript: under a tight limit, the live text is always kept in
 })
 
 test('regression: renderRichTranscript truncates the live text (not bails to null) when history is non-empty but live alone would overflow the limit', () => {
-  const history = ['⏳ Bash: npm test…']
+  const history = ['Bash: npm test…']
   const live = 'z'.repeat(500)
   const result = renderRichTranscript(history, live, { limit: 200 })
   assert.notEqual(result, null, 'a long live segment must not blank out an otherwise-renderable draft')

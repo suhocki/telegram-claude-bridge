@@ -406,24 +406,18 @@ function longestBacktickRun(s) {
   return longest
 }
 
-// A tool-call value (command/path/pattern/etc.) rendered as a markdown code span: the fence is
-// one backtick longer than the longest backtick run already inside the value (CommonMark's rule
-// for a fence that can't be confused with the content), and a leading/trailing backtick gets a
-// padding space so it doesn't fuse with the fence. No MARKDOWN_RESERVED_RE here — a code span's
-// content is literal, so backslash-escaping reserved characters would corrupt it (e.g. inject a
-// literal backslash into a grep alternation pattern).
-function renderCodeSpan(raw) {
-  const value = String(raw ?? '').replace(/\s*\n\s*/g, ' ')
-  const fence = '`'.repeat(longestBacktickRun(value) + 1)
-  const padded = value.startsWith('`') || value.endsWith('`') ? ` ${value} ` : value
-  return `${fence}${escapeHtml(padded)}${fence}`
+// A tool-call line rendered as a fenced code block (Telegram's monospace-on-tinted-background block, not just an inline span); fence length follows the same longest-backtick-run rule as a span, with a 3-backtick floor.
+function renderToolCodeBlock(prefix, code, suffix) {
+  const text = `${prefix ?? ''}${code ?? ''}${suffix ?? ''}`
+  const fence = '`'.repeat(Math.max(3, longestBacktickRun(text) + 1))
+  return `${fence}\n${escapeHtml(text)}\n${fence}`
 }
 
 // A historyLines() entry is either a plain string (💬/🤔 lines, always plain prose) or a
-// { prefix, code, suffix } triple (a tool-call line) — only `code` renders as a monospace span.
+// { prefix, code, suffix } triple (a tool-call line) — the whole triple renders as one code block.
 function wrapSafeInline(line) {
   if (line !== null && typeof line === 'object') {
-    return `${wrapPlainInline(line.prefix)}${renderCodeSpan(line.code)}${wrapPlainInline(line.suffix ?? '')}`
+    return renderToolCodeBlock(line.prefix, line.code, line.suffix)
   }
   return wrapPlainInline(line)
 }

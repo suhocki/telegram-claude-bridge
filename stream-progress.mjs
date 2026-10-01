@@ -131,10 +131,7 @@ export function truncateStatus(text, maxLen = 60) {
   return `${t.slice(0, maxLen - 1).trimEnd()}…`
 }
 
-// The "Label: summary…" body rendered for a tool line, regardless of its current state emoji.
-// When there's an actual value (command/path/pattern/etc.) worth showing, it's returned as a
-// { prefix, code, suffix } triple instead of a plain string: the renderer puts `code` in a
-// monospace span and leaves prefix/suffix (the label and the trailing ellipsis) as plain text.
+// The "Label: summary…" body rendered for a tool line. When there's an actual value (command/path/pattern/etc.) worth showing, it's returned as a { prefix, code, suffix } triple instead of a plain string, so the renderer can set the whole thing off as its own code block.
 function formatToolBody(name, input, maxLen = 60) {
   const label = name || 'tool'
   const summary = summarizeToolInput(name, input)
@@ -185,11 +182,10 @@ export const MAX_EPHEMERAL_LINES = 6
 // Same idea for frozen 💬 checkpoints themselves — without a cap, a long-running turn's live status grows without bound.
 export const MAX_CHECKPOINT_LINES = 6
 
+// entry.state (⏳/✅/❌) tracks tool completion internally (see ingest() below) but is not rendered — it just churned space flipping to ✅ a tick later with no new information.
 function renderEphemeral(entry) {
   if (entry.kind === 'thinking') return entry.text
-  const body = formatToolBody(entry.name, entry.input)
-  if (typeof body === 'string') return `${entry.state} ${body}`
-  return { prefix: `${entry.state} ${body.prefix}`, code: body.code, suffix: body.suffix }
+  return formatToolBody(entry.name, entry.input)
 }
 
 // Parallels renderEphemeral, index-for-index: the untruncated text behind a thinking line, or null for anything else.
@@ -313,11 +309,11 @@ export function createProgressTracker(
       changed = true
     }
 
+    // entry.state is bookkeeping only now (not rendered) — must not set `changed`, or every tool completion would force a wasted same-text editMessageText call.
     for (const result of extractToolResults(event)) {
       const entry = ephemeral.find(e => e.kind === 'tool' && e.id === result.id)
       if (!entry || entry.state !== '⏳') continue // scrolled off, unknown, or already marked — nothing to do
       entry.state = result.isError ? '❌' : '✅'
-      changed = true
     }
 
     const thinkingDelta = extractThinkingDelta(event)
