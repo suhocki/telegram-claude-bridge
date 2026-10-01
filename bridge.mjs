@@ -144,6 +144,7 @@ import {
   TELEGRAM_ALLOWED_UPDATES,
   appendTurn,
   findTurnIndexByMessageId,
+  hasTrackedTurnAtOrAfter,
   findTurnIndexByBotMessageId,
   collectBotMessageIdsFrom,
   buildSessionTranscriptPath,
@@ -915,16 +916,16 @@ async function handleEditedMessage(msg) {
   const editedMsg = resolveEditedMessageForTurn(turn?.memberMessages, msg)
   if (!isAuthorizedMessage(editedMsg)) return
 
-  if (!turn) {
-    // edited before its turn ever finished (still queued or mid-run) — nothing recorded to rewind yet, so just run the edited text as a new message
+  if (!turn && !hasTrackedTurnAtOrAfter(turnList, msg.message_id)) {
+    // nothing recorded because this message's own turn hasn't finished yet (edited right after sending, or mid-run) — not a rewind failure, just run the edited text as a new message
     log('rewind skipped, no completed turn yet for', key, msg.message_id)
     await handleMessage(editedMsg)
     return
   }
 
   const session = normalizeSession(state.sessions[key])
-  if (!session || turn.sessionId !== session.id) {
-    log('rewind unavailable', key, msg.message_id, 'session=', session?.id)
+  if (!turn || !session || turn.sessionId !== session.id) {
+    log('rewind unavailable', key, msg.message_id, 'turn=', Boolean(turn), 'session=', session?.id)
     await sendReply(chatId, buildRewindUnavailableNotice(), msg.message_id, null, resolveThreadId(msg)).catch(() => {})
     return
   }

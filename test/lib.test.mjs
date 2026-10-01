@@ -161,6 +161,7 @@ import {
   TELEGRAM_COMMAND_SCOPES_TO_CLEAR,
   appendTurn,
   findTurnIndexByMessageId,
+  hasTrackedTurnAtOrAfter,
   findTurnIndexByBotMessageId,
   collectBotMessageIdsFrom,
   claudeProjectDirName,
@@ -3329,6 +3330,24 @@ test('findTurnIndexByMessageId: also matches a merged album turn by any of its m
   assert.equal(findTurnIndexByMessageId(list, 11), 0)
   assert.equal(findTurnIndexByMessageId(list, 12), 0)
   assert.equal(findTurnIndexByMessageId(list, 13), -1)
+})
+
+test('hasTrackedTurnAtOrAfter: false for a message newer than every tracked turn (not yet processed)', () => {
+  const list = [{ userMessageId: 10 }, { userMessageId: 11 }]
+  assert.equal(hasTrackedTurnAtOrAfter(list, 12), false)
+  assert.equal(hasTrackedTurnAtOrAfter([], 12), false)
+  assert.equal(hasTrackedTurnAtOrAfter(undefined, 12), false)
+})
+
+test('hasTrackedTurnAtOrAfter: true when a tracked turn already covers that id or a later one', () => {
+  const list = [{ userMessageId: 10 }, { userMessageId: 11 }]
+  assert.equal(hasTrackedTurnAtOrAfter(list, 11), true)
+  assert.equal(hasTrackedTurnAtOrAfter(list, 5), true)
+})
+
+test('hasTrackedTurnAtOrAfter: true for a non-anchor member of an already-completed Join batch (memberMessages left undefined, but the anchor id is higher)', () => {
+  const list = [{ userMessageId: 15, memberMessages: undefined }]
+  assert.equal(hasTrackedTurnAtOrAfter(list, 12), true)
 })
 
 test('rebuildEditedMediaGroupMessage: swaps in the edited copy of one member without dropping the others', () => {
