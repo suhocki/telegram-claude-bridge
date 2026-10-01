@@ -51,6 +51,12 @@ export function parseThreadKey(key) {
   return { chatId: s.slice(0, idx), threadId: Number(s.slice(idx + 1)) }
 }
 
+// Covers both "first turn of a brand-new topic" (storedSessionId is still null) and "the user ran /new in the same topic" (the session id moved on).
+export function shouldRenameTopic({ storedSessionId, currentSessionId }) {
+  if (!currentSessionId) return false
+  return storedSessionId == null || storedSessionId !== currentSessionId
+}
+
 // Keeps only the tail once a growing buffer (stdout/stderr from a long-running subprocess) exceeds limit.
 export function appendCapped(acc, piece, limit) {
   return (acc + piece).slice(-limit)
@@ -1081,6 +1087,40 @@ const FISH_PROSODY_TAGS_REFERENCE = `Allowed tags (Fish Audio square-bracket pro
 - [whispering], [soft tone], [in a hurry tone], [shouting], [screaming] — delivery/tone
 - Open-vocabulary calm/emotion tags when the content clearly calls for them, e.g. [calm], [happy], [excited], [surprised], [nervous], [confident], [determined], or a short free-form phrase like [warm and reassuring]`
 
+const TOPIC_TITLE_SOURCE_MAX_CHARS = 600
+const TOPIC_TITLE_MAX_CHARS = 128
+
+function truncateForTopicTitlePrompt(text) {
+  const t = String(text ?? '').trim()
+  if (t.length <= TOPIC_TITLE_SOURCE_MAX_CHARS) return t
+  return `${t.slice(0, TOPIC_TITLE_SOURCE_MAX_CHARS - 1).trimEnd()}…`
+}
+
+export function buildTopicTitlePrompt(userText, assistantText) {
+  return [
+    'Generate a short title for a Telegram forum topic, summarizing what this conversation is about.',
+    'Rules:',
+    '- 3 to 6 words.',
+    '- Plain text only: no surrounding quotes, no trailing punctuation, no markdown, no emoji.',
+    '- Output ONLY the title, nothing else.',
+    '',
+    'User message:',
+    truncateForTopicTitlePrompt(userText),
+    '',
+    'Assistant reply:',
+    truncateForTopicTitlePrompt(assistantText),
+  ].join('\n')
+}
+
+// Telegram's editForumTopic "name" is limited to 128 characters; empty-after-sanitizing means generation failed and the caller should skip the rename.
+export function sanitizeTopicTitle(raw) {
+  let title = String(raw ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  title = title.replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, '').trim()
+  return title.slice(0, TOPIC_TITLE_MAX_CHARS)
+}
+
 export function buildProsodyAnnotationPrompt(text) {
   return [
     'You are annotating text-to-speech input with Fish Audio prosody tags so it sounds natural instead of monotonic.',
@@ -1503,6 +1543,9 @@ export function validateBridgeConfig(config, { stateFilePath, existingStateFileP
   }
   if (config.apiBaseUrl != null && (typeof config.apiBaseUrl !== 'string' || !config.apiBaseUrl.trim())) {
     return '"apiBaseUrl" must be a non-empty string when given'
+  }
+  if (config.autoRenameTopics != null && typeof config.autoRenameTopics !== 'boolean') {
+    return '"autoRenameTopics" must be a boolean when given'
   }
   if (config.voiceReply != null && typeof config.voiceReply === 'object' && config.voiceReply.provider == null) {
     const ambiguousField = ['apiKeyPath', 'voiceId', 'modelId', 'voiceSettings'].find(field => config.voiceReply[field] != null)

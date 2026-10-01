@@ -68,6 +68,9 @@ import {
   buildNoReplyMarkerInstructions,
   buildJobMarkerInstructions,
   buildCheckinFollowupPrompt,
+  shouldRenameTopic,
+  buildTopicTitlePrompt,
+  sanitizeTopicTitle,
   extractResponseMarkers,
   shouldRetryEmptyResult,
   MAX_EMPTY_RESULT_RETRIES,
@@ -265,6 +268,8 @@ const MEDIA_GROUP_PER_FILE_TIMEOUT_MS = 15000
 const TTS_REQUEST_TIMEOUT_MS = 30000
 // Short by design: a preprocessing nicety, not a conversation turn — must never delay a voice reply.
 const PROSODY_ANNOTATION_TIMEOUT_MS = 6000
+// Fire-and-forget background nicety, never awaited by the turn that triggers it — a slow/hung call just skips the rename.
+const TOPIC_TITLE_TIMEOUT_MS = 10000
 // Cheap model call turning raw stale-heartbeat signal into one short status phrase — bounded so a slow/hung call can never delay the shared job sweep loop (it always runs detached from sweepJobs, never awaited by it).
 const JOB_STALE_DIAGNOSIS_MODEL_TIMEOUT_MS = 20000
 // git/gh calls gathering signal for the check above; short since a missing repo or unauthenticated gh should resolve to "no signal" quickly, not hang.
@@ -318,6 +323,7 @@ function emptyState() {
     jobStatusMessages: {},
     threadActivity: {},
     configPinMessages: {},
+    topicTitles: {},
   }
 }
 
@@ -336,6 +342,7 @@ function loadState() {
     state.jobStatusMessages ??= {}
     state.threadActivity ??= {}
     state.configPinMessages ??= {}
+    state.topicTitles ??= {}
     return state
   } catch {
     return emptyState()
@@ -1481,6 +1488,28 @@ async function annotateProsody(text, authMode) {
   return runOneShotClaudePrompt(buildProsodyAnnotationPrompt(text), authMode, PROSODY_ANNOTATION_TIMEOUT_MS, ['--model', 'haiku'], 'prosody annotation')
 }
 
+// Fire-and-forget: called without awaiting at the turn's call site, so this never delays the user's reply. Never throws — every failure (generation, editForumTopic) is caught and logged.
+async function renameTopic(key, chatId, threadId, sessionId, userText, assistantText, authMode) {
+  const stored = state.topicTitles[key]
+  if (!shouldRenameTopic({ storedSessionId: stored?.sessionId ?? null, currentSessionId: sessionId })) return
+  const raw = await runOneShotClaudePrompt(
+    buildTopicTitlePrompt(userText, assistantText),
+    authMode,
+    TOPIC_TITLE_TIMEOUT_MS,
+    ['--model', 'haiku'],
+    'topic title generation'
+  )
+  const title = sanitizeTopicTitle(raw)
+  if (!title) return
+  await tg('editForumTopic', { chat_id: chatId, message_thread_id: threadId, name: title })
+  state.topicTitles[key] = { sessionId, title }
+  saveState(state)
+}
+
+function maybeRenameTopic(key, chatId, threadId, sessionId, userText, assistantText, authMode) {
+  renameTopic(key, chatId, threadId, sessionId, userText, assistantText, authMode).catch(e => log('topic rename failed', key, e.message))
+}
+
 // Never throws — resolves '' on any failure/timeout/missing tool, since that's just "no signal" for the stale-job diagnosis below, not an error worth failing over.
 function captureCommandOutput(cmd, args, cwd, timeoutMs = JOB_STALE_DIAGNOSIS_SUBPROCESS_TIMEOUT_MS) {
   return new Promise(resolve => {
@@ -2005,6 +2034,9 @@ async function runClaudeTurn(
         botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, originMessageId, threadId)).messageIds)
       }
       if (checkin) scheduleCheckin(key, newSession?.id ?? sessionId, checkin)
+      if (threadId != null && config.autoRenameTopics && !isCompact) {
+        maybeRenameTopic(key, chatId, threadId, newSession?.id ?? sessionId, run.promptText, cleanedResult, authMode)
+      }
     }
     if (reactionMessageIds.length) {
       // on success, clear the 👀 receipt reaction instead of swapping in a 👍 — the reply itself is the signal now

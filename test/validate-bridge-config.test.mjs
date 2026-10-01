@@ -178,6 +178,14 @@ test('validateBridgeConfig: no voiceReply block at all is fine', () => {
   assert.equal(validateBridgeConfig({ ...VALID, voiceReply: undefined }), null)
 })
 
+test('validateBridgeConfig: autoRenameTopics must be a boolean when given', () => {
+  assert.match(validateBridgeConfig({ ...VALID, autoRenameTopics: 'yes' }), /autoRenameTopics/)
+  assert.match(validateBridgeConfig({ ...VALID, autoRenameTopics: 1 }), /autoRenameTopics/)
+  assert.equal(validateBridgeConfig({ ...VALID, autoRenameTopics: true }), null)
+  assert.equal(validateBridgeConfig({ ...VALID, autoRenameTopics: false }), null)
+  assert.equal(validateBridgeConfig({ ...VALID, autoRenameTopics: undefined }), null)
+})
+
 test('resolveBotStateFile: resolves a relative stateFile against configDir, defaulting to state.json', () => {
   assert.equal(resolveBotStateFile('/repo', 'state/tldr.json'), '/repo/state/tldr.json')
   assert.equal(resolveBotStateFile('/repo', undefined), '/repo/state.json')
