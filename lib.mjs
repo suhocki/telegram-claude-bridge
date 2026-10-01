@@ -1341,16 +1341,6 @@ export function findTurnIndexByMessageId(turnList, messageId) {
   return turnList.findIndex(t => String(t?.userMessageId) === needle || (t?.memberMessages ?? []).some(m => String(m?.message_id) === needle))
 }
 
-// distinguishes a message whose own turn just hasn't finished yet from one that's unrewindable (evicted, or a non-anchor Join-batch member)
-export function hasTrackedTurnAtOrAfter(turnList, messageId) {
-  if (!Array.isArray(turnList)) return false
-  const needle = Number(messageId)
-  return turnList.some(t => {
-    const ids = [t?.userMessageId, ...(t?.memberMessages ?? []).map(m => m?.message_id)]
-    return ids.some(id => Number(id) >= needle)
-  })
-}
-
 export function rebuildEditedMediaGroupMessage(memberMessages, editedMsg) {
   const messages = memberMessages.map(m => (String(m.message_id) === String(editedMsg.message_id) ? editedMsg : m))
   const merged = mergeMediaGroupMessages(messages)

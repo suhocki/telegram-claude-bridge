@@ -144,7 +144,6 @@ import {
   TELEGRAM_ALLOWED_UPDATES,
   appendTurn,
   findTurnIndexByMessageId,
-  hasTrackedTurnAtOrAfter,
   findTurnIndexByBotMessageId,
   collectBotMessageIdsFrom,
   buildSessionTranscriptPath,
@@ -916,16 +915,22 @@ async function handleEditedMessage(msg) {
   const editedMsg = resolveEditedMessageForTurn(turn?.memberMessages, msg)
   if (!isAuthorizedMessage(editedMsg)) return
 
-  if (!turn && !hasTrackedTurnAtOrAfter(turnList, msg.message_id)) {
-    // nothing recorded because this message's own turn hasn't finished yet (edited right after sending, or mid-run) — not a rewind failure, just run the edited text as a new message
-    log('rewind skipped, no completed turn yet for', key, msg.message_id)
-    await handleMessage(editedMsg)
+  if (!turn) {
+    const active = activeRuns.get(key)
+    if (active && String(active.messageId) === String(msg.message_id)) {
+      // this exact message's own run hasn't settled yet, so there's nothing recorded to rewind — just run the edited text as a new message
+      log('rewind skipped, turn still in flight for', key, msg.message_id)
+      await handleMessage(editedMsg)
+      return
+    }
+    log('rewind unavailable', key, msg.message_id, 'turn=false', 'activeRun=', Boolean(active))
+    await sendReply(chatId, buildRewindUnavailableNotice(), msg.message_id, null, resolveThreadId(msg)).catch(() => {})
     return
   }
 
   const session = normalizeSession(state.sessions[key])
-  if (!turn || !session || turn.sessionId !== session.id) {
-    log('rewind unavailable', key, msg.message_id, 'turn=', Boolean(turn), 'session=', session?.id)
+  if (!session || turn.sessionId !== session.id) {
+    log('rewind unavailable', key, msg.message_id, 'session=', session?.id)
     await sendReply(chatId, buildRewindUnavailableNotice(), msg.message_id, null, resolveThreadId(msg)).catch(() => {})
     return
   }
@@ -2212,6 +2217,7 @@ async function handleMessage(msg) {
       if (run.finished) return
       run.finished = true
     },
+    messageId: msg.message_id,
     promptText,
     // built from meta, not msg directly, so a CONFIRMed run's Join still threads to the original message, not the CONFIRM reply
     replyToMessage: meta.replyToMessageId != null ? { message_id: meta.replyToMessageId } : undefined,
@@ -2339,6 +2345,7 @@ async function handleContinue(chatId, key, threadId, pending) {
       if (run.finished) return
       run.finished = true
     },
+    messageId: pending.originMessageId,
     promptText: buildContinuePrompt(),
     // a Continue tap has no originating message of its own to reply-thread from
     replyToMessage: undefined,
@@ -2820,6 +2827,14 @@ async function poll() {
         } else if (u.edited_message) {
           const chatId = String(u.edited_message.chat.id)
           const key = threadKey(chatId, u.edited_message)
+          const bufferKey = u.edited_message.media_group_id ? `${chatId}:${u.edited_message.media_group_id}` : null
+          const buffered = bufferKey ? mediaGroupBuffers.get(bufferKey) : null
+          const bufferedIndex = buffered?.messages.findIndex(m => m.message_id === u.edited_message.message_id) ?? -1
+          if (bufferedIndex !== -1) {
+            // album hasn't flushed yet — patch the buffered copy in place instead of racing the pending flush with a separate handleEditedMessage run on just this one photo
+            buffered.messages[bufferedIndex] = u.edited_message
+            continue
+          }
           const qKey = queuedMessageKey(chatId, u.edited_message.message_id)
           const priorQueued = queuedMessageContent.get(qKey)
           // rebuilt before the authorization check below, since a required mention can live on any album member's caption, not just the edited one (mirrors handleEditedMessage's own ordering)
