@@ -406,35 +406,33 @@ function longestBacktickRun(s) {
   return longest
 }
 
-// A tool-call line's raw text (no fence yet — adjacent tool-call lines share one fence, built by
-// wrapCodeBlock below). Not HTML-escaped: unlike the surrounding prose, a fenced block's content
-// is opaque to the markdown parser (same as any CommonMark code fence), so Telegram shows it
-// completely literally — entity-escaping it would leak raw "&amp;" etc. into the display.
-function renderToolLine(prefix, code, suffix) {
-  return `${prefix ?? ''}${code ?? ''}${suffix ?? ''}`
+function flattenToolLine(line) {
+  return `${line.prefix ?? ''}${line.code ?? ''}${line.suffix ?? ''}`
 }
 
-// Wraps one or more already-joined tool-call lines in a single fenced code block (Telegram's
-// monospace-on-tinted-background block). Fence length is one backtick longer than the longest
-// backtick run anywhere in the combined text, 3-backtick floor, so embedded backticks can't close it early.
+// Fence is one backtick longer than the longest backtick run anywhere in the combined text, 3-backtick floor, so embedded backticks can't close it early.
 function wrapCodeBlock(text) {
   const fence = '`'.repeat(Math.max(3, longestBacktickRun(text) + 1))
   return `${fence}\n${text}\n${fence}`
 }
 
-// A historyLines() entry is either a plain string (💬/🤔 lines, always plain prose) or a
-// { prefix, code, suffix } triple (a tool-call line) — the raw line text only, not yet fenced.
-function wrapSafeInline(line) {
-  if (line !== null && typeof line === 'object') {
-    return renderToolLine(line.prefix, line.code, line.suffix)
-  }
-  return wrapPlainInline(line)
+// A historyLines() entry is either a plain string (💬/🤔) or a { prefix, code, suffix } tool-call
+// triple. Not HTML-escaped: this is the raw line text destined for a merged code block (see
+// assembleBody) — a fenced block is opaque to the markdown parser, so Telegram shows its content
+// completely literally, and escaping would leak raw "&amp;" into the display.
+function rawLine(line) {
+  return line !== null && typeof line === 'object' ? flattenToolLine(line) : wrapPlainInline(line)
 }
 
 const detailsBlock = (summary, body) => `<details><summary>${summary}</summary>\n\n${body}\n\n</details>`
 
 function renderHistoryEntry(line, full) {
-  return full ? detailsBlock(wrapSafeInline(line), escapeHtml(full)) : wrapSafeInline(line)
+  if (!full) return rawLine(line)
+  // A tool-call entry that does carry a `full` never enters the merged code block (isCode below
+  // excludes it), so its summary sits in ordinary <summary> prose, not a fence — it needs the same
+  // escaping as any other summary line, not the code block's raw text.
+  const summary = line !== null && typeof line === 'object' ? wrapPlainInline(flattenToolLine(line)) : wrapPlainInline(line)
+  return detailsBlock(summary, escapeHtml(full))
 }
 
 // A single "\n" between two block-level entries reads to Telegram's markdown parser as a soft
@@ -443,10 +441,7 @@ function renderHistoryEntry(line, full) {
 // already separates live text from history just below; entries need the same treatment.
 const ENTRY_SEPARATOR = '\n\n'
 
-// Joins rendered pieces into the final body, merging every run of consecutive tool-call lines
-// (isCode[i] true) into one shared fenced block instead of one per line — "all commands are part
-// of one field," not a separate box per command. Non-code entries (💬/🤔, with or without their
-// own <details> wrapper) are untouched and still separated the normal way.
+// Merges every run of consecutive tool-call lines (isCode[i] true) into one shared fenced block instead of one per line; everything else passes through untouched.
 function assembleBody(pieces, isCode) {
   const parts = []
   let i = 0
@@ -478,7 +473,8 @@ export function renderRichTranscript(historyLines, liveText, { limit = 30000, fu
   const liveSuffix = cappedLive ? `${liveSeparator}${cappedLive}` : ''
   const bodyBudget = limit - liveSuffix.length
 
-  const isCode = entries.map(e => e.line !== null && typeof e.line === 'object')
+  // A tool-call entry with its own `full` renders as a <details> wrapper (see renderHistoryEntry), not a bare code block, so it must stay out of the merge even though its line is an object.
+  const isCode = entries.map(e => !e.full && e.line !== null && typeof e.line === 'object')
   const fullDetail = entries.map(e => renderHistoryEntry(e.line, e.full))
   const fullBody = assembleBody(fullDetail, isCode)
   if (fullBody.length <= bodyBudget) return `${fullBody}${liveSuffix}`

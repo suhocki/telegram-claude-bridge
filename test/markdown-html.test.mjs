@@ -509,6 +509,21 @@ test('renderRichTranscript: a code-block tool-call entry never gets an expandabl
   assert.equal(result.match(/<details>/g).length, 1, 'exactly one <details> wrapper — the code-block entry contributes none')
 })
 
+test('regression: a tool-call entry that does carry its own full text stays out of the merged code block — it still gets its <details> wrapper, HTML-escaped, instead of being folded in raw', () => {
+  const result = renderRichTranscript(
+    [
+      { prefix: 'Bash: ', code: 'npm test', suffix: '…' },
+      { prefix: 'Bash: ', code: 'grep "<script>" file', suffix: '…' },
+    ],
+    '',
+    { limit: 30000, fullTexts: [null, 'full output here'] }
+  )
+  assert.equal(
+    result,
+    '```\nBash: npm test…\n```\n\n<details><summary>Bash: grep "&lt;script&gt;" file…</summary>\n\nfull output here\n\n</details>'
+  )
+})
+
 test('renderRichTranscript: consecutive tool-call entries share one fenced code block, not one box per command', () => {
   const result = renderRichTranscript(
     [
