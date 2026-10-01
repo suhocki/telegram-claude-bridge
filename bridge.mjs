@@ -272,7 +272,7 @@ const TTS_REQUEST_TIMEOUT_MS = 30000
 // Short by design: a preprocessing nicety, not a conversation turn — must never delay a voice reply.
 const PROSODY_ANNOTATION_TIMEOUT_MS = 6000
 // Fire-and-forget background nicety, never awaited by the turn that triggers it — a slow/hung call just skips the rename.
-const TOPIC_TITLE_TIMEOUT_MS = 10000
+const TOPIC_TITLE_TIMEOUT_MS = 15000
 // Cheap model call turning raw stale-heartbeat signal into one short status phrase — bounded so a slow/hung call can never delay the shared job sweep loop (it always runs detached from sweepJobs, never awaited by it).
 const JOB_STALE_DIAGNOSIS_MODEL_TIMEOUT_MS = 20000
 // git/gh calls gathering signal for the check above; short since a missing repo or unauthenticated gh should resolve to "no signal" quickly, not hang.
@@ -1449,10 +1449,12 @@ function runOneShotClaudePrompt(prompt, authMode, timeoutMs, modelArgs, label) {
       resolve(value)
     }
     // detached, same as runClaude/runSpawn, so a timeout SIGKILLs the whole process group rather than leaving a reparented tool-call subprocess running
+    // stdin explicitly closed (not an unwritten pipe): an open stdin pipe makes the claude CLI wait ~3s for input before proceeding, even though this call never writes to it.
     const child = spawn('claude', ['-p', prompt, ...modelArgs, '--output-format', 'json', '--permission-mode', 'bypassPermissions'], {
       cwd,
       env: buildChildEnv(process.env, authMode),
       detached: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
     })
     let out = ''
     let err = ''
