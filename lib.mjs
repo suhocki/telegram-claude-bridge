@@ -1341,11 +1341,6 @@ export function findTurnIndexByMessageId(turnList, messageId) {
   return turnList.findIndex(t => String(t?.userMessageId) === needle || (t?.memberMessages ?? []).some(m => String(m?.message_id) === needle))
 }
 
-// true only for the exact message whose own run hasn't settled yet — not any other edit with no recorded turn (e.g. a stale/evicted one)
-export function isEditStillInFlight(activeRun, messageId) {
-  return Boolean(activeRun) && String(activeRun.messageId) === String(messageId)
-}
-
 export function rebuildEditedMediaGroupMessage(memberMessages, editedMsg) {
   const messages = memberMessages.map(m => (String(m.message_id) === String(editedMsg.message_id) ? editedMsg : m))
   const merged = mergeMediaGroupMessages(messages)

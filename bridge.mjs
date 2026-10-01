@@ -144,7 +144,6 @@ import {
   TELEGRAM_ALLOWED_UPDATES,
   appendTurn,
   findTurnIndexByMessageId,
-  isEditStillInFlight,
   findTurnIndexByBotMessageId,
   collectBotMessageIdsFrom,
   buildSessionTranscriptPath,
@@ -912,27 +911,13 @@ async function handleEditedMessage(msg) {
   const turnList = state.turns[key] ?? []
   const turnIndex = findTurnIndexByMessageId(turnList, msg.message_id)
   const turn = turnIndex >= 0 ? turnList[turnIndex] : null
-  const active = !turn ? activeRuns.get(key) : null
-  const inFlight = isEditStillInFlight(active, msg.message_id) ? active : null
-  // resolved before any side effect below, since a required @mention can land on any album member, not just the edited one — the in-flight run's own memberMessages covers the still-unrecorded-turn case, same as turn.memberMessages does once it exists
-  const editedMsg = resolveEditedMessageForTurn(turn?.memberMessages ?? inFlight?.memberMessages, msg)
+  // resolved before any side effect below, since a required @mention can land on any album member, not just the edited one
+  const editedMsg = resolveEditedMessageForTurn(turn?.memberMessages, msg)
   if (!isAuthorizedMessage(editedMsg)) return
 
-  if (!turn) {
-    if (inFlight) {
-      // this exact message's own run hasn't settled yet, so there's nothing recorded to rewind — just run the edited text as a new message
-      log('rewind skipped, turn still in flight for', key, msg.message_id)
-      await handleMessage(editedMsg)
-      return
-    }
-    log('rewind unavailable', key, msg.message_id, 'turn=false', 'activeRun=', Boolean(active))
-    await sendReply(chatId, buildRewindUnavailableNotice(), msg.message_id, null, resolveThreadId(msg)).catch(() => {})
-    return
-  }
-
   const session = normalizeSession(state.sessions[key])
-  if (!session || turn.sessionId !== session.id) {
-    log('rewind unavailable', key, msg.message_id, 'session=', session?.id)
+  if (!turn || !session || turn.sessionId !== session.id) {
+    log('rewind unavailable', key, msg.message_id, 'turn=', Boolean(turn), 'session=', session?.id)
     await sendReply(chatId, buildRewindUnavailableNotice(), msg.message_id, null, resolveThreadId(msg)).catch(() => {})
     return
   }
@@ -2219,8 +2204,6 @@ async function handleMessage(msg) {
       if (run.finished) return
       run.finished = true
     },
-    messageId: msg.message_id,
-    memberMessages: albumMemberMessages,
     promptText,
     // built from meta, not msg directly, so a CONFIRMed run's Join still threads to the original message, not the CONFIRM reply
     replyToMessage: meta.replyToMessageId != null ? { message_id: meta.replyToMessageId } : undefined,
@@ -2348,8 +2331,6 @@ async function handleContinue(chatId, key, threadId, pending) {
       if (run.finished) return
       run.finished = true
     },
-    messageId: pending.originMessageId,
-    memberMessages: pending.memberMessages,
     promptText: buildContinuePrompt(),
     // a Continue tap has no originating message of its own to reply-thread from
     replyToMessage: undefined,
