@@ -1488,22 +1488,43 @@ async function annotateProsody(text, authMode) {
   return runOneShotClaudePrompt(buildProsodyAnnotationPrompt(text), authMode, PROSODY_ANNOTATION_TIMEOUT_MS, ['--model', 'haiku'], 'prosody annotation')
 }
 
+// Keyed by thread key, not a boolean flag: guards against two turns in the same still-untitled
+// topic (e.g. two quick messages before the first rename lands) both deciding to rename at once.
+const topicRenamesInFlight = new Set()
+
 // Fire-and-forget: called without awaiting at the turn's call site, so this never delays the user's reply. Never throws — every failure (generation, editForumTopic) is caught and logged.
 async function renameTopic(key, chatId, threadId, sessionId, userText, assistantText, authMode) {
   const stored = state.topicTitles[key]
   if (!shouldRenameTopic({ storedSessionId: stored?.sessionId ?? null, currentSessionId: sessionId })) return
-  const raw = await runOneShotClaudePrompt(
-    buildTopicTitlePrompt(userText, assistantText),
-    authMode,
-    TOPIC_TITLE_TIMEOUT_MS,
-    ['--model', 'haiku'],
-    'topic title generation'
-  )
-  const title = sanitizeTopicTitle(raw)
-  if (!title) return
-  await tg('editForumTopic', { chat_id: chatId, message_thread_id: threadId, name: title })
-  state.topicTitles[key] = { sessionId, title }
-  saveState(state)
+  if (topicRenamesInFlight.has(key)) return
+  topicRenamesInFlight.add(key)
+  try {
+    const raw = await runOneShotClaudePrompt(
+      buildTopicTitlePrompt(userText, assistantText),
+      authMode,
+      TOPIC_TITLE_TIMEOUT_MS,
+      ['--model', 'haiku'],
+      'topic title generation'
+    )
+    const title = sanitizeTopicTitle(raw)
+    if (!title) {
+      // record the attempt anyway, keyed to this session id, so a bad/empty generation doesn't get retried on every single turn of the same session
+      state.topicTitles[key] = { sessionId, title: null }
+      saveState(state)
+      return
+    }
+    try {
+      await tg('editForumTopic', { chat_id: chatId, message_thread_id: threadId, name: title })
+      state.topicTitles[key] = { sessionId, title }
+    } catch (e) {
+      // same reasoning: a persistent failure (e.g. the bot lacks "Manage Topics" rights) must not be retried every turn for the rest of this session
+      log('editForumTopic failed', key, e.message)
+      state.topicTitles[key] = { sessionId, title: null }
+    }
+    saveState(state)
+  } finally {
+    topicRenamesInFlight.delete(key)
+  }
 }
 
 function maybeRenameTopic(key, chatId, threadId, sessionId, userText, assistantText, authMode) {
@@ -2034,7 +2055,8 @@ async function runClaudeTurn(
         botMessageIds.push(...(await sendVoiceReply(chatId, cleanedResult, originMessageId, threadId)).messageIds)
       }
       if (checkin) scheduleCheckin(key, newSession?.id ?? sessionId, checkin)
-      if (threadId != null && config.autoRenameTopics && !isCompact) {
+      // isResume (a Continue turn) has no real user message of its own — run.promptText is just the synthetic "pick up where you left off" marker, not something worth titling a topic from
+      if (threadId != null && config.autoRenameTopics && !isCompact && !isResume) {
         maybeRenameTopic(key, chatId, threadId, newSession?.id ?? sessionId, run.promptText, cleanedResult, authMode)
       }
     }
