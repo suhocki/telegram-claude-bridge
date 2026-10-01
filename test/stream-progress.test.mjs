@@ -357,7 +357,7 @@ test('createProgressTracker does not re-announce a tool_use block already seen, 
   assert.equal(tracker.ingest(grown), 'Bash: npm test…\nEdit: foo.py…')
 })
 
-test('createProgressTracker: a tool_result still triggers a status update, but no longer changes the rendered line — done/failed state is tracked internally, not shown (it added no information and just churned space as it flipped from the running state a tick later)', () => {
+test('createProgressTracker: a tool_result no longer reports a change — done/failed state is tracked internally but not rendered, so marking it must not force a wasted same-text re-render', () => {
   const tracker = createProgressTracker()
   tracker.ingest({
     type: 'assistant',
@@ -369,9 +369,10 @@ test('createProgressTracker: a tool_result still triggers a status update, but n
     },
   })
   const status = tracker.ingest({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok', is_error: false }] } })
-  assert.equal(status, 'Bash: npm test…\nEdit: foo.py…')
+  assert.equal(status, null, 'a successful result changes nothing visible, so ingest must report no change')
   const status2 = tracker.ingest({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_2', content: 'boom', is_error: true }] } })
-  assert.equal(status2, 'Bash: npm test…\nEdit: foo.py…', 'an error result renders identically to a success — state is no longer shown')
+  assert.equal(status2, null, 'same for an error result — it is still not rendered')
+  assert.equal(tracker.current(), 'Bash: npm test…\nEdit: foo.py…', 'both tool lines remain, unaffected by either result')
 })
 
 test('createProgressTracker: a tool_result for an unknown or already-finished id is ignored', () => {

@@ -406,15 +406,7 @@ function longestBacktickRun(s) {
   return longest
 }
 
-// A tool-call line ({ prefix, code, suffix }, e.g. "Bash: npm test…") rendered as a fenced
-// markdown code block — Telegram's monospace-on-tinted-background block, not just an inline
-// span — so a command/file path reads as a distinct "this literal thing ran", not plain prose.
-// The fence is one backtick longer than the longest backtick run already inside the text (same
-// CommonMark rule as an inline span), with a 3-backtick floor since a block fence can't be
-// shorter than that. No MARKDOWN_RESERVED_RE here — a code block's content is literal, so
-// backslash-escaping reserved characters would corrupt it (e.g. inject a literal backslash into
-// a grep alternation pattern); HTML-sensitive characters are still entity-escaped, matching this
-// file's existing defensive posture against a literal "</details>" etc. faking real markup.
+// A tool-call line rendered as a fenced code block (Telegram's monospace-on-tinted-background block, not just an inline span); fence length follows the same longest-backtick-run rule as a span, with a 3-backtick floor.
 function renderToolCodeBlock(prefix, code, suffix) {
   const text = `${prefix ?? ''}${code ?? ''}${suffix ?? ''}`
   const fence = '`'.repeat(Math.max(3, longestBacktickRun(text) + 1))
