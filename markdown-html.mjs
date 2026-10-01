@@ -406,26 +406,33 @@ function longestBacktickRun(s) {
   return longest
 }
 
-// A tool-call line rendered as a fenced code block (Telegram's monospace-on-tinted-background block, not just an inline span); fence length follows the same longest-backtick-run rule as a span, with a 3-backtick floor.
-function renderToolCodeBlock(prefix, code, suffix) {
-  const text = `${prefix ?? ''}${code ?? ''}${suffix ?? ''}`
-  const fence = '`'.repeat(Math.max(3, longestBacktickRun(text) + 1))
-  return `${fence}\n${escapeHtml(text)}\n${fence}`
+function flattenToolLine(line) {
+  return `${line.prefix ?? ''}${line.code ?? ''}${line.suffix ?? ''}`
 }
 
-// A historyLines() entry is either a plain string (💬/🤔 lines, always plain prose) or a
-// { prefix, code, suffix } triple (a tool-call line) — the whole triple renders as one code block.
-function wrapSafeInline(line) {
-  if (line !== null && typeof line === 'object') {
-    return renderToolCodeBlock(line.prefix, line.code, line.suffix)
-  }
-  return wrapPlainInline(line)
+// Fence is one backtick longer than the longest backtick run anywhere in the combined text, 3-backtick floor, so embedded backticks can't close it early.
+function wrapCodeBlock(text) {
+  const fence = '`'.repeat(Math.max(3, longestBacktickRun(text) + 1))
+  return `${fence}\n${text}\n${fence}`
+}
+
+// A historyLines() entry is either a plain string (💬/🤔) or a { prefix, code, suffix } tool-call
+// triple. Not HTML-escaped: this is the raw line text destined for a merged code block (see
+// assembleBody) — a fenced block is opaque to the markdown parser, so Telegram shows its content
+// completely literally, and escaping would leak raw "&amp;" into the display.
+function rawLine(line) {
+  return line !== null && typeof line === 'object' ? flattenToolLine(line) : wrapPlainInline(line)
 }
 
 const detailsBlock = (summary, body) => `<details><summary>${summary}</summary>\n\n${body}\n\n</details>`
 
 function renderHistoryEntry(line, full) {
-  return full ? detailsBlock(wrapSafeInline(line), escapeHtml(full)) : wrapSafeInline(line)
+  if (!full) return rawLine(line)
+  // A tool-call entry that does carry a `full` never enters the merged code block (isCode below
+  // excludes it), so its summary sits in ordinary <summary> prose, not a fence — it needs the same
+  // escaping as any other summary line, not the code block's raw text.
+  const summary = line !== null && typeof line === 'object' ? wrapPlainInline(flattenToolLine(line)) : wrapPlainInline(line)
+  return detailsBlock(summary, escapeHtml(full))
 }
 
 // A single "\n" between two block-level entries reads to Telegram's markdown parser as a soft
@@ -433,6 +440,28 @@ function renderHistoryEntry(line, full) {
 // wrapped, justified block instead of one line each. "\n\n" (a real paragraph break) is what
 // already separates live text from history just below; entries need the same treatment.
 const ENTRY_SEPARATOR = '\n\n'
+
+// Merges every run of consecutive tool-call lines (isCode[i] true) into one shared fenced block instead of one per line; everything else passes through untouched.
+function assembleBody(pieces, isCode) {
+  const parts = []
+  let i = 0
+  while (i < pieces.length) {
+    if (!isCode[i]) {
+      parts.push(pieces[i])
+      i += 1
+      continue
+    }
+    let j = i
+    const lines = []
+    while (j < pieces.length && isCode[j]) {
+      lines.push(pieces[j])
+      j += 1
+    }
+    parts.push(wrapCodeBlock(lines.join('\n')))
+    i = j
+  }
+  return parts.join(ENTRY_SEPARATOR)
+}
 
 export function renderRichTranscript(historyLines, liveText, { limit = 30000, fullTexts = [] } = {}) {
   const entries = (historyLines ?? []).map((line, i) => ({ line, full: fullTexts[i] || null })).filter(entry => entry.line)
@@ -444,8 +473,10 @@ export function renderRichTranscript(historyLines, liveText, { limit = 30000, fu
   const liveSuffix = cappedLive ? `${liveSeparator}${cappedLive}` : ''
   const bodyBudget = limit - liveSuffix.length
 
+  // A tool-call entry with its own `full` renders as a <details> wrapper (see renderHistoryEntry), not a bare code block, so it must stay out of the merge even though its line is an object.
+  const isCode = entries.map(e => !e.full && e.line !== null && typeof e.line === 'object')
   const fullDetail = entries.map(e => renderHistoryEntry(e.line, e.full))
-  const fullBody = fullDetail.join(ENTRY_SEPARATOR)
+  const fullBody = assembleBody(fullDetail, isCode)
   if (fullBody.length <= bodyBudget) return `${fullBody}${liveSuffix}`
 
   const shortForm = entries.map(e => renderHistoryEntry(e.line, null))
@@ -458,12 +489,12 @@ export function renderRichTranscript(historyLines, liveText, { limit = 30000, fu
   const pieces = [...fullDetail]
   for (const i of degradeLargestExpansionFirst) {
     pieces[i] = shortForm[i]
-    const body = pieces.join(ENTRY_SEPARATOR)
+    const body = assembleBody(pieces, isCode)
     if (body.length <= bodyBudget) return `${body}${liveSuffix}`
   }
 
   for (let drop = 1; drop < entries.length; drop++) {
-    const body = shortForm.slice(drop).join(ENTRY_SEPARATOR)
+    const body = assembleBody(shortForm.slice(drop), isCode.slice(drop))
     if (body.length <= bodyBudget) return `${body}${liveSuffix}`
   }
   return (live && tailPlainTextLines(live, limit)) || null

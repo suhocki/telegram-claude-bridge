@@ -399,9 +399,9 @@ test('renderRichTranscript: markdown-reserved characters inside a code-block val
   assert.ok(!result.includes('\\\\|'), 'a literal backslash must not have been injected in front of the pipes')
 })
 
-test('renderRichTranscript: HTML-sensitive characters inside a code-block value are still entity-escaped, matching this file\'s existing defensive posture', () => {
+test('renderRichTranscript: HTML-sensitive characters inside a code-block value are left raw, not entity-escaped — a fenced block is opaque to the parser, so Telegram shows it completely literally and an escape would leak as visible "&lt;" text', () => {
   const result = renderRichTranscript([{ prefix: 'Bash: ', code: 'grep "<script>" file', suffix: '…' }], '', { limit: 30000 })
-  assert.equal(result, '```\nBash: grep "&lt;script&gt;" file…\n```')
+  assert.equal(result, '```\nBash: grep "<script>" file…\n```')
 })
 
 test('renderRichTranscript: an embedded newline inside a code-block value (e.g. a multi-line command) is preserved as a real line break inside the block', () => {
@@ -418,15 +418,15 @@ test('renderRichTranscript: a 💬/🤔 line stays plain prose even when other e
   assert.equal(result, '💬 Found it, writing the fix\n\n```\nBash: npm test…\n```')
 })
 
-test('renderRichTranscript: the size budget measures a code-block entry by its rendered (fenced + escaped) length, not the raw value length', () => {
+test('regression: dropping the oldest entry from a merged code block recomputes the shared fence length for what remains, instead of keeping it stuck at whatever the dropped entry required', () => {
   const history = [
-    { prefix: 'Bash: ', code: '&'.repeat(50), suffix: '…' }, // escapes to 5x length: &amp; each
-    { prefix: 'Bash: ', code: 'y'.repeat(50), suffix: '…' },
+    { prefix: 'Bash: ', code: 'grep "```" file.js', suffix: '…' }, // its embedded ``` run forces a 4-backtick shared fence
+    { prefix: 'Bash: ', code: 'npm test', suffix: '…' },
   ]
-  const result = renderRichTranscript(history, '', { limit: 120 })
-  assert.ok(result.length <= 120, `result length ${result.length} exceeds the 120 limit`)
-  assert.ok(!result.includes('&amp;'), 'the heavily-escaping entry must have been the one dropped to make room')
-  assert.ok(result.includes('y'.repeat(50)), 'the cheaper entry survives')
+  const full = renderRichTranscript(history, '', { limit: 30000 })
+  assert.ok(full.startsWith('````\n'), 'sanity check: the backtick-heavy entry does force a 4-backtick fence while both lines are present')
+  const trimmed = renderRichTranscript(history, '', { limit: full.length - 1 })
+  assert.equal(trimmed, '```\nBash: npm test…\n```', 'once the backtick-heavy entry is dropped, the remaining line gets a plain 3-backtick fence, not a stale 4-backtick one')
 })
 
 test('regression: markdown-reserved characters in a summary line (asterisk, underscore, brackets, parens, tilde, backtick, hash, plus, hyphen, equals, pipe, braces, period, exclamation, dollar, backslash) are each backslash-escaped', () => {
@@ -507,6 +507,60 @@ test('renderRichTranscript: a code-block tool-call entry never gets an expandabl
   assert.ok(result.includes('```\nBash: npm test…\n```'), 'the code-block line renders monospace, unwrapped')
   assert.ok(result.includes('<details><summary>🤔 short…</summary>\n\nthe full thinking text\n\n</details>'), 'the thinking line still gets its own expandable section')
   assert.equal(result.match(/<details>/g).length, 1, 'exactly one <details> wrapper — the code-block entry contributes none')
+})
+
+test('regression: a tool-call entry that does carry its own full text stays out of the merged code block — it still gets its <details> wrapper, HTML-escaped, instead of being folded in raw', () => {
+  const result = renderRichTranscript(
+    [
+      { prefix: 'Bash: ', code: 'npm test', suffix: '…' },
+      { prefix: 'Bash: ', code: 'grep "<script>" file', suffix: '…' },
+    ],
+    '',
+    { limit: 30000, fullTexts: [null, 'full output here'] }
+  )
+  assert.equal(
+    result,
+    '```\nBash: npm test…\n```\n\n<details><summary>Bash: grep "&lt;script&gt;" file…</summary>\n\nfull output here\n\n</details>'
+  )
+})
+
+test('renderRichTranscript: consecutive tool-call entries share one fenced code block, not one box per command', () => {
+  const result = renderRichTranscript(
+    [
+      { prefix: 'Read: ', code: 'bridge.mjs', suffix: '…' },
+      { prefix: 'Bash: ', code: 'npm test', suffix: '…' },
+      { prefix: 'Bash: ', code: 'npm run build', suffix: '…' },
+    ],
+    '',
+    { limit: 30000 }
+  )
+  assert.equal(result, '```\nRead: bridge.mjs…\nBash: npm test…\nBash: npm run build…\n```')
+  assert.equal(result.match(/```/g).length, 2, 'exactly one opening and one closing fence for all three lines together')
+})
+
+test('renderRichTranscript: a non-code line splits an otherwise-mergeable run of tool-call entries into two separate code blocks', () => {
+  const result = renderRichTranscript(
+    [
+      { prefix: 'Bash: ', code: 'npm test', suffix: '…' },
+      '💬 found the bug',
+      { prefix: 'Bash: ', code: 'npm run build', suffix: '…' },
+    ],
+    '',
+    { limit: 30000 }
+  )
+  assert.equal(result, '```\nBash: npm test…\n```\n\n💬 found the bug\n\n```\nBash: npm run build…\n```')
+})
+
+test('renderRichTranscript: a backtick run anywhere in a merged group bumps the shared fence for the whole block, not just its own line', () => {
+  const result = renderRichTranscript(
+    [
+      { prefix: 'Bash: ', code: 'npm test', suffix: '…' },
+      { prefix: 'Bash: ', code: 'grep "```" file.js', suffix: '…' },
+    ],
+    '',
+    { limit: 30000 }
+  )
+  assert.equal(result, '````\nBash: npm test…\nBash: grep "```" file.js…\n````')
 })
 
 test('regression: falsy entries in fullTexts (missing index, null, undefined, empty string) all fall back to the safe escaped line, not an empty expandable body', () => {
