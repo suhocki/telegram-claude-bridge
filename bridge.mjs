@@ -914,10 +914,17 @@ async function handleEditedMessage(msg) {
   // resolved before any side effect below, since a required @mention can land on any album member, not just the edited one
   const editedMsg = resolveEditedMessageForTurn(turn?.memberMessages, msg)
   if (!isAuthorizedMessage(editedMsg)) return
-  const session = normalizeSession(state.sessions[key])
 
-  if (!turn || !session || turn.sessionId !== session.id) {
-    log('rewind unavailable', key, msg.message_id, 'turn=', Boolean(turn), 'session=', session?.id)
+  if (!turn) {
+    // edited before its turn ever finished (still queued or mid-run) — nothing recorded to rewind yet, so just run the edited text as a new message
+    log('rewind skipped, no completed turn yet for', key, msg.message_id)
+    await handleMessage(editedMsg)
+    return
+  }
+
+  const session = normalizeSession(state.sessions[key])
+  if (!session || turn.sessionId !== session.id) {
+    log('rewind unavailable', key, msg.message_id, 'session=', session?.id)
     await sendReply(chatId, buildRewindUnavailableNotice(), msg.message_id, null, resolveThreadId(msg)).catch(() => {})
     return
   }
