@@ -166,6 +166,7 @@ import {
   TELEGRAM_COMMAND_SCOPES_TO_CLEAR,
   appendTurn,
   buildMediaGroupBufferKey,
+  buildTextBatchBufferKey,
   findBufferedMessageIndex,
   findTurnIndexByMessageId,
   findTurnIndexByBotMessageId,
@@ -3453,6 +3454,15 @@ test('findTurnIndexByMessageId: also matches a merged album turn by any of its m
 test('buildMediaGroupBufferKey: chat-scoped so two chats sharing a media_group_id never collide', () => {
   assert.equal(buildMediaGroupBufferKey('111', 'abc'), '111:abc')
   assert.notEqual(buildMediaGroupBufferKey('111', 'abc'), buildMediaGroupBufferKey('222', 'abc'))
+})
+
+test('buildTextBatchBufferKey: sender-scoped so two users in the same thread never collide', () => {
+  assert.equal(buildTextBatchBufferKey('123', '456'), '123:456')
+  assert.notEqual(buildTextBatchBufferKey('123', '456'), buildTextBatchBufferKey('123', '789'))
+})
+
+test('buildTextBatchBufferKey: a topic thread key (already containing a colon) still disambiguates from an unrelated thread sharing a numeric prefix', () => {
+  assert.notEqual(buildTextBatchBufferKey('123:5', '2'), buildTextBatchBufferKey('123:52', ''))
 })
 
 test('findBufferedMessageIndex: finds a member by message_id, or -1 when absent/empty', () => {

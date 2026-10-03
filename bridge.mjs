@@ -149,6 +149,7 @@ import {
   TELEGRAM_ALLOWED_UPDATES,
   appendTurn,
   buildMediaGroupBufferKey,
+  buildTextBatchBufferKey,
   findBufferedMessageIndex,
   findTurnIndexByMessageId,
   findTurnIndexByBotMessageId,
@@ -2511,17 +2512,21 @@ function handleJoinTap(chatId, key, run) {
     .catch(e => log('queued joined handleMessage rejected', e))
 }
 
+function enqueueQueuedMessage(key, qKey) {
+  chatQueue.enqueue(key, () => runQueuedMessage(key, qKey)).catch(e => log('queued handleMessage rejected', e))
+}
+
+function enqueueMessage(key, msg) {
+  enqueueQueuedMessage(key, registerQueuedMessage(msg))
+}
+
 // Debounces a burst of plain messages (e.g. Telegram's client auto-splitting a long paste) into one Claude turn instead of one per fragment; buffered per (thread, sender) so two different users/topics never merge, flushed per-thread so ordering against commands/albums/other senders is preserved.
 const messageBatchBuffers = new Map()
 const MESSAGE_BATCH_DEBOUNCE_MS = 2000
 
-function textBatchBufferKey(key, userId) {
-  return `${key}:${userId}`
-}
-
 function bufferTextMessage(chatId, key, msg) {
   const userId = String(msg.from?.id ?? '')
-  const bufferKey = textBatchBufferKey(key, userId)
+  const bufferKey = buildTextBatchBufferKey(key, userId)
   let buf = messageBatchBuffers.get(bufferKey)
   if (!buf) {
     buf = { chatId, key, qKeys: [] }
@@ -2540,7 +2545,7 @@ function flushOneMessageBatch(bufferKey) {
   messageBatchBuffers.delete(bufferKey)
   clearTimeout(buf.timer)
   if (buf.qKeys.length === 1) {
-    chatQueue.enqueue(buf.key, () => runQueuedMessage(buf.key, buf.qKeys[0])).catch(e => log('queued handleMessage rejected', e))
+    enqueueQueuedMessage(buf.key, buf.qKeys[0])
     return
   }
   chatQueue.enqueue(buf.key, () => runQueuedMessageBatch(buf.chatId, buf.key, buf.qKeys)).catch(e => log('queued batched handleMessage rejected', e))
@@ -2558,14 +2563,18 @@ function flushMessageBatch(key) {
 async function runQueuedMessageBatch(chatId, key, qKeys) {
   const entries = qKeys.map(qKey => ({ qKey, initial: queuedMessageContent.get(qKey) })).filter(e => e.initial)
   const existsResults = await Promise.all(entries.map(e => messageStillExists(chatId, e.initial.message_id)))
+  // checked here too, same as runQueuedMessage, in case one of these messages was independently spliced into a Join tap's batch before this flush ran
+  const consumed = consumedByJoin.get(key)
   const resolved = []
   entries.forEach(({ qKey, initial }, i) => {
     // re-read after the probe's round-trip, so an edit landing mid-probe isn't lost to the closed registry entry below
     const msg = queuedMessageContent.get(qKey) ?? initial
     unregisterQueuedMessage(msg)
+    if (consumed?.delete(msg.message_id)) return
     if (existsResults[i]) resolved.push(msg)
     else log('skipping deleted queued message', key, msg.message_id)
   })
+  if (consumed?.size === 0) consumedByJoin.delete(key)
   if (!resolved.length) return
   if (resolved.length === 1) return handleMessage(resolved[0])
 
@@ -2934,15 +2943,13 @@ async function poll() {
               if (isJoinableAuthored) {
                 addPendingJoinMessage(chatId, key, activeRun, u.message).catch(e => log('failed to track pending join message', e.message))
               }
-              const qKey = registerQueuedMessage(u.message)
-              chatQueue.enqueue(key, () => runQueuedMessage(key, qKey)).catch(e => log('queued handleMessage rejected', e))
+              enqueueMessage(key, u.message)
             } else if (isJoinableAuthored) {
               bufferTextMessage(chatId, key, u.message)
             } else {
               // a command/service/unauthorized message bypasses the debounce entirely, so any burst already buffered for this thread must flush first to keep arrival order
               flushMessageBatch(key)
-              const qKey = registerQueuedMessage(u.message)
-              chatQueue.enqueue(key, () => runQueuedMessage(key, qKey)).catch(e => log('queued handleMessage rejected', e))
+              enqueueMessage(key, u.message)
             }
           }
         } else if (u.edited_message) {

@@ -210,18 +210,23 @@ export function extractQuotedText(msg) {
   return msg?.quote?.text ?? null
 }
 
-// resolved as a pair so a Join batch never attaches one message's quoted excerpt to another's reply target
-export function resolveJoinedReplyContext(run, last) {
-  if (run?.replyToMessage != null) return { replyToMessage: run.replyToMessage, quotedText: run.quotedText ?? null }
+// resolved as a pair so a reply target is never attached to a different fragment's quoted excerpt
+function fallbackReplyContext(last) {
   return { replyToMessage: last?.reply_to_message ?? null, quotedText: extractQuotedText(last) }
 }
 
-// Telegram only stamps reply_to_message on the first fragment of a client-auto-split long message, so that fragment's own reply context (if any) wins over the last fragment's — resolved as a pair for the same reason as resolveJoinedReplyContext above
+function preferReplyContext(replyToMessage, quotedText, fallback) {
+  return replyToMessage != null ? { replyToMessage, quotedText: quotedText ?? null } : fallback
+}
+
+export function resolveJoinedReplyContext(run, last) {
+  return preferReplyContext(run?.replyToMessage, run?.quotedText, fallbackReplyContext(last))
+}
+
+// Telegram only stamps reply_to_message on the first fragment of a client-auto-split long message, so that fragment's own reply context (if any) wins over the last fragment's
 export function resolveBatchReplyContext(batch) {
   const first = batch[0]
-  const last = batch[batch.length - 1]
-  if (first?.reply_to_message != null) return { replyToMessage: first.reply_to_message, quotedText: extractQuotedText(first) }
-  return { replyToMessage: last?.reply_to_message ?? null, quotedText: extractQuotedText(last) }
+  return preferReplyContext(first?.reply_to_message, extractQuotedText(first), fallbackReplyContext(batch[batch.length - 1]))
 }
 
 export function buildAttachmentCaption(attachment) {
@@ -1378,6 +1383,11 @@ export function buildBotMenuCalls() {
 // chat-scoped even though media_group_id is already effectively unique platform-wide, so a collision can never merge two chats' albums
 export function buildMediaGroupBufferKey(chatId, mediaGroupId) {
   return `${chatId}:${mediaGroupId}`
+}
+
+// per (thread, sender) so two different users' messages in the same group/topic are never merged into one batch
+export function buildTextBatchBufferKey(key, userId) {
+  return `${key}:${userId}`
 }
 
 export function findBufferedMessageIndex(messages, messageId) {
