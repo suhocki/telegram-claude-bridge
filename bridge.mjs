@@ -149,7 +149,6 @@ import {
   TELEGRAM_ALLOWED_UPDATES,
   appendTurn,
   buildMediaGroupBufferKey,
-  buildTextBatchBufferKey,
   findBufferedMessageIndex,
   findTurnIndexByMessageId,
   findTurnIndexByBotMessageId,
@@ -2520,42 +2519,50 @@ function enqueueMessage(key, msg) {
   enqueueQueuedMessage(key, registerQueuedMessage(msg))
 }
 
-// Debounces a burst of plain messages (e.g. Telegram's client auto-splitting a long paste) into one Claude turn instead of one per fragment; buffered per (thread, sender) so two different users/topics never merge, flushed per-thread so ordering against commands/albums/other senders is preserved.
+// Debounces a burst of plain messages (e.g. Telegram's client auto-splitting a long paste) into one Claude turn instead of one per fragment. One buffer per thread, not per sender: a different sender (or Telegram's shared anonymous-admin id, which can't be trusted to mean "the same sender") arriving mid-debounce flushes whatever's pending first, so cross-sender arrival order in a shared thread is never inverted.
 const messageBatchBuffers = new Map()
 const MESSAGE_BATCH_DEBOUNCE_MS = 2000
+// Telegram's fixed "GroupAnonymousBot" id, shared by every admin posting anonymously in a group — never a reliable "same sender" signal
+const ANONYMOUS_ADMIN_USER_ID = '1087968824'
 
 function bufferTextMessage(chatId, key, msg) {
   const userId = String(msg.from?.id ?? '')
-  const bufferKey = buildTextBatchBufferKey(key, userId)
-  let buf = messageBatchBuffers.get(bufferKey)
-  if (!buf) {
-    buf = { chatId, key, qKeys: [] }
-    messageBatchBuffers.set(bufferKey, buf)
+  const buf = messageBatchBuffers.get(key)
+  if (buf && (buf.userId !== userId || userId === ANONYMOUS_ADMIN_USER_ID)) flushMessageBatch(key)
+  let current = messageBatchBuffers.get(key)
+  if (!current) {
+    current = { chatId, userId, qKeys: [] }
+    messageBatchBuffers.set(key, current)
     // a buffered message isn't dispatched until the debounce window elapses, so it must supersede a stale Continue offer right away instead of waiting for that dispatch
     clearPendingContinue(chatId, key).catch(e => log('failed to clear pending continue for a buffered message', e.message))
   }
-  buf.qKeys.push(registerQueuedMessage(msg))
-  clearTimeout(buf.timer)
-  buf.timer = setTimeout(() => flushOneMessageBatch(bufferKey), MESSAGE_BATCH_DEBOUNCE_MS)
+  current.qKeys.push(registerQueuedMessage(msg))
+  clearTimeout(current.timer)
+  current.timer = setTimeout(() => flushMessageBatch(key), MESSAGE_BATCH_DEBOUNCE_MS)
 }
 
-function flushOneMessageBatch(bufferKey) {
-  const buf = messageBatchBuffers.get(bufferKey)
+function flushMessageBatch(key) {
+  const buf = messageBatchBuffers.get(key)
   if (!buf) return
-  messageBatchBuffers.delete(bufferKey)
+  messageBatchBuffers.delete(key)
   clearTimeout(buf.timer)
   if (buf.qKeys.length === 1) {
-    enqueueQueuedMessage(buf.key, buf.qKeys[0])
+    enqueueQueuedMessage(key, buf.qKeys[0])
     return
   }
-  chatQueue.enqueue(buf.key, () => runQueuedMessageBatch(buf.chatId, buf.key, buf.qKeys)).catch(e => log('queued batched handleMessage rejected', e))
+  chatQueue.enqueue(key, () => runQueuedMessageBatch(buf.chatId, key, buf.qKeys)).catch(e => log('queued batched handleMessage rejected', e))
 }
 
-// Flushes every sender's buffered burst for this thread, so a command/service/unauthorized message or an incoming album is never dispatched ahead of text already buffered by anyone in the thread.
-function flushMessageBatch(key) {
-  const prefix = `${key}:`
-  for (const bufferKey of messageBatchBuffers.keys()) {
-    if (bufferKey.startsWith(prefix)) flushOneMessageBatch(bufferKey)
+// Removes one still-buffered message without disturbing the rest of its batch — used when an edit de-authorizes it before the debounce window elapses.
+function removeFromMessageBatch(key, qKey) {
+  const buf = messageBatchBuffers.get(key)
+  if (!buf) return
+  const idx = buf.qKeys.indexOf(qKey)
+  if (idx === -1) return
+  buf.qKeys.splice(idx, 1)
+  if (buf.qKeys.length === 0) {
+    clearTimeout(buf.timer)
+    messageBatchBuffers.delete(key)
   }
 }
 
@@ -2843,6 +2850,8 @@ async function handleCallbackQuery(cq) {
   delete state.pendingContinue[key]
   saveState(state)
   await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'continuing…' }).catch(() => {})
+  // a still-buffered burst in this thread must flush first to keep arrival order, same as every other path that dispatches outside the debounce
+  flushMessageBatch(key)
   chatQueue.enqueue(key, () => handleContinue(chatId, key, threadId, pending)).catch(e => log('queued handleContinue rejected', e))
 }
 
@@ -2940,14 +2949,16 @@ async function poll() {
             const activeRun = activeRuns.get(key)
             const isJoinableAuthored = isAuthorizedMessage(u.message) && isJoinableMessage(u.message, botIdentity.username)
             if (activeRun) {
+              // a run going active never drains messageBatchBuffers itself, so a still-buffered sibling burst in this thread must flush first to keep arrival order
+              flushMessageBatch(key)
               if (isJoinableAuthored) {
                 addPendingJoinMessage(chatId, key, activeRun, u.message).catch(e => log('failed to track pending join message', e.message))
               }
               enqueueMessage(key, u.message)
-            } else if (isJoinableAuthored) {
+            } else if (isJoinableAuthored && String(u.message.from?.id ?? '') !== ANONYMOUS_ADMIN_USER_ID) {
               bufferTextMessage(chatId, key, u.message)
             } else {
-              // a command/service/unauthorized message bypasses the debounce entirely, so any burst already buffered for this thread must flush first to keep arrival order
+              // a command/service/unauthorized/anonymous-admin message bypasses the debounce entirely, so any burst already buffered for this thread must flush first to keep arrival order
               flushMessageBatch(key)
               enqueueMessage(key, u.message)
             }
@@ -2978,6 +2989,11 @@ async function poll() {
             const pendingIndex = pending?.findIndex(m => mediaGroupMembers(m).some(x => x.message_id === u.edited_message.message_id))
             if (pendingIndex != null && pendingIndex !== -1) pending[pendingIndex] = updated
           } else {
+            // an edit that de-authorizes a message (e.g. a required @mention removed) must drop it from wherever it's still waiting, or a stale pre-edit copy would surface once that wait ends
+            if (priorQueued) {
+              unregisterQueuedMessage(priorQueued)
+              removeFromMessageBatch(key, qKey)
+            }
             // best-effort early stop only — an unauthorized/unmentioned editor must not be able to kill another user's run sharing this chat-scoped key
             if (isAuthorizedMessage(u.edited_message)) activeRuns.get(key)?.cancel()
             chatQueue

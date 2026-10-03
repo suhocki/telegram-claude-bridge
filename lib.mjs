@@ -1385,11 +1385,6 @@ export function buildMediaGroupBufferKey(chatId, mediaGroupId) {
   return `${chatId}:${mediaGroupId}`
 }
 
-// per (thread, sender) so two different users' messages in the same group/topic are never merged into one batch
-export function buildTextBatchBufferKey(key, userId) {
-  return `${key}:${userId}`
-}
-
 export function findBufferedMessageIndex(messages, messageId) {
   return (messages ?? []).findIndex(m => m.message_id === messageId)
 }
