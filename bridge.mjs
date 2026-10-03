@@ -1851,13 +1851,13 @@ function createPlaceholderController(
   }
 }
 
-function isAuthorizedMessage(msg) {
+function isAuthorizedMessage(msg, { bypassMention = false } = {}) {
   const chatId = String(msg.chat.id)
   const userId = String(msg.from?.id ?? '')
   if (isGroupChatType(msg.chat.type)) {
     const policy = resolveGroupPolicy(groupsConfig, chatId)
-    // a synthetic merged message isn't itself a fresh @mention, but every one of its fragments already passed the mention gate to arrive at all
-    const effectivePolicy = msg.isSyntheticMerge && policy ? { ...policy, requireMention: false } : policy
+    // a synthetic merged message (or a same-sender fragment still buffering under one) isn't itself a fresh @mention, but the burst it belongs to already passed the mention gate to start
+    const effectivePolicy = (msg.isSyntheticMerge || bypassMention) && policy ? { ...policy, requireMention: false } : policy
     if (!shouldHandleGroupMessage(msg, effectivePolicy, botIdentity.username, botIdentity.id)) {
       log('dropped group message', chatId, 'policy not satisfied for user', userId)
       return false
@@ -2528,7 +2528,8 @@ const ANONYMOUS_ADMIN_USER_ID = '1087968824'
 function bufferTextMessage(chatId, key, msg) {
   const userId = String(msg.from?.id ?? '')
   const buf = messageBatchBuffers.get(key)
-  if (buf && (buf.userId !== userId || userId === ANONYMOUS_ADMIN_USER_ID)) flushMessageBatch(key)
+  // the caller already routes Telegram's shared anonymous-admin id away from this function entirely, so only a genuine different sender can still be buffered here
+  if (buf && buf.userId !== userId) flushMessageBatch(key)
   let current = messageBatchBuffers.get(key)
   if (!current) {
     current = { chatId, userId, qKeys: [] }
@@ -2947,19 +2948,19 @@ async function poll() {
             bufferMediaGroupMessage(chatId, u.message)
           } else {
             const activeRun = activeRuns.get(key)
-            const isJoinableAuthored = isAuthorizedMessage(u.message) && isJoinableMessage(u.message, botIdentity.username)
-            if (activeRun) {
-              // a run going active never drains messageBatchBuffers itself, so a still-buffered sibling burst in this thread must flush first to keep arrival order
-              flushMessageBatch(key)
-              if (isJoinableAuthored) {
-                addPendingJoinMessage(chatId, key, activeRun, u.message).catch(e => log('failed to track pending join message', e.message))
-              }
-              enqueueMessage(key, u.message)
-            } else if (isJoinableAuthored && String(u.message.from?.id ?? '') !== ANONYMOUS_ADMIN_USER_ID) {
+            const userId = String(u.message.from?.id ?? '')
+            // a fragment continuing an already-buffering burst from this same sender needs no mention of its own — the burst it belongs to already proved it's directed at the bot
+            const isSameSenderContinuation = !activeRun && messageBatchBuffers.get(key)?.userId === userId
+            const isJoinableAuthored =
+              isAuthorizedMessage(u.message, { bypassMention: isSameSenderContinuation }) && isJoinableMessage(u.message, botIdentity.username)
+            if (!activeRun && isJoinableAuthored && userId !== ANONYMOUS_ADMIN_USER_ID) {
               bufferTextMessage(chatId, key, u.message)
             } else {
-              // a command/service/unauthorized/anonymous-admin message bypasses the debounce entirely, so any burst already buffered for this thread must flush first to keep arrival order
+              // everything else dispatches outside the debounce, so any burst already buffered for this thread must flush first to keep arrival order
               flushMessageBatch(key)
+              if (activeRun && isJoinableAuthored) {
+                addPendingJoinMessage(chatId, key, activeRun, u.message).catch(e => log('failed to track pending join message', e.message))
+              }
               enqueueMessage(key, u.message)
             }
           }
