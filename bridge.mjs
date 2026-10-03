@@ -42,6 +42,7 @@ import {
   extractReplyToMessageId,
   extractQuotedText,
   resolveJoinedReplyContext,
+  resolveBatchReplyContext,
   buildAttachmentCaption,
   buildAttachmentsCaption,
   buildMultiAttachmentAttrs,
@@ -1850,13 +1851,13 @@ function createPlaceholderController(
   }
 }
 
-function isAuthorizedMessage(msg) {
+function isAuthorizedMessage(msg, { bypassMention = false } = {}) {
   const chatId = String(msg.chat.id)
   const userId = String(msg.from?.id ?? '')
   if (isGroupChatType(msg.chat.type)) {
     const policy = resolveGroupPolicy(groupsConfig, chatId)
-    // a join-synthesized message isn't itself a fresh @mention, but it continues a run this chat already passed the mention gate to start
-    const effectivePolicy = msg.joinedFromActiveRun && policy ? { ...policy, requireMention: false } : policy
+    // a synthetic merged message (or a same-sender fragment still buffering under one) isn't itself a fresh @mention, but the burst it belongs to already passed the mention gate to start
+    const effectivePolicy = (msg.isSyntheticMerge || bypassMention) && policy ? { ...policy, requireMention: false } : policy
     if (!shouldHandleGroupMessage(msg, effectivePolicy, botIdentity.username, botIdentity.id)) {
       log('dropped group message', chatId, 'policy not satisfied for user', userId)
       return false
@@ -2165,8 +2166,8 @@ async function handleMessage(msg) {
   await clearPendingContinue(chatId, key)
   const memberMessages = mediaGroupMembers(msg)
   const reactionMessageIds = resolveReactionMessageIds(memberMessages, msg.message_id)
-  // a Join turn's mediaGroupMessages is only its attachment subset, not the full batch, so it must never be tracked as a rebuildable album for future edits (a real Telegram album's mediaGroupMessages, by contrast, always covers every message in it)
-  const albumMemberMessages = msg.joinedFromActiveRun ? undefined : msg.mediaGroupMessages ?? undefined
+  // a synthetic merged message's mediaGroupMessages is only its attachment subset, not the full batch, so it must never be tracked as a rebuildable album for future edits (a real Telegram album's mediaGroupMessages, by contrast, always covers every message in it)
+  const albumMemberMessages = msg.isSyntheticMerge ? undefined : msg.mediaGroupMessages ?? undefined
   const attachments = memberMessages.map(extractAttachment).filter(Boolean)
   const attachment = attachments[0] ?? null
   const content = msg.text ?? msg.caption ?? null
@@ -2455,6 +2456,39 @@ async function transcribeJoinFragment(msg) {
   }
 }
 
+// Shared by the Join feature and the arrival-time text-batch debounce below: merges a batch of raw messages into one synthetic message handleMessage can run as a single turn, transcribing voice fragments inline.
+async function mergeMessageBatch(chatId, batch, { prefixText = null, replyToMessage = null, quotedText = null } = {}) {
+  const results = await Promise.all(batch.map(transcribeJoinFragment))
+  const fragments = results.map(r => r.promptText)
+  const transcripts = results.map(r => r.transcript).filter(t => t != null && t.trim())
+  const last = batch[batch.length - 1]
+  let quoteMessageId = null
+  if (transcripts.length) {
+    const quoteHtml = buildTranscriptQuoteHtml(transcripts.join('\n\n'))
+    if (quoteHtml) quoteMessageId = await sendTranscriptQuote(chatId, quoteHtml, last.message_id, resolveThreadId(last))
+  }
+  const joinedText = buildJoinedPromptText([prefixText, ...fragments])
+  // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText
+  return {
+    ...last,
+    text: joinedText,
+    entities: undefined,
+    caption: undefined,
+    caption_entities: undefined,
+    // attachment fields nulled so extractAttachment(syntheticMsg) itself never sees one directly — mediaGroupMessages below is the only path an attachment travels through
+    photo: undefined,
+    document: undefined,
+    audio: undefined,
+    video: undefined,
+    voice: undefined,
+    mediaGroupMessages: buildJoinAttachmentMediaGroup(batch),
+    reply_to_message: replyToMessage,
+    quote: quotedText != null ? { text: quotedText } : undefined,
+    isSyntheticMerge: true,
+    extraBotMessageIds: quoteMessageId != null ? [quoteMessageId] : [],
+  }
+}
+
 function handleJoinTap(chatId, key, run) {
   const batch = run.pending.splice(0, run.pending.length)
   if (!batch.length) return
@@ -2470,39 +2504,100 @@ function handleJoinTap(chatId, key, run) {
   // enqueued synchronously, before transcription, so a message sent right after this tap can't jump ahead of the join in the per-chat queue
   chatQueue
     .enqueue(key, async () => {
-      const results = await Promise.all(batch.map(transcribeJoinFragment))
-      const fragments = results.map(r => r.promptText)
-      const transcripts = results.map(r => r.transcript).filter(t => t != null && t.trim())
-      const last = batch[batch.length - 1]
-      let quoteMessageId = null
-      if (transcripts.length) {
-        const quoteHtml = buildTranscriptQuoteHtml(transcripts.join('\n\n'))
-        if (quoteHtml) quoteMessageId = await sendTranscriptQuote(chatId, quoteHtml, last.message_id, resolveThreadId(last))
-      }
-      const joinedText = buildJoinedPromptText([run.promptText, ...fragments])
-      const { replyToMessage, quotedText } = resolveJoinedReplyContext(run, last)
-      // stale entities/caption_entities offsets would misdirect isBotMentioned against joinedText
-      const syntheticMsg = {
-        ...last,
-        text: joinedText,
-        entities: undefined,
-        caption: undefined,
-        caption_entities: undefined,
-        // attachment fields nulled so extractAttachment(syntheticMsg) itself never sees one directly — mediaGroupMessages below is the only path an attachment travels through
-        photo: undefined,
-        document: undefined,
-        audio: undefined,
-        video: undefined,
-        voice: undefined,
-        mediaGroupMessages: buildJoinAttachmentMediaGroup(batch),
-        reply_to_message: replyToMessage,
-        quote: quotedText != null ? { text: quotedText } : undefined,
-        joinedFromActiveRun: true,
-        extraBotMessageIds: quoteMessageId != null ? [quoteMessageId] : [],
-      }
+      const { replyToMessage, quotedText } = resolveJoinedReplyContext(run, batch[batch.length - 1])
+      const syntheticMsg = await mergeMessageBatch(chatId, batch, { prefixText: run.promptText, replyToMessage, quotedText })
       return handleMessage(syntheticMsg)
     })
     .catch(e => log('queued joined handleMessage rejected', e))
+}
+
+function enqueueQueuedMessage(key, qKey) {
+  chatQueue.enqueue(key, () => runQueuedMessage(key, qKey)).catch(e => log('queued handleMessage rejected', e))
+}
+
+function enqueueMessage(key, msg) {
+  enqueueQueuedMessage(key, registerQueuedMessage(msg))
+}
+
+// Debounces a burst of plain messages (e.g. Telegram's client auto-splitting a long paste) into one Claude turn instead of one per fragment. One buffer per thread, not per sender: a different sender (or Telegram's shared anonymous-admin id, which can't be trusted to mean "the same sender") arriving mid-debounce flushes whatever's pending first, so cross-sender arrival order in a shared thread is never inverted.
+const messageBatchBuffers = new Map()
+const MESSAGE_BATCH_DEBOUNCE_MS = 2000
+// Telegram's fixed "GroupAnonymousBot" id, shared by every admin posting anonymously in a group — never a reliable "same sender" signal
+const ANONYMOUS_ADMIN_USER_ID = '1087968824'
+
+function bufferTextMessage(chatId, key, msg) {
+  const userId = String(msg.from?.id ?? '')
+  const buf = messageBatchBuffers.get(key)
+  // the caller already routes Telegram's shared anonymous-admin id away from this function entirely, so only a genuine different sender can still be buffered here
+  if (buf && buf.userId !== userId) flushMessageBatch(key)
+  let current = messageBatchBuffers.get(key)
+  if (!current) {
+    current = { chatId, userId, qKeys: [] }
+    messageBatchBuffers.set(key, current)
+    // a buffered message isn't dispatched until the debounce window elapses, so it must supersede a stale Continue offer right away instead of waiting for that dispatch
+    clearPendingContinue(chatId, key).catch(e => log('failed to clear pending continue for a buffered message', e.message))
+  }
+  current.qKeys.push(registerQueuedMessage(msg))
+  clearTimeout(current.timer)
+  current.timer = setTimeout(() => flushMessageBatch(key), MESSAGE_BATCH_DEBOUNCE_MS)
+}
+
+function flushMessageBatch(key) {
+  const buf = messageBatchBuffers.get(key)
+  if (!buf) return
+  messageBatchBuffers.delete(key)
+  clearTimeout(buf.timer)
+  if (buf.qKeys.length === 1) {
+    enqueueQueuedMessage(key, buf.qKeys[0])
+    return
+  }
+  chatQueue.enqueue(key, () => runQueuedMessageBatch(buf.chatId, key, buf.qKeys)).catch(e => log('queued batched handleMessage rejected', e))
+}
+
+// Used when an edit de-authorizes a still-buffered message before the debounce window elapses. Removing the anchor (index 0, the only fragment ever independently authorized without the same-sender-continuation bypass) discards every later fragment too, since their admission was contingent on the anchor remaining legitimate; removing any other fragment just drops that one.
+function removeFromMessageBatch(key, qKey) {
+  const buf = messageBatchBuffers.get(key)
+  if (!buf) return
+  const idx = buf.qKeys.indexOf(qKey)
+  if (idx === -1) return
+  if (idx === 0) {
+    for (const siblingQKey of buf.qKeys.slice(1)) {
+      const sibling = queuedMessageContent.get(siblingQKey)
+      if (sibling) unregisterQueuedMessage(sibling)
+    }
+    clearTimeout(buf.timer)
+    messageBatchBuffers.delete(key)
+    return
+  }
+  buf.qKeys.splice(idx, 1)
+  if (buf.qKeys.length === 0) {
+    clearTimeout(buf.timer)
+    messageBatchBuffers.delete(key)
+  }
+}
+
+// Resolves each buffered message against its latest edit/deletion state at dequeue time (probed in parallel, same as queuedMessageStillExists), then merges whatever survived into one synthetic turn anchored to the batch's last surviving message.
+async function runQueuedMessageBatch(chatId, key, qKeys) {
+  const entries = qKeys.map(qKey => ({ qKey, initial: queuedMessageContent.get(qKey) })).filter(e => e.initial)
+  const existsResults = await Promise.all(entries.map(e => messageStillExists(chatId, e.initial.message_id)))
+  // checked here too, same as runQueuedMessage, in case one of these messages was independently spliced into a Join tap's batch before this flush ran
+  const consumed = consumedByJoin.get(key)
+  const resolved = []
+  entries.forEach(({ qKey, initial }, i) => {
+    // re-read after the probe's round-trip, so an edit landing mid-probe isn't lost to the closed registry entry below
+    const msg = queuedMessageContent.get(qKey) ?? initial
+    unregisterQueuedMessage(msg)
+    if (consumed?.delete(msg.message_id)) return
+    if (existsResults[i]) resolved.push(msg)
+    else log('skipping deleted queued message', key, msg.message_id)
+  })
+  if (consumed?.size === 0) consumedByJoin.delete(key)
+  if (!resolved.length) return
+  if (resolved.length === 1) return handleMessage(resolved[0])
+
+  const { replyToMessage, quotedText } = resolveBatchReplyContext(resolved)
+  const syntheticMsg = await mergeMessageBatch(chatId, resolved, { replyToMessage, quotedText })
+  return handleMessage(syntheticMsg)
 }
 
 async function runQueuedMessage(key, qKey) {
@@ -2765,6 +2860,8 @@ async function handleCallbackQuery(cq) {
   delete state.pendingContinue[key]
   saveState(state)
   await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'continuing…' }).catch(() => {})
+  // a still-buffered burst in this thread must flush first to keep arrival order, same as every other path that dispatches outside the debounce
+  flushMessageBatch(key)
   chatQueue.enqueue(key, () => handleContinue(chatId, key, threadId, pending)).catch(e => log('queued handleContinue rejected', e))
 }
 
@@ -2853,16 +2950,28 @@ async function poll() {
         saveState(state)
         if (u.message) {
           const chatId = String(u.message.chat.id)
+          const key = threadKey(chatId, u.message)
           if (u.message.media_group_id) {
+            // an album is its own grouping mechanism, independent of the text-batch debounce below — but a burst already buffered for this thread must still go out first
+            flushMessageBatch(key)
             bufferMediaGroupMessage(chatId, u.message)
           } else {
-            const key = threadKey(chatId, u.message)
             const activeRun = activeRuns.get(key)
-            if (activeRun && isAuthorizedMessage(u.message) && isJoinableMessage(u.message, botIdentity.username)) {
-              addPendingJoinMessage(chatId, key, activeRun, u.message).catch(e => log('failed to track pending join message', e.message))
+            const userId = String(u.message.from?.id ?? '')
+            // a fragment continuing an already-buffering burst from this same sender needs no mention of its own — the burst it belongs to already proved it's directed at the bot
+            const isSameSenderContinuation = !activeRun && messageBatchBuffers.get(key)?.userId === userId
+            const isJoinableAuthored =
+              isAuthorizedMessage(u.message, { bypassMention: isSameSenderContinuation }) && isJoinableMessage(u.message, botIdentity.username)
+            if (!activeRun && isJoinableAuthored && userId !== ANONYMOUS_ADMIN_USER_ID) {
+              bufferTextMessage(chatId, key, u.message)
+            } else {
+              // everything else dispatches outside the debounce, so any burst already buffered for this thread must flush first to keep arrival order
+              flushMessageBatch(key)
+              if (activeRun && isJoinableAuthored) {
+                addPendingJoinMessage(chatId, key, activeRun, u.message).catch(e => log('failed to track pending join message', e.message))
+              }
+              enqueueMessage(key, u.message)
             }
-            const qKey = registerQueuedMessage(u.message)
-            chatQueue.enqueue(key, () => runQueuedMessage(key, qKey)).catch(e => log('queued handleMessage rejected', e))
           }
         } else if (u.edited_message) {
           const chatId = String(u.edited_message.chat.id)
@@ -2882,7 +2991,9 @@ async function poll() {
           const updated = members.length > 1 ? rebuildEditedMediaGroupMessage(members, u.edited_message) : u.edited_message
           // already spliced into a Join tap's own batch (consumedByJoin), so patching the registry here would be a silent no-op — fall through to the cancel/rewind path below for honest feedback instead
           const alreadyJoined = consumedByJoin.get(key)?.has(u.edited_message.message_id)
-          const stillQueued = Boolean(priorQueued) && !alreadyJoined && isAuthorizedMessage(updated)
+          // a non-anchor fragment of a still-buffering batch was only ever authorized via the same-sender-continuation bypass (poll()'s isSameSenderContinuation), so its re-check here must use the same bypass or this edit would wrongly evict it
+          const batchIdx = messageBatchBuffers.get(key)?.qKeys.indexOf(qKey) ?? -1
+          const stillQueued = Boolean(priorQueued) && !alreadyJoined && isAuthorizedMessage(updated, { bypassMention: batchIdx > 0 })
           if (stillQueued) {
             registerQueuedMessage(updated)
             // also still sitting in another run's Join batch until that Join tap consumes it, so patch that copy too
@@ -2890,6 +3001,11 @@ async function poll() {
             const pendingIndex = pending?.findIndex(m => mediaGroupMembers(m).some(x => x.message_id === u.edited_message.message_id))
             if (pendingIndex != null && pendingIndex !== -1) pending[pendingIndex] = updated
           } else {
+            // an edit that de-authorizes a message (e.g. a required @mention removed) must drop it from wherever it's still waiting, or a stale pre-edit copy would surface once that wait ends
+            if (priorQueued) {
+              unregisterQueuedMessage(priorQueued)
+              removeFromMessageBatch(key, qKey)
+            }
             // best-effort early stop only — an unauthorized/unmentioned editor must not be able to kill another user's run sharing this chat-scoped key
             if (isAuthorizedMessage(u.edited_message)) activeRuns.get(key)?.cancel()
             chatQueue

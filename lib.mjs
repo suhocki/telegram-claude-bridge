@@ -210,10 +210,23 @@ export function extractQuotedText(msg) {
   return msg?.quote?.text ?? null
 }
 
-// resolved as a pair so a Join batch never attaches one message's quoted excerpt to another's reply target
-export function resolveJoinedReplyContext(run, last) {
-  if (run?.replyToMessage != null) return { replyToMessage: run.replyToMessage, quotedText: run.quotedText ?? null }
+// resolved as a pair so a reply target is never attached to a different fragment's quoted excerpt
+function fallbackReplyContext(last) {
   return { replyToMessage: last?.reply_to_message ?? null, quotedText: extractQuotedText(last) }
+}
+
+function preferReplyContext(replyToMessage, quotedText, fallback) {
+  return replyToMessage != null ? { replyToMessage, quotedText: quotedText ?? null } : fallback
+}
+
+export function resolveJoinedReplyContext(run, last) {
+  return preferReplyContext(run?.replyToMessage, run?.quotedText, fallbackReplyContext(last))
+}
+
+// unlike a Join batch (always one auto-split paste, reply only ever on fragment 1), this batch can be several genuinely distinct messages sent within the debounce window, so any of them — not just the first — may carry the real reply
+export function resolveBatchReplyContext(batch) {
+  const withReply = batch.find(m => m?.reply_to_message != null)
+  return withReply ? fallbackReplyContext(withReply) : fallbackReplyContext(batch[batch.length - 1])
 }
 
 export function buildAttachmentCaption(attachment) {
