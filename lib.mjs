@@ -216,6 +216,14 @@ export function resolveJoinedReplyContext(run, last) {
   return { replyToMessage: last?.reply_to_message ?? null, quotedText: extractQuotedText(last) }
 }
 
+// Telegram only stamps reply_to_message on the first fragment of a client-auto-split long message, so that fragment's own reply context (if any) wins over the last fragment's — resolved as a pair for the same reason as resolveJoinedReplyContext above
+export function resolveBatchReplyContext(batch) {
+  const first = batch[0]
+  const last = batch[batch.length - 1]
+  if (first?.reply_to_message != null) return { replyToMessage: first.reply_to_message, quotedText: extractQuotedText(first) }
+  return { replyToMessage: last?.reply_to_message ?? null, quotedText: extractQuotedText(last) }
+}
+
 export function buildAttachmentCaption(attachment) {
   if (!attachment) return ''
   switch (attachment.kind) {

@@ -34,6 +34,7 @@ import {
   extractReplyToMessageId,
   extractQuotedText,
   resolveJoinedReplyContext,
+  resolveBatchReplyContext,
   buildAttachmentCaption,
   buildAttachmentsCaption,
   buildMultiAttachmentAttrs,
@@ -691,6 +692,34 @@ test('resolveJoinedReplyContext: the run\'s reply target and quoted excerpt are 
   const run = { replyToMessage: { message_id: 1 }, quotedText: null }
   const last = { reply_to_message: { message_id: 2 }, quote: { text: 'bar' } }
   assert.deepEqual(resolveJoinedReplyContext(run, last), { replyToMessage: { message_id: 1 }, quotedText: null })
+})
+
+test('resolveBatchReplyContext: the first fragment\'s own reply target wins — Telegram only stamps reply_to_message on the first chunk of a client-auto-split long message', () => {
+  const first = { reply_to_message: { message_id: 42 } }
+  const middle = { text: 'middle chunk' }
+  const last = { reply_to_message: { message_id: 7 } }
+  assert.deepEqual(resolveBatchReplyContext([first, middle, last]), { replyToMessage: { message_id: 42 }, quotedText: null })
+})
+
+test('resolveBatchReplyContext: falls back to the last fragment\'s own reply target (and its quoted excerpt) when the first fragment is not a reply', () => {
+  const first = { text: 'first chunk' }
+  const last = { reply_to_message: { message_id: 7 }, quote: { text: 'second excerpt' } }
+  assert.deepEqual(resolveBatchReplyContext([first, last]), { replyToMessage: { message_id: 7 }, quotedText: 'second excerpt' })
+})
+
+test('resolveBatchReplyContext: neither fragment is a reply, returns nulls', () => {
+  assert.deepEqual(resolveBatchReplyContext([{ text: 'a' }, { text: 'b' }]), { replyToMessage: null, quotedText: null })
+})
+
+test('resolveBatchReplyContext: the first fragment\'s reply target and quoted excerpt are picked together, never paired with the last fragment\'s excerpt', () => {
+  const first = { reply_to_message: { message_id: 1 } }
+  const last = { reply_to_message: { message_id: 2 }, quote: { text: 'bar' } }
+  assert.deepEqual(resolveBatchReplyContext([first, last]), { replyToMessage: { message_id: 1 }, quotedText: null })
+})
+
+test('resolveBatchReplyContext: a single-message batch uses that message as both first and last', () => {
+  const only = { reply_to_message: { message_id: 9 }, quote: { text: 'excerpt' } }
+  assert.deepEqual(resolveBatchReplyContext([only]), { replyToMessage: { message_id: 9 }, quotedText: 'excerpt' })
 })
 
 test('extractAttachment: photo message picks the largest size (last in the array)', () => {
