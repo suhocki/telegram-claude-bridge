@@ -722,6 +722,13 @@ test('resolveBatchReplyContext: a single-message batch uses that message as both
   assert.deepEqual(resolveBatchReplyContext([only]), { replyToMessage: { message_id: 9 }, quotedText: 'excerpt' })
 })
 
+test('resolveBatchReplyContext: a reply on a middle fragment (not just first or last) is not dropped — unlike an auto-split paste, a debounced batch can be several distinct deliberate messages', () => {
+  const first = { text: 'first message' }
+  const middle = { reply_to_message: { message_id: 55 }, quote: { text: 'middle excerpt' } }
+  const last = { text: 'last message' }
+  assert.deepEqual(resolveBatchReplyContext([first, middle, last]), { replyToMessage: { message_id: 55 }, quotedText: 'middle excerpt' })
+})
+
 test('extractAttachment: photo message picks the largest size (last in the array)', () => {
   const msg = { photo: [{ file_id: 'small', file_unique_id: 'u1', file_size: 100 }, { file_id: 'big', file_unique_id: 'u2', file_size: 5000 }] }
   assert.deepEqual(extractAttachment(msg), { kind: 'photo', fileId: 'big', size: 5000 })

@@ -223,10 +223,10 @@ export function resolveJoinedReplyContext(run, last) {
   return preferReplyContext(run?.replyToMessage, run?.quotedText, fallbackReplyContext(last))
 }
 
-// Telegram only stamps reply_to_message on the first fragment of a client-auto-split long message, so that fragment's own reply context (if any) wins over the last fragment's
+// unlike a Join batch (always one auto-split paste, reply only ever on fragment 1), this batch can be several genuinely distinct messages sent within the debounce window, so any of them — not just the first — may carry the real reply
 export function resolveBatchReplyContext(batch) {
-  const first = batch[0]
-  return preferReplyContext(first?.reply_to_message, extractQuotedText(first), fallbackReplyContext(batch[batch.length - 1]))
+  const withReply = batch.find(m => m?.reply_to_message != null)
+  return withReply ? fallbackReplyContext(withReply) : fallbackReplyContext(batch[batch.length - 1])
 }
 
 export function buildAttachmentCaption(attachment) {
