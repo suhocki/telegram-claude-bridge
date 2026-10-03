@@ -2554,12 +2554,21 @@ function flushMessageBatch(key) {
   chatQueue.enqueue(key, () => runQueuedMessageBatch(buf.chatId, key, buf.qKeys)).catch(e => log('queued batched handleMessage rejected', e))
 }
 
-// Removes one still-buffered message without disturbing the rest of its batch — used when an edit de-authorizes it before the debounce window elapses.
+// Used when an edit de-authorizes a still-buffered message before the debounce window elapses. Removing the anchor (index 0, the only fragment ever independently authorized without the same-sender-continuation bypass) discards every later fragment too, since their admission was contingent on the anchor remaining legitimate; removing any other fragment just drops that one.
 function removeFromMessageBatch(key, qKey) {
   const buf = messageBatchBuffers.get(key)
   if (!buf) return
   const idx = buf.qKeys.indexOf(qKey)
   if (idx === -1) return
+  if (idx === 0) {
+    for (const siblingQKey of buf.qKeys.slice(1)) {
+      const sibling = queuedMessageContent.get(siblingQKey)
+      if (sibling) unregisterQueuedMessage(sibling)
+    }
+    clearTimeout(buf.timer)
+    messageBatchBuffers.delete(key)
+    return
+  }
   buf.qKeys.splice(idx, 1)
   if (buf.qKeys.length === 0) {
     clearTimeout(buf.timer)
@@ -2982,7 +2991,9 @@ async function poll() {
           const updated = members.length > 1 ? rebuildEditedMediaGroupMessage(members, u.edited_message) : u.edited_message
           // already spliced into a Join tap's own batch (consumedByJoin), so patching the registry here would be a silent no-op — fall through to the cancel/rewind path below for honest feedback instead
           const alreadyJoined = consumedByJoin.get(key)?.has(u.edited_message.message_id)
-          const stillQueued = Boolean(priorQueued) && !alreadyJoined && isAuthorizedMessage(updated)
+          // a non-anchor fragment of a still-buffering batch was only ever authorized via the same-sender-continuation bypass (poll()'s isSameSenderContinuation), so its re-check here must use the same bypass or this edit would wrongly evict it
+          const batchIdx = messageBatchBuffers.get(key)?.qKeys.indexOf(qKey) ?? -1
+          const stillQueued = Boolean(priorQueued) && !alreadyJoined && isAuthorizedMessage(updated, { bypassMention: batchIdx > 0 })
           if (stillQueued) {
             registerQueuedMessage(updated)
             // also still sitting in another run's Join batch until that Join tap consumes it, so patch that copy too
