@@ -2456,9 +2456,7 @@ async function transcribeJoinFragment(msg) {
   }
 }
 
-// Shared by the Join feature and the arrival-time text-batch debounce below: turns a batch of
-// raw messages into one synthetic message handleMessage can run as a single turn, transcribing
-// any voice fragments inline so they land in the merged text instead of only the first one.
+// Shared by the Join feature and the arrival-time text-batch debounce below: merges a batch of raw messages into one synthetic message handleMessage can run as a single turn, transcribing voice fragments inline.
 async function mergeMessageBatch(chatId, batch, { prefixText = null, replyToMessage = null, quotedText = null } = {}) {
   const results = await Promise.all(batch.map(transcribeJoinFragment))
   const fragments = results.map(r => r.promptText)
@@ -2513,58 +2511,61 @@ function handleJoinTap(chatId, key, run) {
     .catch(e => log('queued joined handleMessage rejected', e))
 }
 
-// Telegram's client auto-splits a long pasted text into several messages sent back-to-back; without
-// this, the bot would start (and reply to) a separate Claude turn per fragment instead of treating
-// the burst as one message. Mirrors bufferMediaGroupMessage's quiet-period approach, but keyed by
-// thread (not media_group_id, which plain text carries none of) and only armed when no run is
-// already active for that thread — a mid-run burst is instead handled by the Join mechanism above.
+// Debounces a burst of plain messages (e.g. Telegram's client auto-splitting a long paste) into one Claude turn instead of one per fragment; buffered per (thread, sender) so two different users/topics never merge, flushed per-thread so ordering against commands/albums/other senders is preserved.
 const messageBatchBuffers = new Map()
 const MESSAGE_BATCH_DEBOUNCE_MS = 2000
 
+function textBatchBufferKey(key, userId) {
+  return `${key}:${userId}`
+}
+
 function bufferTextMessage(chatId, key, msg) {
-  let buf = messageBatchBuffers.get(key)
+  const userId = String(msg.from?.id ?? '')
+  const bufferKey = textBatchBufferKey(key, userId)
+  let buf = messageBatchBuffers.get(bufferKey)
   if (!buf) {
-    buf = { chatId, qKeys: [] }
-    messageBatchBuffers.set(key, buf)
+    buf = { chatId, key, qKeys: [] }
+    messageBatchBuffers.set(bufferKey, buf)
+    // a buffered message isn't dispatched until the debounce window elapses, so it must supersede a stale Continue offer right away instead of waiting for that dispatch
+    clearPendingContinue(chatId, key).catch(e => log('failed to clear pending continue for a buffered message', e.message))
   }
   buf.qKeys.push(registerQueuedMessage(msg))
   clearTimeout(buf.timer)
-  buf.timer = setTimeout(() => flushMessageBatch(key), MESSAGE_BATCH_DEBOUNCE_MS)
+  buf.timer = setTimeout(() => flushOneMessageBatch(bufferKey), MESSAGE_BATCH_DEBOUNCE_MS)
 }
 
-// Also called ahead of any message this bridge is about to queue outside the debounce path (a
-// command, a service message, an album), so a burst already buffered for this thread is always
-// dispatched first and arrival order across the whole thread is preserved.
-function flushMessageBatch(key) {
-  const buf = messageBatchBuffers.get(key)
+function flushOneMessageBatch(bufferKey) {
+  const buf = messageBatchBuffers.get(bufferKey)
   if (!buf) return
-  messageBatchBuffers.delete(key)
+  messageBatchBuffers.delete(bufferKey)
   clearTimeout(buf.timer)
   if (buf.qKeys.length === 1) {
-    chatQueue.enqueue(key, () => runQueuedMessage(key, buf.qKeys[0])).catch(e => log('queued handleMessage rejected', e))
+    chatQueue.enqueue(buf.key, () => runQueuedMessage(buf.key, buf.qKeys[0])).catch(e => log('queued handleMessage rejected', e))
     return
   }
-  chatQueue.enqueue(key, () => runQueuedMessageBatch(buf.chatId, key, buf.qKeys)).catch(e => log('queued batched handleMessage rejected', e))
+  chatQueue.enqueue(buf.key, () => runQueuedMessageBatch(buf.chatId, buf.key, buf.qKeys)).catch(e => log('queued batched handleMessage rejected', e))
 }
 
-// Resolves each buffered message against its latest edit/deletion state at dequeue time, same as
-// runQueuedMessage, then merges whatever survived into one synthetic turn — the reply to it (and
-// the only reaction it gets) anchors to the batch's last surviving message.
+// Flushes every sender's buffered burst for this thread, so a command/service/unauthorized message or an incoming album is never dispatched ahead of text already buffered by anyone in the thread.
+function flushMessageBatch(key) {
+  const prefix = `${key}:`
+  for (const bufferKey of messageBatchBuffers.keys()) {
+    if (bufferKey.startsWith(prefix)) flushOneMessageBatch(bufferKey)
+  }
+}
+
+// Resolves each buffered message against its latest edit/deletion state at dequeue time (probed in parallel, same as queuedMessageStillExists), then merges whatever survived into one synthetic turn anchored to the batch's last surviving message.
 async function runQueuedMessageBatch(chatId, key, qKeys) {
+  const entries = qKeys.map(qKey => ({ qKey, initial: queuedMessageContent.get(qKey) })).filter(e => e.initial)
+  const existsResults = await Promise.all(entries.map(e => messageStillExists(chatId, e.initial.message_id)))
   const resolved = []
-  for (const qKey of qKeys) {
-    const initial = queuedMessageContent.get(qKey)
-    if (!initial) continue
-    const exists = await messageStillExists(chatId, initial.message_id)
+  entries.forEach(({ qKey, initial }, i) => {
     // re-read after the probe's round-trip, so an edit landing mid-probe isn't lost to the closed registry entry below
     const msg = queuedMessageContent.get(qKey) ?? initial
     unregisterQueuedMessage(msg)
-    if (!exists) {
-      log('skipping deleted queued message', key, msg.message_id)
-      continue
-    }
-    resolved.push(msg)
-  }
+    if (existsResults[i]) resolved.push(msg)
+    else log('skipping deleted queued message', key, msg.message_id)
+  })
   if (!resolved.length) return
   if (resolved.length === 1) return handleMessage(resolved[0])
 
