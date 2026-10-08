@@ -931,6 +931,12 @@ async function handleEditedMessage(msg) {
 
   if (rewindability === 'none') {
     log('rewind skipped, nothing to rewind for', key, msg.message_id)
+    if (turn) {
+      // splice out just this one stale turn so a repeat edit doesn't keep matching the same dead record
+      await deleteBotMessages(chatId, turn.botMessageIds ?? [])
+      state.turns[key] = [...turnList.slice(0, turnIndex), ...turnList.slice(turnIndex + 1)]
+      saveState(state)
+    }
     await handleMessage(editedMsg)
     return
   }
