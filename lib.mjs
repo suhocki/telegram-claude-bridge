@@ -1486,7 +1486,6 @@ export function hasConversationEntry(lines) {
   })
 }
 
-// 'none' (nothing committed, replay as new) vs 'unavailable' (real rewind failure) vs 'rewindable'
 export function classifyEditRewind(turn, session) {
   if (!turn || !turn.sessionId) return 'none'
   if (!session || turn.sessionId !== session.id) return 'unavailable'
