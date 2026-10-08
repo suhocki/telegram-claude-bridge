@@ -174,6 +174,7 @@ import {
   buildSessionTranscriptPath,
   findRewindCutIndex,
   hasConversationEntry,
+  classifyEditRewind,
   buildRewindUnavailableNotice,
   MAX_TRACKED_TURNS,
   TELEGRAM_ALLOWED_UPDATES,
@@ -3574,6 +3575,29 @@ test('hasConversationEntry: only real main-chain turns count as resumable contex
 
 test('buildRewindUnavailableNotice: tells the user the edit could not be rewound', () => {
   assert.match(buildRewindUnavailableNotice(), /rewind/i)
+})
+
+test('classifyEditRewind: no turn at all means nothing to rewind', () => {
+  assert.equal(classifyEditRewind(null, { id: 's1' }), 'none')
+  assert.equal(classifyEditRewind(undefined, { id: 's1' }), 'none')
+})
+
+test('classifyEditRewind: a turn with no sessionId (cancelled before any event) means nothing to rewind', () => {
+  assert.equal(classifyEditRewind({ sessionId: null }, { id: 's1' }), 'none')
+  assert.equal(classifyEditRewind({ sessionId: undefined }, { id: 's1' }), 'none')
+})
+
+test('classifyEditRewind: a turn whose sessionId matches the current session is rewindable', () => {
+  assert.equal(classifyEditRewind({ sessionId: 's1' }, { id: 's1' }), 'rewindable')
+})
+
+test('classifyEditRewind: a turn whose sessionId no longer matches the current session is unavailable', () => {
+  assert.equal(classifyEditRewind({ sessionId: 's1' }, { id: 's2' }), 'unavailable')
+})
+
+test('classifyEditRewind: a turn with a sessionId but no current session at all is unavailable', () => {
+  assert.equal(classifyEditRewind({ sessionId: 's1' }, null), 'unavailable')
+  assert.equal(classifyEditRewind({ sessionId: 's1' }, undefined), 'unavailable')
 })
 
 test('TELEGRAM_ALLOWED_UPDATES: covers every update type the bridge acts on', () => {

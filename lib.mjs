@@ -1486,6 +1486,12 @@ export function hasConversationEntry(lines) {
   })
 }
 
+export function classifyEditRewind(turn, session) {
+  if (!turn || !turn.sessionId) return 'none'
+  if (!session || turn.sessionId !== session.id) return 'unavailable'
+  return 'rewindable'
+}
+
 export function buildRewindUnavailableNotice() {
   return "✏️ can't rewind to that message — it isn't part of the current session's context anymore. Send it as a new message instead."
 }
