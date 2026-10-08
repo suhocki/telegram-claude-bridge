@@ -1486,6 +1486,17 @@ export function hasConversationEntry(lines) {
   })
 }
 
+// 'none': no turn was ever committed for this message, or it was but never reached a real
+// session (e.g. cancelled before Claude emitted anything) — nothing to rewind to, so the edit
+// should just run as a brand new message. 'unavailable': a turn has a real sessionId, but it
+// doesn't match the chat's current session (reset/evicted since) — a genuine rewind failure.
+// 'rewindable': the turn's session is still the chat's current one.
+export function classifyEditRewind(turn, session) {
+  if (!turn || !turn.sessionId) return 'none'
+  if (!session || turn.sessionId !== session.id) return 'unavailable'
+  return 'rewindable'
+}
+
 export function buildRewindUnavailableNotice() {
   return "✏️ can't rewind to that message — it isn't part of the current session's context anymore. Send it as a new message instead."
 }

@@ -156,6 +156,7 @@ import {
   buildSessionTranscriptPath,
   findRewindCutIndex,
   hasConversationEntry,
+  classifyEditRewind,
   buildRewindUnavailableNotice,
   createTelegramClient,
   fetchWithTimeout,
@@ -926,8 +927,14 @@ async function handleEditedMessage(msg) {
   const editedMsg = resolveEditedMessageForTurn(turn?.memberMessages, msg)
   if (!isAuthorizedMessage(editedMsg)) return
   const session = normalizeSession(state.sessions[key])
+  const rewindability = classifyEditRewind(turn, session)
 
-  if (!turn || !session || turn.sessionId !== session.id) {
+  if (rewindability === 'none') {
+    log('rewind skipped, nothing to rewind for', key, msg.message_id)
+    await handleMessage(editedMsg)
+    return
+  }
+  if (rewindability === 'unavailable') {
     log('rewind unavailable', key, msg.message_id, 'turn=', Boolean(turn), 'session=', session?.id)
     await sendReply(chatId, buildRewindUnavailableNotice(), msg.message_id, null, resolveThreadId(msg)).catch(() => {})
     return
