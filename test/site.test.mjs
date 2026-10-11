@@ -13,6 +13,7 @@ test('resolveSitePath maps / to index.html and keeps traversal inside the root',
   assert.equal(resolveSitePath(root, '/styles.css?x=1'), resolve(root, 'styles.css'));
   assert.equal(resolveSitePath(root, '/../bridge.mjs'), resolve(root, 'bridge.mjs'));
   assert.equal(resolveSitePath(root, '/%2e%2e/bridge.mjs'), resolve(root, 'bridge.mjs'));
+  assert.equal(resolveSitePath(root, '/%E0%A4%A'), undefined);
 });
 
 test('index.html links only assets that exist and has each section anchor', () => {
@@ -33,6 +34,7 @@ test('server serves index, 404s unknown paths and never leaks files outside the 
     assert.equal(ok.status, 200);
     assert.match(ok.headers.get('content-type'), /text\/html/);
     assert.equal((await fetch(`${base}/nope.html`)).status, 404);
+    assert.equal((await fetch(`${base}/%E0%A4%A`)).status, 400);
     const status = await new Promise((r) => get({ host: '127.0.0.1', port: server.address().port, path: '/%2e%2e/bridge.mjs' }, (res) => { res.resume(); r(res.statusCode); }));
     assert.equal(status, 404);
   } finally {

@@ -1,3 +1,4 @@
+document.documentElement.classList.add('js');
 const steps = [...document.querySelectorAll('[data-step]')];
 const replay = document.querySelector('.replay');
 let timers = [];

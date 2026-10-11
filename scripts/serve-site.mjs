@@ -12,7 +12,13 @@ const TYPES = {
 };
 
 export function resolveSitePath(root, urlPath) {
-  const clean = normalize(decodeURIComponent(urlPath.split('?')[0])).replace(/^([/\\])+/, '');
+  let decoded;
+  try {
+    decoded = decodeURIComponent(urlPath.split('?')[0]);
+  } catch {
+    return undefined;
+  }
+  const clean = normalize(decoded).replace(/^([/\\])+/, '');
   const full = resolve(root, clean === '' || clean.endsWith(sep) ? join(clean, 'index.html') : clean);
   return full === root || full.startsWith(root + sep) ? full : null;
 }
@@ -20,15 +26,20 @@ export function resolveSitePath(root, urlPath) {
 export function createSiteServer(root) {
   return createServer(async (req, res) => {
     const file = resolveSitePath(root, req.url ?? '/');
-    if (!file) {
+    if (file === undefined) {
+      res.writeHead(400).end('Bad request');
+      return;
+    }
+    if (file === null) {
       res.writeHead(403).end('Forbidden');
       return;
     }
     try {
       const body = await readFile(file);
       res.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' }).end(body);
-    } catch {
-      res.writeHead(404).end('Not found');
+    } catch (err) {
+      const missing = err.code === 'ENOENT' || err.code === 'EISDIR' || err.code === 'ENOTDIR';
+      res.writeHead(missing ? 404 : 500).end(missing ? 'Not found' : 'Server error');
     }
   });
 }

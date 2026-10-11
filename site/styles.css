@@ -7,6 +7,8 @@
   --muted: #9aa3b5;
   --accent: #7c9cff;
   --accent-2: #b48cff;
+  --btn-1: #4a6cf7;
+  --btn-2: #7a4ef0;
   color-scheme: dark;
 }
 @media (prefers-color-scheme: light) {
@@ -19,6 +21,8 @@
     --muted: #5b6475;
     --accent: #4a6cf7;
     --accent-2: #8a5cf5;
+    --btn-1: #4a6cf7;
+    --btn-2: #7a4ef0;
     color-scheme: light;
   }
 }
@@ -44,10 +48,11 @@ code { background: var(--bg-alt); padding: .1em .35em; border-radius: 6px; }
 .nav nav { display: flex; gap: 24px; }
 .nav nav a { color: var(--muted); }
 .nav nav a:hover { color: var(--text); }
+section[id], #demo { scroll-margin-top: 72px; }
 .brand { color: var(--text); font-weight: 700; }
 .btn {
   display: inline-block; padding: 12px 24px; border-radius: 999px;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  background: linear-gradient(135deg, var(--btn-1), var(--btn-2));
   color: #fff; font-weight: 600; border: 0; cursor: pointer;
 }
 .btn:hover { filter: brightness(1.1); }
@@ -66,9 +71,10 @@ h2 { font-size: clamp(1.6rem, 4vw, 2.4rem); text-align: center; margin: 0 0 40px
   display: flex; flex-direction: column; gap: 10px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, .25);
 }
-.msg { max-width: 85%; padding: 10px 14px; border-radius: 16px; opacity: 0; transform: translateY(8px); transition: opacity .4s, transform .4s; }
-.msg.show { opacity: 1; transform: none; }
-.msg.me { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+.msg { max-width: 85%; padding: 10px 14px; border-radius: 16px; transition: opacity .4s, transform .4s; }
+.js .msg { opacity: 0; transform: translateY(8px); }
+.js .msg.show { opacity: 1; transform: none; }
+.msg.me { align-self: flex-end; background: var(--btn-1); color: #fff; border-bottom-right-radius: 4px; }
 .msg.bot { align-self: flex-start; background: var(--bg-alt); border-bottom-left-radius: 4px; }
 .cancel { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 8px; border: 1px solid var(--border); font-size: .8rem; color: var(--muted); }
 .replay { align-self: center; background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; }
