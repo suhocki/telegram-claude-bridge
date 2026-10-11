@@ -25,6 +25,7 @@ persistent session per Telegram chat.
 - [Live progress in chat](#live-progress-in-chat)
 - [Working placeholder phrases](#working-placeholder-phrases)
 - [Other behavior](#other-behavior)
+- [Project website](#project-website)
 - [Testing](#testing)
 - [Security considerations](#security-considerations)
 
@@ -234,6 +235,14 @@ This defaults to 06:00 local time and logs to
 - **Risky command guard**: messages that look like they'd trigger something destructive (`rm -rf`, `git push --force`, `DROP TABLE`, etc.) require an explicit `CONFIRM` reply before running.
 - **Cost warnings**: once a session's cumulative cost crosses `costWarnUsd`, the bot warns in-chat and suggests `/new`.
 - **Groups**: group chats are ignored unless configured under `groups`; `requireMention` restricts replies to messages that @-mention the bot.
+
+## Project website
+
+A static landing page lives in `site/` (plain HTML/CSS/JS, no build step). Preview it locally:
+
+```
+node scripts/serve-site.mjs   # http://127.0.0.1:4173, override with PORT=...
+```
 
 ## Testing
 
