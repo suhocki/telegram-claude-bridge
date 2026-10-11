@@ -18,6 +18,7 @@ export function resolveSitePath(root, urlPath) {
   } catch {
     return undefined;
   }
+  if (decoded.includes('\0')) return undefined;
   const clean = normalize(decoded).replace(/^([/\\])+/, '');
   const full = resolve(root, clean === '' || clean.endsWith(sep) ? join(clean, 'index.html') : clean);
   return full === root || full.startsWith(root + sep) ? full : null;

@@ -14,6 +14,7 @@ test('resolveSitePath maps / to index.html and keeps traversal inside the root',
   assert.equal(resolveSitePath(root, '/../bridge.mjs'), resolve(root, 'bridge.mjs'));
   assert.equal(resolveSitePath(root, '/%2e%2e/bridge.mjs'), resolve(root, 'bridge.mjs'));
   assert.equal(resolveSitePath(root, '/%E0%A4%A'), undefined);
+  assert.equal(resolveSitePath(root, '/a%00b'), undefined);
 });
 
 test('index.html links only assets that exist and has each section anchor', () => {
