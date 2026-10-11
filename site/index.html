@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Bridge — Claude Code in your Telegram</title>
+<meta name="description" content="Run Claude Code from Telegram. Dictate tasks by voice, watch live progress, cancel anytime. One bot per project, zero dependencies.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E✈️%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="#top">✈️ Claude Bridge</a>
+  <nav>
+    <a href="#features">Features</a>
+    <a href="#install">Install</a>
+    <a href="#faq">FAQ</a>
+    <a href="https://github.com/suhocki/telegram-claude-bridge#readme">Docs</a>
+  </nav>
+  <a class="btn btn-small" href="#install">Get started</a>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <h1>You never have to touch<br>your laptop again.</h1>
+    <p class="lead">Claude Code, running from Telegram. Dictate a task on your commute, review a diff from the couch, kick off a fix while you make coffee.</p>
+    <div class="cta">
+      <a class="btn" href="#install">Get started</a>
+      <a class="btn btn-ghost" href="#demo" data-play>Play demo</a>
+    </div>
+    <div class="chat" id="demo" aria-label="Demo conversation">
+      <div class="msg me" data-step>🎙️ “Fix the flaky login test and open a PR”</div>
+      <div class="msg bot" data-step>⏳ Reading tests… ✅ Grep · ✅ Edit · ⏳ Bash <span class="cancel">🚫 Cancel</span></div>
+      <div class="msg bot" data-step>Done. Fixed a race in <code>login.test.mjs</code> and opened PR #42.</div>
+      <button class="replay" type="button">↻ Replay</button>
+    </div>
+  </section>
+
+  <section class="strip" aria-label="Works with">
+    <p>Built on</p>
+    <ul>
+      <li>Claude Code</li>
+      <li>Telegram Bot API</li>
+      <li>whisper.cpp</li>
+      <li>Fish Audio</li>
+      <li>launchd</li>
+    </ul>
+  </section>
+
+  <section id="features" class="section">
+    <h2>What’s inside</h2>
+    <div class="grid4">
+      <article class="card"><h3>🎙️ Voice in</h3><p>Send a voice note. It’s transcribed locally with whisper.cpp and runs like typed text.</p></article>
+      <article class="card"><h3>👀 Live progress</h3><p>One message, live-edited as Claude thinks and calls tools. Every subagent gets its own.</p></article>
+      <article class="card"><h3>🚫 Cancel anytime</h3><p>Every run carries a Cancel button. Tap it and the process stops immediately.</p></article>
+      <article class="card"><h3>🔊 Voice out</h3><p>Replies as natural-sounding voice notes, with prosody tags for less robotic speech.</p></article>
+    </div>
+  </section>
+
+  <section class="section alt">
+    <h2>Works from anywhere you can type</h2>
+    <div class="grid3">
+      <article class="card"><h3>Parallel projects</h3><p>One bot per working directory, each with its own persistent session. Check each for thirty seconds.</p></article>
+      <article class="card"><h3>Background jobs</h3><p>Long tasks survive the turn, a timeout and even a bridge restart, with a live status message.</p></article>
+      <article class="card"><h3>Groups & topics</h3><p>Use it in group chats and forum topics, with mention-only mode and per-topic sessions.</p></article>
+      <article class="card"><h3>Safe by default</h3><p>Allow-listed user IDs only, plus a CONFIRM gate for risky commands like <code>rm -rf</code>.</p></article>
+      <article class="card"><h3>Rich formatting</h3><p>Real Telegram formatting: code blocks, links, quotes and aligned tables.</p></article>
+      <article class="card"><h3>Zero dependencies</h3><p>Plain Node 20+. No npm install. Just a config file and a bot token.</p></article>
+    </div>
+  </section>
+
+  <section id="install" class="section">
+    <h2>Up and running in a minute</h2>
+    <ol class="steps">
+      <li><strong>Create a bot</strong> with <a href="https://t.me/BotFather">@BotFather</a> and copy the token.</li>
+      <li><strong>Clone and configure</strong>
+        <pre><code>git clone https://github.com/suhocki/telegram-claude-bridge.git
+cd telegram-claude-bridge
+cp tldr.config.example.json my-bot.config.json</code></pre></li>
+      <li><strong>Run it</strong>
+        <pre><code>node bridge.mjs my-bot.config.json</code></pre></li>
+    </ol>
+    <p class="note">Want it to survive reboots? Generate a launchd agent with <code>scripts/gen-launchagent.mjs</code>.</p>
+  </section>
+
+  <section class="section alt">
+    <h2>Why Telegram?</h2>
+    <p class="lead narrow">Because it already solved the hard parts — voice notes, push notifications, file transfer, multi-device sync, offline queuing — for free. The bridge just plugs Claude Code into all of that.</p>
+  </section>
+
+  <section id="faq" class="section">
+    <h2>FAQ</h2>
+    <details><summary>Does it need <code>claude --channels</code>?</summary><p>No. It polls the Bot API directly and shells out to <code>claude -p --resume</code>, so it works even where channels are blocked by org policy.</p></details>
+    <details><summary>Where does my data go?</summary><p>Chat content transits Telegram’s servers as a third-party relay. Keep it to personal, non-sensitive projects.</p></details>
+    <details><summary>Which platforms?</summary><p>The bridge is cross-platform Node. The auto-start setup uses macOS launchd.</p></details>
+    <details><summary>Is it free?</summary><p>The bridge is open source. You bring your own Claude subscription or API key.</p></details>
+  </section>
+</main>
+
+<footer class="footer">
+  <div>
+    <strong>✈️ Claude Bridge</strong>
+    <p>Claude Code, from your pocket.</p>
+  </div>
+  <ul>
+    <li><a href="https://github.com/suhocki/telegram-claude-bridge">GitHub</a></li>
+    <li><a href="https://github.com/suhocki/telegram-claude-bridge#readme">Docs</a></li>
+    <li><a href="https://github.com/suhocki/telegram-claude-bridge/issues">Issues</a></li>
+  </ul>
+</footer>
+<script src="script.js"></script>
+</body>
+</html>
