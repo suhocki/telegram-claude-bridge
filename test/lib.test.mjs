@@ -21,6 +21,7 @@ import {
   classifyCommand,
   buildChannelPrompt,
   normalizeSession,
+  mergeCapturedSessionId,
   accumulateSessionCost,
   crossedCostThreshold,
   buildCostWarning,
@@ -3700,4 +3701,23 @@ test('parseRewindCommand: other commands, other bots and glued words do not matc
 
 test('isJoinableMessage: a /rewind command is never joined into a batch', () => {
   assert.equal(isJoinableMessage({ message_id: 1, text: '/rewind new text' }, 'bot'), false)
+})
+
+test('mergeCapturedSessionId: new thread gets the id with zero cost', () => {
+  assert.deepEqual(mergeCapturedSessionId(undefined, 'abc'), { id: 'abc', costUsd: 0 })
+})
+
+test('mergeCapturedSessionId: same id is a no-op', () => {
+  assert.equal(mergeCapturedSessionId({ id: 'abc', costUsd: 1.5 }, 'abc'), null)
+  assert.equal(mergeCapturedSessionId('abc', 'abc'), null)
+})
+
+test('mergeCapturedSessionId: changed id keeps the existing cost', () => {
+  assert.deepEqual(mergeCapturedSessionId({ id: 'old', costUsd: 1.5 }, 'new'), { id: 'new', costUsd: 1.5 })
+  assert.deepEqual(mergeCapturedSessionId('old', 'new'), { id: 'new', costUsd: 0 })
+})
+
+test('mergeCapturedSessionId: missing id yields no update', () => {
+  assert.equal(mergeCapturedSessionId({ id: 'abc', costUsd: 1 }, null), null)
+  assert.equal(mergeCapturedSessionId(undefined, undefined), null)
 })

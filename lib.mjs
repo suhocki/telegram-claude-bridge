@@ -158,6 +158,13 @@ export function accumulateSessionCost(session, sessionId, deltaUsd) {
   return { id: sessionId, costUsd: cost }
 }
 
+export function mergeCapturedSessionId(existing, sessionId) {
+  if (!sessionId) return null
+  const session = normalizeSession(existing)
+  if (session?.id === sessionId) return null
+  return { id: sessionId, costUsd: session?.costUsd ?? 0 }
+}
+
 export function crossedCostThreshold(prevCostUsd, newCostUsd, thresholdUsd) {
   if (!thresholdUsd) return false
   return prevCostUsd < thresholdUsd && newCostUsd >= thresholdUsd
