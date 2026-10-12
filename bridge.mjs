@@ -98,7 +98,7 @@ import {
   buildCancelKeyboard,
   buildContinueKeyboard,
   buildReplyKeyboard,
-  keyboardHasBackButton,
+  keyboardHasButton,
   selectPreviousThreadKey,
   pickMovableOrigin,
   rememberBackOrigin,
@@ -2823,7 +2823,7 @@ async function handleCallbackQuery(cq) {
       return
     }
     listenInFlight.add(listenGuardKey)
-    const hasBack = keyboardHasBackButton(cq.message?.reply_markup)
+    const hasBack = keyboardHasButton(cq.message?.reply_markup, 'back') && state.backOrigins[listenGuardKey] != null
     const restoredKeyboard = buildReplyKeyboard(chatId, { listen: true, back: hasBack })
     const remainingKeyboard = hasBack ? buildReplyKeyboard(chatId, { back: true }) : null
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: '🎵 генерация…' }).catch(() => {})
@@ -2911,11 +2911,11 @@ async function handleCallbackQuery(cq) {
           }
           delete state.backOrigins[backGuardKey]
           saveState(state)
-          const hasListen = (cq.message?.reply_markup?.inline_keyboard ?? []).some(row => row.some(button => String(button?.callback_data ?? '').startsWith('listen:')))
+          const hasListen = keyboardHasButton(cq.message?.reply_markup, 'listen')
           await tg('editMessageReplyMarkup', {
             chat_id: chatId,
             message_id: messageId,
-            reply_markup: buildReplyKeyboard(chatId, { listen: hasListen }) ?? { inline_keyboard: [] },
+            reply_markup: buildReplyKeyboard(chatId, { listen: hasListen && !listenInFlight.has(backGuardKey) }) ?? { inline_keyboard: [] },
           }).catch(() => {})
           const sent = await tg('sendMessage', {
             chat_id: chatId,

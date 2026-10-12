@@ -94,7 +94,7 @@ import {
   buildCancelKeyboard,
   buildContinueKeyboard,
   buildReplyKeyboard,
-  keyboardHasBackButton,
+  keyboardHasButton,
   selectPreviousThreadKey,
   pickMovableOrigin,
   rememberBackOrigin,
@@ -1845,10 +1845,10 @@ test('buildReplyKeyboard: nothing requested yields null, and callback_data stays
   for (const button of kb.inline_keyboard[0]) assert.ok(Buffer.byteLength(button.callback_data) <= 64)
 })
 
-test('keyboardHasBackButton: detects a back: button and tolerates missing markup', () => {
-  assert.equal(keyboardHasBackButton(buildReplyKeyboard('1', { listen: true, back: true })), true)
-  assert.equal(keyboardHasBackButton(buildReplyKeyboard('1', { listen: true })), false)
-  assert.equal(keyboardHasBackButton(undefined), false)
+test('keyboardHasButton: detects a button by action and tolerates missing markup', () => {
+  assert.equal(keyboardHasButton(buildReplyKeyboard('1', { listen: true, back: true }), 'back'), true)
+  assert.equal(keyboardHasButton(buildReplyKeyboard('1', { listen: true }), 'back'), false)
+  assert.equal(keyboardHasButton(undefined, 'back'), false)
 })
 
 test('parseCallbackData: parses a back: payload', () => {

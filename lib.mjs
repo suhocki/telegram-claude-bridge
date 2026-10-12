@@ -801,8 +801,8 @@ export function buildReplyKeyboard(chatId, { listen = false, back = false } = {}
   return row.length ? { inline_keyboard: [row] } : null
 }
 
-export function keyboardHasBackButton(markup) {
-  return (markup?.inline_keyboard ?? []).some(row => row.some(button => String(button?.callback_data ?? '').startsWith('back:')))
+export function keyboardHasButton(markup, action) {
+  return (markup?.inline_keyboard ?? []).some(row => row.some(button => String(button?.callback_data ?? '').startsWith(`${action}:`)))
 }
 
 export function selectPreviousThreadKey(threadActivity, chatId, currentKey) {
