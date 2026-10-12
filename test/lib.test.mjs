@@ -180,6 +180,7 @@ import {
   findRewindCutIndex,
   hasConversationEntry,
   classifyEditRewind,
+  parseRewindCommand,
   buildRewindUnavailableNotice,
   MAX_TRACKED_TURNS,
   TELEGRAM_ALLOWED_UPDATES,
@@ -3470,9 +3471,9 @@ const userTurnLine = (messageId, text = 'hi') =>
     message: { role: 'user', content: `<channel source="telegram" chat_id="1" message_id="${messageId}" user="u" ts="t">\n${text}\n</channel>` },
   })
 
-test('buildBotCommands: registers /new, /status and /compact with descriptions', () => {
+test('buildBotCommands: registers /new, /status, /rewind and /compact with descriptions', () => {
   const commands = buildBotCommands()
-  assert.deepEqual(commands.map(c => c.command), ['new', 'status', 'compact'])
+  assert.deepEqual(commands.map(c => c.command), ['new', 'status', 'rewind', 'compact'])
   for (const { command, description } of commands) {
     assert.match(command, /^[a-z0-9_]{1,32}$/)
     assert.ok(description.length > 0 && description.length <= 256)
@@ -3678,4 +3679,25 @@ test('classifyEditRewind: a turn with a sessionId but no current session at all 
 
 test('TELEGRAM_ALLOWED_UPDATES: covers every update type the bridge acts on', () => {
   assert.deepEqual(TELEGRAM_ALLOWED_UPDATES, ['message', 'edited_message', 'callback_query'])
+})
+
+test('parseRewindCommand: bare /rewind has empty replacement text', () => {
+  assert.deepEqual(parseRewindCommand('/rewind', 'bot'), { text: '' })
+  assert.deepEqual(parseRewindCommand('/rewind@bot', 'bot'), { text: '' })
+})
+
+test('parseRewindCommand: text after the command becomes the replacement', () => {
+  assert.deepEqual(parseRewindCommand('/rewind fix the typo\nplease', 'bot'), { text: 'fix the typo\nplease' })
+})
+
+test('parseRewindCommand: other commands, other bots and glued words do not match', () => {
+  assert.equal(parseRewindCommand('/new', 'bot'), null)
+  assert.equal(parseRewindCommand('/rewind@other hi', 'bot'), null)
+  assert.equal(parseRewindCommand('/rewinding', 'bot'), null)
+  assert.equal(parseRewindCommand('hello /rewind', 'bot'), null)
+  assert.equal(parseRewindCommand(undefined, 'bot'), null)
+})
+
+test('isJoinableMessage: a /rewind command is never joined into a batch', () => {
+  assert.equal(isJoinableMessage({ message_id: 1, text: '/rewind new text' }, 'bot'), false)
 })
