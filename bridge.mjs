@@ -166,6 +166,7 @@ import {
   buildRewindUsageNotice,
   buildRewindDoneNotice,
   buildRewindNothingNotice,
+  buildRewindNoTurnNotice,
   parseRewindCommand,
   createTelegramClient,
   fetchWithTimeout,
@@ -1008,8 +1009,7 @@ async function applyTurnRewind({ chatId, key, turnList, turnIndex, turn, session
   return 'rewound'
 }
 
-// /rewind sent as a reply to any earlier message (voice included, which can't be edited) does what editing it would,
-// but the replied-to message itself is dropped — only the optional text after the command is re-run in its place.
+// the replied-to message itself is dropped, not re-run — only the optional text after the command runs in its place
 async function handleRewindCommand(msg, replacementText) {
   const chatId = String(msg.chat.id)
   const key = threadKey(chatId, msg)
@@ -1023,7 +1023,7 @@ async function handleRewindCommand(msg, replacementText) {
   const turnIndex = findTurnIndexByMessageId(turnList, targetId)
   const turn = turnIndex >= 0 ? turnList[turnIndex] : null
   if (!turn) {
-    await sendReply(chatId, buildRewindUnavailableNotice(), msg.message_id, null, threadId).catch(() => {})
+    await sendReply(chatId, buildRewindNoTurnNotice(), msg.message_id, null, threadId).catch(() => {})
     return
   }
   const outcome = await applyTurnRewind({
@@ -3128,7 +3128,7 @@ async function poll() {
             bufferMediaGroupMessage(chatId, u.message)
           } else {
             const activeRun = activeRuns.get(key)
-            if (activeRun && parseRewindCommand(u.message.text ?? u.message.caption, botIdentity.username) && isAuthorizedMessage(u.message)) activeRun.cancel()
+            if (activeRun && u.message.reply_to_message && parseRewindCommand(u.message.text ?? u.message.caption, botIdentity.username) && isAuthorizedMessage(u.message)) activeRun.cancel()
             const userId = String(u.message.from?.id ?? '')
             // a fragment continuing an already-buffering burst from this same sender needs no mention of its own — the burst it belongs to already proved it's directed at the bot
             const isSameSenderContinuation = !activeRun && messageBatchBuffers.get(key)?.userId === userId

@@ -1560,6 +1560,10 @@ export function buildRewindNothingNotice() {
   return 'ℹ️ nothing to rewind — that message has no session context to roll back.'
 }
 
+export function buildRewindNoTurnNotice() {
+  return "⏪ can't rewind to that message — reply to one of your own earlier messages that's still in the current session."
+}
+
 export function buildRewindDoneNotice() {
   return '⏪ rewound — everything from that message onwards is gone. Send your replacement now.'
 }
