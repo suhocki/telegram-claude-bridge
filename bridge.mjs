@@ -798,7 +798,7 @@ function runClaude(prompt, sessionId, onEvent, authMode, modelConfig, notifyThre
       // captured from the first event, not just `result`, so a hard kill still leaves a resumable id
       if (capturedSessionId == null) {
         capturedSessionId = extractSessionId(event)
-        if (capturedSessionId != null && notifyThreadKey) persistCapturedSessionId(notifyThreadKey, capturedSessionId)
+        if (capturedSessionId != null) persistCapturedSessionId(notifyThreadKey, capturedSessionId)
       }
       if (isResultEvent(event)) result = event
       if (onEvent) {
@@ -1085,7 +1085,6 @@ function cancelCheckin(key) {
   delete state.pendingCheckins[key]
 }
 
-// Accumulates one attempt's cost immediately (not just the surviving attempt after a retry loop), so a discarded empty-retry attempt's real spend is never dropped from the tracked session cost.
 function persistCapturedSessionId(key, sessionId) {
   const merged = mergeCapturedSessionId(state.sessions[key], sessionId)
   if (!merged) return
@@ -1093,6 +1092,7 @@ function persistCapturedSessionId(key, sessionId) {
   saveState(state)
 }
 
+// Accumulates one attempt's cost immediately (not just the surviving attempt after a retry loop), so a discarded empty-retry attempt's real spend is never dropped from the tracked session cost.
 function accumulateAttemptCost(newSession, key, result) {
   if (!result.session_id) return newSession
   const updated = accumulateSessionCost(newSession, result.session_id, result.total_cost_usd)
