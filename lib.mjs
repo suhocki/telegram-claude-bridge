@@ -118,6 +118,13 @@ export function classifyCommand(text, botUsername) {
   return null
 }
 
+export function parseRewindCommand(text, botUsername) {
+  const parsed = parseCommandMention(String(text ?? '').trim(), botUsername)
+  if (!parsed || parsed.command !== '/rewind') return null
+  if (parsed.rest !== '' && !/^\s/.test(parsed.rest)) return null
+  return { text: parsed.rest.trim() }
+}
+
 // unset/unrecognized state defaults to the pre-existing "pass the env through" behavior
 export function normalizeAuthMode(raw) {
   return raw === 'subscription' ? 'subscription' : 'apikey'
@@ -779,6 +786,7 @@ export function isJoinableMessage(msg, botUsername) {
   if (hasText) {
     if (classifyCommand(text, botUsername) !== null) return false
     if (parseVoiceToggleCommand(text, botUsername) !== null) return false
+    if (parseRewindCommand(text, botUsername) !== null) return false
   }
   return true
 }
@@ -1407,6 +1415,7 @@ export function buildBotCommands() {
   return [
     { command: 'new', description: 'start a new conversation (clears the context)' },
     { command: 'status', description: 'show the session id and cost so far' },
+    { command: 'rewind', description: 'reply to a message to rewind the chat to just before it (optional new text)' },
     { command: 'compact', description: 'compact the conversation to free up context' },
   ]
 }
@@ -1541,6 +1550,22 @@ export function classifyEditRewind(turn, session) {
 
 export function buildRewindUnavailableNotice() {
   return "✏️ can't rewind to that message — it isn't part of the current session's context anymore. Send it as a new message instead."
+}
+
+export function buildRewindUsageNotice() {
+  return '⏪ reply to the message you want to rewind to with /rewind (optionally followed by replacement text).'
+}
+
+export function buildRewindNothingNotice() {
+  return 'ℹ️ nothing to rewind — that message has no session context to roll back.'
+}
+
+export function buildRewindNoTurnNotice() {
+  return "⏪ can't rewind to that message — reply to one of your own earlier messages that's still in the current session."
+}
+
+export function buildRewindDoneNotice() {
+  return '⏪ rewound — everything from that message onwards is gone. Send your replacement now.'
 }
 
 export function validateNotifyConfig(config) {

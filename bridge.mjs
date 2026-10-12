@@ -163,6 +163,11 @@ import {
   hasConversationEntry,
   classifyEditRewind,
   buildRewindUnavailableNotice,
+  buildRewindUsageNotice,
+  buildRewindDoneNotice,
+  buildRewindNothingNotice,
+  buildRewindNoTurnNotice,
+  parseRewindCommand,
   createTelegramClient,
   fetchWithTimeout,
   FetchTimeoutError,
@@ -961,28 +966,33 @@ async function handleEditedMessage(msg) {
   const session = normalizeSession(state.sessions[key])
   const rewindability = classifyEditRewind(turn, session)
 
+  const outcome = await applyTurnRewind({ chatId, key, turnList, turnIndex, turn, session, rewindability, noticeReplyTo: msg })
+  if (outcome === 'failed') return
+  await handleMessage(editedMsg)
+}
+
+async function applyTurnRewind({ chatId, key, turnList, turnIndex, turn, session, rewindability, noticeReplyTo }) {
   if (rewindability === 'none') {
-    log('rewind skipped, nothing to rewind for', key, msg.message_id)
+    log('rewind skipped, nothing to rewind for', key, noticeReplyTo.message_id)
     if (turn) {
       // splice out just this one stale turn so a repeat edit doesn't keep matching the same dead record
       await deleteBotMessages(chatId, turn.botMessageIds ?? [])
       state.turns[key] = [...turnList.slice(0, turnIndex), ...turnList.slice(turnIndex + 1)]
       saveState(state)
     }
-    await handleMessage(editedMsg)
-    return
+    return 'skipped'
   }
   if (rewindability === 'unavailable') {
-    log('rewind unavailable', key, msg.message_id, 'turn=', Boolean(turn), 'session=', session?.id)
-    await sendReply(chatId, buildRewindUnavailableNotice(), msg.message_id, null, resolveThreadId(msg)).catch(() => {})
-    return
+    log('rewind unavailable', key, noticeReplyTo.message_id, 'turn=', Boolean(turn), 'session=', session?.id)
+    await sendReply(chatId, buildRewindUnavailableNotice(), noticeReplyTo.message_id, null, resolveThreadId(noticeReplyTo)).catch(() => {})
+    return 'failed'
   }
 
   const rewind = rewindTranscript(session.id, turn.anchorMessageId ?? turn.userMessageId)
   if (!rewind.ok) {
     log('rewind failed', key, rewind.error)
-    await sendReply(chatId, buildRewindUnavailableNotice(), msg.message_id, null, resolveThreadId(msg)).catch(() => {})
-    return
+    await sendReply(chatId, buildRewindUnavailableNotice(), noticeReplyTo.message_id, null, resolveThreadId(noticeReplyTo)).catch(() => {})
+    return 'failed'
   }
   log('rewound session', session.id, 'dropped', rewind.removed, 'transcript lines from turn', turnIndex)
 
@@ -996,8 +1006,47 @@ async function handleEditedMessage(msg) {
   cancelCheckin(key)
   await clearPendingContinue(chatId, key)
   saveState(state)
+  return 'rewound'
+}
 
-  await handleMessage(editedMsg)
+// the replied-to message itself is dropped, not re-run — only the optional text after the command runs in its place
+async function handleRewindCommand(msg, replacementText) {
+  const chatId = String(msg.chat.id)
+  const key = threadKey(chatId, msg)
+  const threadId = resolveThreadId(msg)
+  const targetId = extractReplyToMessageId(msg)
+  if (targetId == null) {
+    await sendReply(chatId, buildRewindUsageNotice(), msg.message_id, null, threadId).catch(() => {})
+    return
+  }
+  const turnList = state.turns[key] ?? []
+  const turnIndex = findTurnIndexByMessageId(turnList, targetId)
+  const turn = turnIndex >= 0 ? turnList[turnIndex] : null
+  if (!turn) {
+    await sendReply(chatId, buildRewindNoTurnNotice(), msg.message_id, null, threadId).catch(() => {})
+    return
+  }
+  const outcome = await applyTurnRewind({
+    chatId,
+    key,
+    turnList,
+    turnIndex,
+    turn,
+    session: normalizeSession(state.sessions[key]),
+    rewindability: classifyEditRewind(turn, normalizeSession(state.sessions[key])),
+    noticeReplyTo: msg,
+  })
+  if (outcome === 'failed') return
+  if (replacementText) {
+    const { message_id, date, chat, from, message_thread_id, is_topic_message, sender_chat } = msg
+    await handleMessage({ message_id, date, chat, from, message_thread_id, is_topic_message, sender_chat, text: replacementText })
+    return
+  }
+  if (outcome === 'skipped') {
+    await sendReply(chatId, buildRewindNothingNotice(), msg.message_id, null, threadId).catch(() => {})
+    return
+  }
+  await sendReply(chatId, buildRewindDoneNotice(), msg.message_id, null, threadId).catch(() => {})
 }
 
 function clearCheckinTimer(key) {
@@ -2242,6 +2291,12 @@ async function handleMessage(msg) {
     return
   }
 
+  const rewindCommand = parseRewindCommand(content, botIdentity.username)
+  if (rewindCommand) {
+    await handleRewindCommand(msg, rewindCommand.text)
+    return
+  }
+
   const voiceToggle = parseVoiceToggleCommand(content, botIdentity.username)
   if (voiceToggle) {
     state.voiceReply = setVoiceReplyPreference(state.voiceReply, key, voiceToggle === 'on')
@@ -3073,6 +3128,7 @@ async function poll() {
             bufferMediaGroupMessage(chatId, u.message)
           } else {
             const activeRun = activeRuns.get(key)
+            if (activeRun && u.message.reply_to_message && parseRewindCommand(u.message.text ?? u.message.caption, botIdentity.username) && isAuthorizedMessage(u.message)) activeRun.cancel()
             const userId = String(u.message.from?.id ?? '')
             // a fragment continuing an already-buffering burst from this same sender needs no mention of its own — the burst it belongs to already proved it's directed at the bot
             const isSameSenderContinuation = !activeRun && messageBatchBuffers.get(key)?.userId === userId
