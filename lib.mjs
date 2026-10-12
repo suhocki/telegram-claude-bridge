@@ -791,11 +791,59 @@ export function buildContinueKeyboard(chatId) {
   return { inline_keyboard: [[{ text: '▶️ Continue', callback_data: `continue:${chatId}` }]] }
 }
 
-export function buildListenKeyboard(chatId) {
-  return { inline_keyboard: [[{ text: '🎵 Прослушать', callback_data: `listen:${chatId}` }]] }
+export const LISTEN_BUTTON_TEXT = '🎵 Прослушать'
+export const BACK_BUTTON_TEXT = '↩️ Вернуться'
+
+export function buildReplyKeyboard(chatId, { listen = false, back = false } = {}) {
+  const row = []
+  if (listen) row.push({ text: LISTEN_BUTTON_TEXT, callback_data: `listen:${chatId}` })
+  if (back) row.push({ text: BACK_BUTTON_TEXT, callback_data: `back:${chatId}` })
+  return row.length ? { inline_keyboard: [row] } : null
 }
 
-const CALLBACK_DATA_RE = /^(cancel|continue|join|listen):(.+)$/
+export function keyboardHasBackButton(markup) {
+  return (markup?.inline_keyboard ?? []).some(row => row.some(button => String(button?.callback_data ?? '').startsWith('back:')))
+}
+
+export function selectPreviousThreadKey(threadActivity, chatId, currentKey) {
+  const prefix = `${chatId}:`
+  let best = null
+  let bestTs = -Infinity
+  for (const [key, ts] of Object.entries(threadActivity ?? {})) {
+    if (key === currentKey || !key.startsWith(prefix) || !Number.isFinite(ts)) continue
+    if (ts > bestTs) {
+      best = key
+      bestTs = ts
+    }
+  }
+  return best
+}
+
+const MOVABLE_ORIGIN_FIELDS = ['message_id', 'from', 'chat', 'date', 'text', 'entities', 'caption', 'caption_entities', 'photo', 'document', 'voice', 'audio', 'video']
+
+export function pickMovableOrigin(msg) {
+  if (!msg || msg.isSyntheticMerge || msg.media_group_id || msg.mediaGroupMessages) return null
+  const origin = {}
+  for (const field of MOVABLE_ORIGIN_FIELDS) if (msg[field] != null) origin[field] = msg[field]
+  if (origin.message_id == null) return null
+  if (origin.text == null && origin.caption == null && !extractAttachment(origin)) return null
+  return origin
+}
+
+export function rememberBackOrigin(origins, key, origin, maxEntries = 50) {
+  const next = { ...origins }
+  delete next[key]
+  next[key] = origin
+  const keys = Object.keys(next)
+  for (const stale of keys.slice(0, Math.max(0, keys.length - maxEntries))) delete next[stale]
+  return next
+}
+
+export function buildMovedMessage(origin, newMessageId, targetThreadId) {
+  return { ...origin, message_id: newMessageId, message_thread_id: targetThreadId, is_topic_message: true, isSyntheticMerge: true }
+}
+
+const CALLBACK_DATA_RE = /^(cancel|continue|join|listen|back):(.+)$/
 
 export function parseCallbackData(data) {
   const m = String(data ?? '').match(CALLBACK_DATA_RE)

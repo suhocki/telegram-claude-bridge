@@ -136,6 +136,11 @@ Target chat defaults to `config.notifyChatId`, then `config.allowedUserIds[0]`.
 - Every successful text reply also gets a "🎵 Прослушать" button for generating a one-off voice
   note on demand (hidden when `/voice on` is already active for that chat, since audio is sent
   automatically then)
+- In a forum topic / threaded chat, the first reply of a *new* topic also gets a "↩️ Вернуться" button
+  when another topic with earlier activity exists in that chat. Tapping it copies the original
+  message (text, voice, photo, document, …) into the most recently active other topic, where the bot
+  processes it as a normal incoming message; the buttons on the new topic's reply are removed.
+  Merged text bursts and albums don't get the button
 - Replying `CONFIRM` to a risky-command warning lets it proceed; anything else cancels it
 
 In a group, Telegram appends `@yourbotname` when a command is picked from the

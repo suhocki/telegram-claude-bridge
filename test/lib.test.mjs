@@ -93,7 +93,12 @@ import {
   parseTelegramEditError,
   buildCancelKeyboard,
   buildContinueKeyboard,
-  buildListenKeyboard,
+  buildReplyKeyboard,
+  keyboardHasBackButton,
+  selectPreviousThreadKey,
+  pickMovableOrigin,
+  rememberBackOrigin,
+  buildMovedMessage,
   parseCallbackData,
   CONFIG_MODELS,
   CONFIG_EFFORTS,
@@ -1817,10 +1822,76 @@ test('parseCallbackData: parses a join: payload into its action and chat id', ()
   assert.deepEqual(parseCallbackData('join:123'), { action: 'join', chatId: '123' })
 })
 
-test('buildListenKeyboard: builds a single-button inline keyboard scoped to the chat', () => {
-  assert.deepEqual(buildListenKeyboard('123'), {
+test('buildReplyKeyboard: listen only builds a single listen button scoped to the chat', () => {
+  assert.deepEqual(buildReplyKeyboard('123', { listen: true }), {
     inline_keyboard: [[{ text: '🎵 Прослушать', callback_data: 'listen:123' }]],
   })
+})
+
+test('buildReplyKeyboard: listen and back sit side by side in one row', () => {
+  assert.deepEqual(buildReplyKeyboard('123', { listen: true, back: true }), {
+    inline_keyboard: [
+      [
+        { text: '🎵 Прослушать', callback_data: 'listen:123' },
+        { text: '↩️ Вернуться', callback_data: 'back:123' },
+      ],
+    ],
+  })
+})
+
+test('buildReplyKeyboard: nothing requested yields null, and callback_data stays within 64 bytes for a supergroup id', () => {
+  assert.equal(buildReplyKeyboard('123'), null)
+  const kb = buildReplyKeyboard('-1001234567890', { listen: true, back: true })
+  for (const button of kb.inline_keyboard[0]) assert.ok(Buffer.byteLength(button.callback_data) <= 64)
+})
+
+test('keyboardHasBackButton: detects a back: button and tolerates missing markup', () => {
+  assert.equal(keyboardHasBackButton(buildReplyKeyboard('1', { listen: true, back: true })), true)
+  assert.equal(keyboardHasBackButton(buildReplyKeyboard('1', { listen: true })), false)
+  assert.equal(keyboardHasBackButton(undefined), false)
+})
+
+test('parseCallbackData: parses a back: payload', () => {
+  assert.deepEqual(parseCallbackData('back:123'), { action: 'back', chatId: '123' })
+})
+
+test('selectPreviousThreadKey: picks the most recently active other thread of the same chat', () => {
+  const activity = { '1:10': 100, '1:20': 300, '1:30': 200, '2:40': 999, '1': 500 }
+  assert.equal(selectPreviousThreadKey(activity, '1', '1:20'), '1:30')
+  assert.equal(selectPreviousThreadKey(activity, '1', '1:99'), '1:20')
+})
+
+test('selectPreviousThreadKey: null when the current thread is the only one, or state is empty', () => {
+  assert.equal(selectPreviousThreadKey({ '1:10': 1 }, '1', '1:10'), null)
+  assert.equal(selectPreviousThreadKey({ '2:10': 1 }, '1', '1:10'), null)
+  assert.equal(selectPreviousThreadKey(undefined, '1', '1:10'), null)
+})
+
+test('pickMovableOrigin: keeps only content fields and drops reply context', () => {
+  const origin = pickMovableOrigin({ message_id: 5, from: { id: 1 }, chat: { id: 1 }, date: 1, text: 'hi', reply_to_message: { message_id: 1 }, message_thread_id: 9 })
+  assert.deepEqual(origin, { message_id: 5, from: { id: 1 }, chat: { id: 1 }, date: 1, text: 'hi' })
+})
+
+test('pickMovableOrigin: supports voice, and rejects merged batches, albums, and empty messages', () => {
+  assert.ok(pickMovableOrigin({ message_id: 5, voice: { file_id: 'f' } }).voice)
+  assert.equal(pickMovableOrigin({ message_id: 5, text: 'a', isSyntheticMerge: true }), null)
+  assert.equal(pickMovableOrigin({ message_id: 5, photo: [{ file_id: 'f' }], media_group_id: 'g' }), null)
+  assert.equal(pickMovableOrigin({ message_id: 5, sticker: {} }), null)
+  assert.equal(pickMovableOrigin(null), null)
+})
+
+test('rememberBackOrigin: evicts the oldest entries beyond the cap', () => {
+  let origins = {}
+  for (let i = 0; i < 5; i++) origins = rememberBackOrigin(origins, `k${i}`, { message_id: i }, 3)
+  assert.deepEqual(Object.keys(origins), ['k2', 'k3', 'k4'])
+})
+
+test('buildMovedMessage: re-targets the origin at the new message and thread', () => {
+  const moved = buildMovedMessage({ message_id: 5, text: 'hi' }, 77, 12)
+  assert.equal(moved.message_id, 77)
+  assert.equal(moved.message_thread_id, 12)
+  assert.equal(moved.is_topic_message, true)
+  assert.equal(moved.text, 'hi')
 })
 
 test('parseCallbackData: parses a listen: payload into its action and chat id', () => {
