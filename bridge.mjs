@@ -2911,7 +2911,12 @@ async function handleCallbackQuery(cq) {
           }
           delete state.backOrigins[backGuardKey]
           saveState(state)
-          await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {})
+          const hasListen = (cq.message?.reply_markup?.inline_keyboard ?? []).some(row => row.some(button => String(button?.callback_data ?? '').startsWith('listen:')))
+          await tg('editMessageReplyMarkup', {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: buildReplyKeyboard(chatId, { listen: hasListen }) ?? { inline_keyboard: [] },
+          }).catch(() => {})
           const sent = await tg('sendMessage', {
             chat_id: chatId,
             text: '↩️ Перенесено в предыдущую тему',
