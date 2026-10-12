@@ -136,11 +136,15 @@ Target chat defaults to `config.notifyChatId`, then `config.allowedUserIds[0]`.
 - Every successful text reply also gets a "🎵 Прослушать" button for generating a one-off voice
   note on demand (hidden when `/voice on` is already active for that chat, since audio is sent
   automatically then)
-- In a forum topic / threaded chat, the first reply of a *new* topic also gets a "↩️ Вернуться" button
-  when another topic with earlier activity exists in that chat. Tapping it copies the original
-  message (text, voice, photo, document, …) into the most recently active other topic, where the bot
-  processes it as a normal incoming message; the buttons on the new topic's reply are removed.
-  Merged text bursts and albums don't get the button
+- In a forum topic / threaded chat, the progress message of a *new* topic's first message gets a
+  "↩️ Вернуться" button right of 🚫 Cancel (only while the run is in progress, and only when another
+  topic with earlier activity exists in that chat; it is never on the final reply). Tapping it cancels
+  the run, forwards the original message (text, voice, photo, document, …) into the most recently
+  active other topic — shown as "Forwarded from <you>" — and the bot processes it there as a normal
+  incoming message; the progress message becomes "↩️ Перенесено в предыдущую тему". If Telegram refuses
+  the forward (e.g. protected content), text is re-sent as a marked blockquote and media is copied
+  with a "↩️ Перенесено из другой темы" note. Merged text bursts, albums and Continue-resumed runs
+  don't get the button
 - Replying `CONFIRM` to a risky-command warning lets it proceed; anything else cancels it
 
 In a group, Telegram appends `@yourbotname` when a command is picked from the

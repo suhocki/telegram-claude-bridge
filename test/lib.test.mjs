@@ -93,12 +93,12 @@ import {
   parseTelegramEditError,
   buildCancelKeyboard,
   buildContinueKeyboard,
-  buildReplyKeyboard,
-  keyboardHasButton,
+  buildListenKeyboard,
   selectPreviousThreadKey,
   pickMovableOrigin,
-  rememberBackOrigin,
+  shouldOfferBack,
   buildMovedMessage,
+  buildMovedFallbackHtml,
   parseCallbackData,
   CONFIG_MODELS,
   CONFIG_EFFORTS,
@@ -1822,33 +1822,28 @@ test('parseCallbackData: parses a join: payload into its action and chat id', ()
   assert.deepEqual(parseCallbackData('join:123'), { action: 'join', chatId: '123' })
 })
 
-test('buildReplyKeyboard: listen only builds a single listen button scoped to the chat', () => {
-  assert.deepEqual(buildReplyKeyboard('123', { listen: true }), {
+test('buildListenKeyboard: a single listen button scoped to the chat, with no back button', () => {
+  assert.deepEqual(buildListenKeyboard('123'), {
     inline_keyboard: [[{ text: '🎵 Прослушать', callback_data: 'listen:123' }]],
   })
 })
 
-test('buildReplyKeyboard: listen and back sit side by side in one row', () => {
-  assert.deepEqual(buildReplyKeyboard('123', { listen: true, back: true }), {
+test('buildCancelKeyboard: back puts the back button directly right of Cancel, before Join', () => {
+  assert.deepEqual(buildCancelKeyboard('123', 2, { back: true }), {
     inline_keyboard: [
       [
-        { text: '🎵 Прослушать', callback_data: 'listen:123' },
+        { text: '🚫 Cancel', callback_data: 'cancel:123' },
         { text: '↩️ Вернуться', callback_data: 'back:123' },
+        { text: '⬇️ Join (2)', callback_data: 'join:123' },
       ],
     ],
   })
 })
 
-test('buildReplyKeyboard: nothing requested yields null, and callback_data stays within 64 bytes for a supergroup id', () => {
-  assert.equal(buildReplyKeyboard('123'), null)
-  const kb = buildReplyKeyboard('-1001234567890', { listen: true, back: true })
+test('buildCancelKeyboard: no back option keeps the original keyboard, and callback_data stays within 64 bytes', () => {
+  assert.deepEqual(buildCancelKeyboard('123', 0, {}), buildCancelKeyboard('123'))
+  const kb = buildCancelKeyboard('-1001234567890', 5, { back: true })
   for (const button of kb.inline_keyboard[0]) assert.ok(Buffer.byteLength(button.callback_data) <= 64)
-})
-
-test('keyboardHasButton: detects a button by action and tolerates missing markup', () => {
-  assert.equal(keyboardHasButton(buildReplyKeyboard('1', { listen: true, back: true }), 'back'), true)
-  assert.equal(keyboardHasButton(buildReplyKeyboard('1', { listen: true }), 'back'), false)
-  assert.equal(keyboardHasButton(undefined, 'back'), false)
 })
 
 test('parseCallbackData: parses a back: payload', () => {
@@ -1880,10 +1875,20 @@ test('pickMovableOrigin: supports voice, and rejects merged batches, albums, and
   assert.equal(pickMovableOrigin(null), null)
 })
 
-test('rememberBackOrigin: evicts the oldest entries beyond the cap', () => {
-  let origins = {}
-  for (let i = 0; i < 5; i++) origins = rememberBackOrigin(origins, `k${i}`, { message_id: i }, 3)
-  assert.deepEqual(Object.keys(origins), ['k2', 'k3', 'k4'])
+test('shouldOfferBack: only for a new topic with an earlier one, a plain movable message, and no confirm anchor mismatch', () => {
+  const base = { threadId: 20, sessionId: undefined, msg: { message_id: 5, text: 'hi' }, originMessageId: 5, threadActivity: { '1:10': 100 }, chatId: '1', key: '1:20' }
+  assert.equal(shouldOfferBack(base).message_id, 5)
+  assert.equal(shouldOfferBack({ ...base, threadId: null }), null)
+  assert.equal(shouldOfferBack({ ...base, sessionId: 'abc' }), null)
+  assert.equal(shouldOfferBack({ ...base, originMessageId: 9 }), null)
+  assert.equal(shouldOfferBack({ ...base, threadActivity: { '1:20': 100 } }), null)
+  assert.equal(shouldOfferBack({ ...base, msg: { message_id: 5, text: 'a', isSyntheticMerge: true } }), null)
+})
+
+test('buildMovedFallbackHtml: marks the text as moved inside a blockquote and escapes HTML', () => {
+  const html = buildMovedFallbackHtml({ text: 'a <b> & c' })
+  assert.match(html, /^<b>↩️ Перенесено из другой темы<\/b>\n<blockquote>a &lt;b&gt; &amp; c<\/blockquote>$/)
+  assert.equal(buildMovedFallbackHtml({ voice: {} }), '<b>↩️ Перенесено из другой темы</b>')
 })
 
 test('buildMovedMessage: re-targets the origin at the new message and thread', () => {

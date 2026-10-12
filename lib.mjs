@@ -756,8 +756,11 @@ export function buildTranscriptQuoteHtml(transcript) {
   return `<blockquote>${safe}</blockquote>`
 }
 
-export function buildCancelKeyboard(chatId, joinCount = 0) {
+export const BACK_BUTTON_TEXT = '↩️ Вернуться'
+
+export function buildCancelKeyboard(chatId, joinCount = 0, { back = false } = {}) {
   const buttons = [{ text: '🚫 Cancel', callback_data: `cancel:${chatId}` }]
+  if (back) buttons.push({ text: BACK_BUTTON_TEXT, callback_data: `back:${chatId}` })
   if (joinCount > 0) buttons.push({ text: `⬇️ Join (${joinCount})`, callback_data: `join:${chatId}` })
   return { inline_keyboard: [buttons] }
 }
@@ -791,18 +794,8 @@ export function buildContinueKeyboard(chatId) {
   return { inline_keyboard: [[{ text: '▶️ Continue', callback_data: `continue:${chatId}` }]] }
 }
 
-export const LISTEN_BUTTON_TEXT = '🎵 Прослушать'
-export const BACK_BUTTON_TEXT = '↩️ Вернуться'
-
-export function buildReplyKeyboard(chatId, { listen = false, back = false } = {}) {
-  const row = []
-  if (listen) row.push({ text: LISTEN_BUTTON_TEXT, callback_data: `listen:${chatId}` })
-  if (back) row.push({ text: BACK_BUTTON_TEXT, callback_data: `back:${chatId}` })
-  return row.length ? { inline_keyboard: [row] } : null
-}
-
-export function keyboardHasButton(markup, action) {
-  return (markup?.inline_keyboard ?? []).some(row => row.some(button => String(button?.callback_data ?? '').startsWith(`${action}:`)))
+export function buildListenKeyboard(chatId) {
+  return { inline_keyboard: [[{ text: '🎵 Прослушать', callback_data: `listen:${chatId}` }]] }
 }
 
 export function selectPreviousThreadKey(threadActivity, chatId, currentKey) {
@@ -830,17 +823,23 @@ export function pickMovableOrigin(msg) {
   return origin
 }
 
-export function rememberBackOrigin(origins, key, origin, maxEntries = 50) {
-  const next = { ...origins }
-  delete next[key]
-  next[key] = origin
-  const keys = Object.keys(next)
-  for (const stale of keys.slice(0, Math.max(0, keys.length - maxEntries))) delete next[stale]
-  return next
-}
-
 export function buildMovedMessage(origin, newMessageId, targetThreadId) {
   return { ...origin, message_id: newMessageId, message_thread_id: targetThreadId, is_topic_message: true, isSyntheticMerge: true }
+}
+
+export const MOVED_NOTE_TEXT = '↩️ Перенесено в предыдущую тему'
+
+export function buildMovedFallbackHtml(origin) {
+  const marker = '<b>↩️ Перенесено из другой темы</b>'
+  const quote = buildTranscriptQuoteHtml(origin?.text)
+  return quote ? `${marker}\n${quote}` : marker
+}
+
+export function shouldOfferBack({ threadId, sessionId, msg, originMessageId, threadActivity, chatId, key }) {
+  if (threadId == null || sessionId) return null
+  if (originMessageId != null && msg?.message_id !== originMessageId) return null
+  if (!selectPreviousThreadKey(threadActivity, chatId, key)) return null
+  return pickMovableOrigin(msg)
 }
 
 const CALLBACK_DATA_RE = /^(cancel|continue|join|listen|back):(.+)$/
