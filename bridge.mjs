@@ -97,12 +97,12 @@ import {
   buildTranscriptQuoteHtml,
   buildCancelKeyboard,
   buildContinueKeyboard,
-  buildReplyKeyboard,
-  keyboardHasButton,
+  buildListenKeyboard,
   selectPreviousThreadKey,
-  pickMovableOrigin,
-  rememberBackOrigin,
+  shouldOfferBack,
   buildMovedMessage,
+  buildMovedFallbackHtml,
+  MOVED_NOTE_TEXT,
   parseCallbackData,
   getModelConfig,
   setModelConfigField,
@@ -334,7 +334,6 @@ function emptyState() {
     threadActivity: {},
     configPinMessages: {},
     topicTitles: {},
-    backOrigins: {},
   }
 }
 
@@ -354,7 +353,6 @@ function loadState() {
     state.threadActivity ??= {}
     state.configPinMessages ??= {}
     state.topicTitles ??= {}
-    state.backOrigins ??= {}
     return state
   } catch {
     return emptyState()
@@ -486,13 +484,29 @@ const joinKeyboardQueue = createKeyedQueue()
 const listenInFlight = new Set()
 const backInFlight = new Set()
 
+function buildRunKeyboard(chatId, run) {
+  return buildCancelKeyboard(chatId, run.pending.length, { back: run.backOrigin != null && !run.finished })
+}
+
 async function moveOriginToThread(chatId, origin, targetThreadId) {
-  const copied = await tg('copyMessage', {
+  const params = { chat_id: chatId, from_chat_id: chatId, message_id: origin.message_id, ...threadIdParam(targetThreadId) }
+  try {
+    const forwarded = await tg('forwardMessage', params)
+    return forwarded.message_id
+  } catch (e) {
+    log('forwardMessage failed, falling back to a marked copy', e.message)
+  }
+  if (typeof origin.text === 'string') {
+    const sent = await tg('sendMessage', { chat_id: chatId, text: buildMovedFallbackHtml(origin), parse_mode: 'HTML', ...threadIdParam(targetThreadId) })
+    return sent.message_id
+  }
+  const copied = await tg('copyMessage', params)
+  await tg('sendMessage', {
     chat_id: chatId,
-    from_chat_id: chatId,
-    message_id: origin.message_id,
+    text: '↩️ Перенесено из другой темы',
+    reply_parameters: { message_id: copied.message_id, allow_sending_without_reply: true },
     ...threadIdParam(targetThreadId),
-  })
+  }).catch(() => {})
   return copied.message_id
 }
 // setTimeout handles can't be persisted, so state.pendingCheckins is re-armed into this Map on every boot.
@@ -1943,7 +1957,6 @@ async function runClaudeTurn(
     workingStatus,
     botMessageIds,
     originMessageId = null,
-    originMessage = null,
     reactionMessageIds = originMessageId != null ? [originMessageId] : [],
     isCompact = false,
     isResume = false,
@@ -1951,7 +1964,7 @@ async function runClaudeTurn(
     turnMeta = {},
   }
 ) {
-  const cancelKeyboard = buildCancelKeyboard(chatId, run.pending.length)
+  const cancelKeyboard = buildRunKeyboard(chatId, run)
   let currentPlaceholderId = run.placeholderId
   if (currentPlaceholderId != null && isResume) {
     // the placeholder still shows the progress log from before cancelling — swap only the button, keep the text
@@ -2064,18 +2077,9 @@ async function runClaudeTurn(
       // only the plain successful reply gets the button — not errors/compact/cost-warnings/empty replies, and never when audio is already sent automatically
       const showListenButton =
         !result.is_error && !isCompact && !costWarningCrossed && cleanedResult && !isVoiceReplyEnabled(state.voiceReply, key)
-      const movableOrigin =
-        threadId != null && !sessionId && !result.is_error && !isCompact && !costWarningCrossed && cleanedResult && selectPreviousThreadKey(state.threadActivity, chatId, key)
-          ? pickMovableOrigin(originMessage)
-          : null
-      const keyboard = buildReplyKeyboard(chatId, { listen: showListenButton, back: movableOrigin != null })
+      const keyboard = showListenButton ? buildListenKeyboard(chatId) : null
       // new message, not an edit of the placeholder, so Telegram pushes a notification
-      const sentIds = await sendReply(chatId, replyText, originMessageId, null, threadId, keyboard)
-      botMessageIds.push(...sentIds)
-      if (movableOrigin && sentIds.length) {
-        state.backOrigins = rememberBackOrigin(state.backOrigins, `${chatId}:${sentIds[sentIds.length - 1]}`, movableOrigin)
-        saveState(state)
-      }
+      botMessageIds.push(...(await sendReply(chatId, replyText, originMessageId, null, threadId, keyboard)))
     }
     if (currentPlaceholderId != null) {
       // only untrack on a confirmed delete, so a failed one still gets the finally block's cleanup + a rewind retry
@@ -2112,7 +2116,17 @@ async function runClaudeTurn(
   } catch (e) {
     run.finished = true
     rootController.statusUpdater.stop()
-    if (cancelled || e.timedOut) {
+    const wasMoveCancel = run.moveOutcome != null
+    const moved = wasMoveCancel ? await run.moveOutcome : false
+    if (moved) {
+      rootController.setKeyboard({ inline_keyboard: [] })
+      if (currentPlaceholderId != null) {
+        await rootController.editPlaceholder({ text: MOVED_NOTE_TEXT, isTrackerRendered: false })
+      } else {
+        botMessageIds.push(...(await sendReply(chatId, MOVED_NOTE_TEXT, originMessageId, null, threadId).catch(() => [])))
+      }
+      await Promise.all(reactionMessageIds.map(id => setReaction(chatId, id, null)))
+    } else if (cancelled || e.timedOut || wasMoveCancel) {
       // a hard kill often beats runClaude's own capturedSessionId to any stream line, so fall back to the resume id this turn was already given
       const resumableSessionId = e.cancelledResult?.session_id ?? getSessionId() ?? resumeSessionId
       if (resumableSessionId) {
@@ -2124,7 +2138,7 @@ async function runClaudeTurn(
       }
       if (currentPlaceholderId == null && resumableSessionId) {
         // the turn-start send must have failed (nothing to attach Continue to) — retry once, syncing the controller's keyboard first so the edit below doesn't clobber it with a stale one from construction time.
-        const liveCancelKeyboard = buildCancelKeyboard(chatId, run.pending.length)
+        const liveCancelKeyboard = buildRunKeyboard(chatId, run)
         currentPlaceholderId = await sendWorkingPlaceholder(
           chatId,
           workingStatus,
@@ -2309,6 +2323,16 @@ async function handleMessage(msg) {
     placeholderId: null,
     pending: [],
     finished: false,
+    backOrigin: shouldOfferBack({
+      threadId,
+      sessionId,
+      msg,
+      originMessageId: meta.messageId,
+      threadActivity: state.threadActivity,
+      chatId,
+      key,
+    }),
+    moveOutcome: null,
     pushKeyboard: kb =>
       tg('editMessageReplyMarkup', { chat_id: chatId, message_id: run.placeholderId, reply_markup: kb }).catch(e =>
         log('failed to update join keyboard', e.message)
@@ -2322,7 +2346,7 @@ async function handleMessage(msg) {
       chatId,
       workingStatus,
       msg.message_id,
-      buildCancelKeyboard(chatId, run.pending.length),
+      buildRunKeyboard(chatId, run),
       threadId,
       'failed to send working placeholder'
     )
@@ -2348,7 +2372,7 @@ async function handleMessage(msg) {
                   run.placeholderId,
                   quoteHtml,
                   workingStatus,
-                  buildCancelKeyboard(chatId, run.pending.length),
+                  buildRunKeyboard(chatId, run),
                   threadId
                 )
               : null
@@ -2399,7 +2423,6 @@ async function handleMessage(msg) {
       workingStatus,
       botMessageIds,
       originMessageId: msg.message_id,
-      originMessage: msg,
       reactionMessageIds,
       isCompact: command === 'compact',
       turnMeta: {
@@ -2482,7 +2505,7 @@ async function addPendingJoinMessage(chatId, key, run, msg) {
   if (run.finished) return
   run.pending.push(msg)
   if (run.placeholderId == null) return
-  const keyboard = buildCancelKeyboard(chatId, run.pending.length)
+  const keyboard = buildRunKeyboard(chatId, run)
   await joinKeyboardQueue.enqueue(key, () => run.pushKeyboard(keyboard)).catch(() => {})
 }
 
@@ -2823,15 +2846,12 @@ async function handleCallbackQuery(cq) {
       return
     }
     listenInFlight.add(listenGuardKey)
-    const hasBack = keyboardHasButton(cq.message?.reply_markup, 'back') && state.backOrigins[listenGuardKey] != null
-    const restoredKeyboard = buildReplyKeyboard(chatId, { listen: true, back: hasBack })
-    const remainingKeyboard = hasBack ? buildReplyKeyboard(chatId, { back: true }) : null
     await tg('answerCallbackQuery', { callback_query_id: cq.id, text: '🎵 генерация…' }).catch(() => {})
     // queued behind this key's own in-flight turn, so trackBotMessages below always finds that turn's appendTurn record already in place
     chatQueue
       .enqueue(key, async () => {
         try {
-          await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: remainingKeyboard ?? { inline_keyboard: [] } }).catch(() => {})
+          await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {})
           let statusId = null
           try {
             const sent = await tg('sendMessage', {
@@ -2844,7 +2864,7 @@ async function handleCallbackQuery(cq) {
             trackBotMessages(key, [statusId], messageId)
           } catch (e) {
             log('listen status message failed', e.message)
-            await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: restoredKeyboard }).catch(() => {})
+            await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: buildListenKeyboard(chatId) }).catch(() => {})
             await tg('sendMessage', {
               chat_id: chatId,
               text: `⚠️ не получилось озвучить: ${e.message}`,
@@ -2862,7 +2882,7 @@ async function handleCallbackQuery(cq) {
             trackBotMessages(key, messageIds, messageId)
             await tg('deleteMessage', { chat_id: chatId, message_id: statusId }).catch(() => {})
           } else {
-            await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: restoredKeyboard }).catch(() => {})
+            await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: buildListenKeyboard(chatId) }).catch(() => {})
             await tg('editMessageText', { chat_id: chatId, message_id: statusId, text: `⚠️ не получилось озвучить: ${error || 'unknown error'}` }).catch(() => {})
           }
         } finally {
@@ -2880,57 +2900,47 @@ async function handleCallbackQuery(cq) {
       await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'already moving…' }).catch(() => {})
       return
     }
-    const origin = state.backOrigins[backGuardKey]
+    const run = activeRuns.get(key)
+    if (!run || run.finished || !run.backOrigin || run.placeholderId !== messageId) {
+      await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'уже поздно — ответ готов или запрос завершён', show_alert: true }).catch(() => {})
+      return
+    }
     const targetKey = threadId != null ? selectPreviousThreadKey(state.threadActivity, chatId, key) : null
-    if (!origin || !targetKey) {
-      await tg('answerCallbackQuery', {
-        callback_query_id: cq.id,
-        text: origin ? 'нет предыдущей темы' : 'не удалось найти исходное сообщение',
-        show_alert: true,
-      }).catch(() => {})
+    if (!targetKey) {
+      await tg('answerCallbackQuery', { callback_query_id: cq.id, text: 'нет предыдущей темы', show_alert: true }).catch(() => {})
       return
     }
     backInFlight.add(backGuardKey)
-    await tg('answerCallbackQuery', { callback_query_id: cq.id, text: '↩️ переношу…' }).catch(() => {})
-    chatQueue
-      .enqueue(key, async () => {
-        try {
-          const targetThreadId = parseThreadKey(targetKey).threadId
-          let newMessageId
-          try {
-            newMessageId = await moveOriginToThread(chatId, origin, targetThreadId)
-          } catch (e) {
-            log('back move failed', e.message)
-            await tg('sendMessage', {
-              chat_id: chatId,
-              text: `⚠️ не получилось вернуть: ${e.message}`,
-              reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
-              ...threadIdParam(threadId),
-            }).catch(() => {})
-            return
-          }
-          delete state.backOrigins[backGuardKey]
-          saveState(state)
-          const hasListen = keyboardHasButton(cq.message?.reply_markup, 'listen')
-          await tg('editMessageReplyMarkup', {
-            chat_id: chatId,
-            message_id: messageId,
-            reply_markup: buildReplyKeyboard(chatId, { listen: hasListen && !listenInFlight.has(backGuardKey) }) ?? { inline_keyboard: [] },
-          }).catch(() => {})
-          const sent = await tg('sendMessage', {
-            chat_id: chatId,
-            text: '↩️ Перенесено в предыдущую тему',
-            reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
-            ...threadIdParam(threadId),
-          }).catch(() => null)
-          if (sent) trackBotMessages(key, [sent.message_id], messageId)
-          const moved = buildMovedMessage(origin, newMessageId, targetThreadId)
-          chatQueue.enqueue(targetKey, () => handleMessage(moved)).catch(e => log('queued moved handleMessage rejected', e))
-        } finally {
-          backInFlight.delete(backGuardKey)
-        }
-      })
-      .catch(e => log('queued back handling rejected', e))
+    let settleMove
+    run.moveOutcome = new Promise(resolve => {
+      settleMove = resolve
+    })
+    const origin = run.backOrigin
+    // cancelled before any await, so the run can't finish and post its own reply while the message is being moved
+    run.cancel()
+    let newMessageId = null
+    try {
+      await tg('answerCallbackQuery', { callback_query_id: cq.id, text: '↩️ переношу…' }).catch(() => {})
+      const targetThreadId = parseThreadKey(targetKey).threadId
+      try {
+        newMessageId = await moveOriginToThread(chatId, origin, targetThreadId)
+      } catch (e) {
+        log('back move failed', e.message)
+        await tg('sendMessage', {
+          chat_id: chatId,
+          text: `⚠️ не получилось вернуть: ${e.message}`,
+          reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
+          ...threadIdParam(threadId),
+        }).catch(() => {})
+      }
+      if (newMessageId != null) {
+        const moved = buildMovedMessage(origin, newMessageId, targetThreadId)
+        chatQueue.enqueue(targetKey, () => handleMessage(moved)).catch(e => log('queued moved handleMessage rejected', e))
+      }
+    } finally {
+      settleMove(newMessageId != null)
+      backInFlight.delete(backGuardKey)
+    }
     return
   }
 
