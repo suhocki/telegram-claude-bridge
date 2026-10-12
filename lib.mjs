@@ -1556,6 +1556,10 @@ export function buildRewindUsageNotice() {
   return '⏪ reply to the message you want to rewind to with /rewind (optionally followed by replacement text).'
 }
 
+export function buildRewindNothingNotice() {
+  return 'ℹ️ nothing to rewind — that message has no session context to roll back.'
+}
+
 export function buildRewindDoneNotice() {
   return '⏪ rewound — everything from that message onwards is gone. Send your replacement now.'
 }

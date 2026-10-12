@@ -165,6 +165,7 @@ import {
   buildRewindUnavailableNotice,
   buildRewindUsageNotice,
   buildRewindDoneNotice,
+  buildRewindNothingNotice,
   parseRewindCommand,
   createTelegramClient,
   fetchWithTimeout,
@@ -1037,7 +1038,12 @@ async function handleRewindCommand(msg, replacementText) {
   })
   if (outcome === 'failed') return
   if (replacementText) {
-    await handleMessage({ ...msg, text: replacementText, entities: undefined, reply_to_message: undefined, quote: undefined })
+    const { message_id, date, chat, from, message_thread_id, is_topic_message, sender_chat } = msg
+    await handleMessage({ message_id, date, chat, from, message_thread_id, is_topic_message, sender_chat, text: replacementText })
+    return
+  }
+  if (outcome === 'skipped') {
+    await sendReply(chatId, buildRewindNothingNotice(), msg.message_id, null, threadId).catch(() => {})
     return
   }
   await sendReply(chatId, buildRewindDoneNotice(), msg.message_id, null, threadId).catch(() => {})
@@ -3122,7 +3128,7 @@ async function poll() {
             bufferMediaGroupMessage(chatId, u.message)
           } else {
             const activeRun = activeRuns.get(key)
-            if (activeRun && parseRewindCommand(u.message.text, botIdentity.username) && isAuthorizedMessage(u.message)) activeRun.cancel()
+            if (activeRun && parseRewindCommand(u.message.text ?? u.message.caption, botIdentity.username) && isAuthorizedMessage(u.message)) activeRun.cancel()
             const userId = String(u.message.from?.id ?? '')
             // a fragment continuing an already-buffering burst from this same sender needs no mention of its own — the burst it belongs to already proved it's directed at the bot
             const isSameSenderContinuation = !activeRun && messageBatchBuffers.get(key)?.userId === userId
