@@ -60,6 +60,13 @@ Audience: developers and automation-minded power users who already use a coding 
 - [ ] `npx telegram-claude-bridge init`: interactive wizard — BotFather steps with links,
       detects the owner's user ID from the first `/start`, writes config, installs the
       service. The bot then continues onboarding inside the chat.
+- [ ] Bot creation without copy-pasting the token, via Telegram **Managed Bots** (Bot API 9.6,
+      `t.me/newbot/{manager}/{username}` + `getManagedBotToken`): a small setup-only manager
+      bot creates the user's personal bot after one confirmation tap and hands the token to the
+      local installer via a pairing code, without storing it. Open questions before building:
+      can the child bot be detached from the manager afterwards (the manager can otherwise
+      always re-fetch/rotate the token), and how to make "we never keep your token" verifiable.
+      The manual BotFather path stays as the zero-trust option.
 - [ ] Linux support: `systemd` unit generator alongside `scripts/gen-launchagent.mjs`
       (home server / always-on mini PC).
 - [ ] Config from env vars as well as JSON.
