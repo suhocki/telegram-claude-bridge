@@ -1,138 +1,143 @@
 # Roadmap
 
-Status: living checklist, started 2026-10-29. Tick items off as they land; add new ideas to
-[Idea backlog](#idea-backlog) first and promote them into a phase once they're worth doing.
+Status: living checklist, started 2026-10-29, revised the same day after a critical multi-agent
+review (see [Review findings](#review-findings-2026-10-29)). Tick items off as they land; add new
+ideas to [Idea backlog](#idea-backlog) first and promote them into a phase once they're worth
+doing.
 
 ## North star
 
-**One tap → your own AI agent in your personal Telegram.** A user who has never heard of
-BotFather, Node, launchd or `claude -p` presses one button and gets a chat with threads
-(one topic per project/task), live progress, voice in and out, files, and background jobs —
-running on a server, not on their laptop.
+**Your agent, on your own computer, driven from Telegram — and safe to leave running.**
+The agent works where your files, repos and logged-in browser already are; Telegram is the
+remote control. Credentials never leave your machine, and what the agent is *allowed* to do is
+bounded by design, not by trust.
+
+Audience: developers and automation-minded power users who already use a coding agent — not
+"everyone". The average person is served fine by the ChatGPT/Gemini app; we don't compete there.
 
 ## Where we are (2026-10-29)
 
 - Feature depth is strong: topics as separate sessions, live thinking/log streaming, voice
-  both ways, attachments, background jobs that survive the turn, `/rewind`, inline buttons,
-  pinned config message, landing site.
-- Distribution is ~zero: 2 GitHub stars, 0 forks after 347 commits / 134 PRs.
+  both ways, attachments, background jobs that survive the turn, `/rewind` by editing a message,
+  inline buttons, pinned config message, landing site.
+- Distribution is ~zero: 2 GitHub stars, 0 forks after 347 commits / 134 PRs. Nothing has
+  been posted anywhere.
 - Setup is developer-only: BotFather token by hand, JSON config, macOS `launchd`, local
-  `whisper-cli`, a logged-in `claude` CLI on the same machine.
+  `whisper-cli`.
+- Security is "full trust": every turn runs `claude -p --permission-mode bypassPermissions`
+  (`bridge.mjs`). Whoever controls the bot token or the owner's Telegram account gets a shell
+  and the logged-in browser. "Local" alone is not a safety story yet.
 - Platform risk: Anthropic ships its own `--channels` / Telegram plugin and mobile access, so
-  "run Claude from your phone" alone is not a moat. The moat has to be the Telegram-native UX
-  plus a zero-friction install plus an audience.
-
-**Takeaway: the next bottleneck is packaging and distribution, not features.** Phase 0 and 1
-come before any new feature work.
+  chat → agent, streaming, voice and files get commoditized within ~12 months.
 
 ## Priorities
 
-- **P0** — blocks the north star or distribution; do next.
-- **P1** — needed for a real public launch.
-- **P2** — strong differentiators, after launch.
+- **P0** — do next.
+- **P1** — needed before calling it production-safe.
+- **P2** — differentiators / hedges.
 - **P3** — nice to have / exploratory.
 
 ---
 
-## Phase 0 — Show what exists (P0, ~2 weeks, feature freeze)
+## Phase 0 — Distribution before code (P0, feature freeze until ~100 stars)
 
-- [ ] Record 2-3 short (≤60s) demo videos: voice task → live progress → diff/file back;
-      parallel topics per project; background job finishing while the phone is locked.
-- [ ] Rewrite the top of `README.md` around one GIF + a 3-step quick start.
-- [ ] Publish the landing site (`site/`) on a real domain (GitHub Pages / Cloudflare Pages).
-- [ ] Write one launch post in Russian (Habr) and one in English (dev.to / blog).
-- [ ] Post to: r/ClaudeAI, Show HN, Russian-speaking AI/dev Telegram channels.
-- [ ] Start a Telegram channel for the project (changelog + demos) — the audience lives in
-      Telegram anyway.
-- [ ] Track: stars, installs (see Phase 2 telemetry), and *what people ask for* — that decides
-      between the directions in [Strategic directions](#strategic-directions).
+- [ ] One 30-second video of the aha moment: voice note → live thinking stream → edit the
+      message → agent rewinds and redoes it → background job reports while the phone is locked.
+- [ ] Rewrite the top of `README.md`: GIF, one-sentence pitch, 3-step quick start. Move the
+      config reference table further down (or into `docs/`).
+- [ ] Pitch to test: *"Telegram as the IDE for your agent: a topic is a session, edit a message
+      to rewind, jobs keep running while the phone is in your pocket."*
+- [ ] Launch day: Show HN + r/ClaudeAI with the video, same day.
+- [ ] Russian-speaking launch: Habr article + 3-5 AI/dev Telegram channels. The audience lives
+      in Telegram, so does the product — strongest unfair advantage.
+- [ ] Get listed: awesome-claude-code style lists, Claude Code plugin/marketplace listings.
+- [ ] Project Telegram channel for changelog + demos.
+- [ ] Consider a distinctive name — `telegram-claude-bridge` is generic and becomes wrong once
+      other agent backends are supported.
 
-## Phase 1 — Runs anywhere, installs with one command (P0)
+## Phase 1 — Install in one command, on your own machine (P0)
 
-Prerequisite for any server deployment: today the bridge assumes macOS + a local CLI.
-
-- [ ] Linux support: `systemd` unit generator alongside `scripts/gen-launchagent.mjs`.
-- [ ] `Dockerfile` + `docker-compose.yml`: Node, Claude Code CLI, whisper.cpp + a small model,
-      state volume, health check. Image published to GHCR on every release.
-- [ ] Config from env vars (not only JSON files) so container/PaaS deploys need no file editing.
-- [ ] `npx telegram-claude-bridge init`: interactive wizard — asks for the bot token, links to
-      BotFather with exact steps, detects the user ID from the first `/start`, writes config,
-      installs the launchd/systemd service.
-- [ ] Headless auth for the agent on a server: `ANTHROPIC_API_KEY` (BYOK) path documented and
-      tested; check what Anthropic's terms allow for subscription tokens on third-party hosts
-      before offering that option.
+- [ ] `npx telegram-claude-bridge init`: interactive wizard — BotFather steps with links,
+      detects the owner's user ID from the first `/start`, writes config, installs the
+      service. The bot then continues onboarding inside the chat.
+- [ ] Linux support: `systemd` unit generator alongside `scripts/gen-launchagent.mjs`
+      (home server / always-on mini PC).
+- [ ] Config from env vars as well as JSON.
 - [ ] Voice transcription fallback via an API when `whisper-cli` isn't installed.
-- [ ] Versioned releases + changelog (tags, GitHub Releases).
+- [ ] Versioned releases + changelog (tags, GitHub Releases), `/update` command.
+- [ ] Docs: "keep the machine awake" guidance (caffeinate / power settings) and what happens
+      when it sleeps.
 
-## Phase 2 — One-click on your own server (P1)
+## Phase 2 — Safe by design (P1, this is what makes "local-first" actually sell)
 
-"One button" for people willing to own a VPS. No shared infrastructure on our side yet.
+The question a user asks is not "where is my data?" but "if the bot goes rogue, what can it
+break?". Today the answer is "everything". These items change that answer.
 
-- [ ] "Deploy" buttons: Railway / Render / Fly.io templates using the Docker image.
-- [ ] Hetzner / DigitalOcean `cloud-init` script: paste into "user data", get a running bot.
-- [ ] First-run onboarding inside Telegram: the bot greets the owner, enables topics, creates a
-      starter topic, walks through choosing model / connecting a GitHub repo.
-- [ ] Self-update command (`/update`) that pulls the new image/version and restarts.
-- [ ] Opt-in anonymous install telemetry (count of active installs, version) — needed to know
-      if anything is working.
-- [ ] Security hardening for an internet-facing box: non-root user, workspace sandbox,
-      secrets out of the repo dir, documented threat model (update
-      `README.md#security-considerations`).
+- [ ] **Capability modes instead of blanket bypass**: e.g. `read-only` (default for new
+      installs) / `workspace` (write only inside allowlisted dirs/repos) / `full`. Switchable
+      from the pinned config message.
+- [ ] **Policy allowlist, not approve-everything**: allowed dirs, repos, commands, domains.
+      Approvals only for "irreversible AND outside the allowlist" to avoid approval fatigue.
+- [ ] **Confirm on the machine, not only in Telegram** for escalations (macOS notification /
+      Touch ID / local code). The control channel must not be the only approval channel — a
+      hijacked Telegram account can press "Allow" too.
+- [ ] **Separate browser profile** for the agent — no bank/primary email by default; the user
+      logs into what the agent may use, themselves.
+- [ ] **Audit log**: append-only local log of tool calls and side effects, `/audit 24h` command
+      with a readable summary and export.
+- [ ] **Kill switch + dead-man pause**: `/stop all`, and auto-pause risky work if no local
+      confirmation within N minutes.
+- [ ] Prompt-injection hygiene: treat web/email content as untrusted in the system prompt,
+      block outbound requests to non-allowlisted domains in restricted modes.
+- [ ] Document the threat model honestly: Telegram bots are not end-to-end encrypted; bot
+      token / account takeover implications; recommended Telegram 2FA.
 
-## Phase 3 — Hosted: press /start, done (P1, the real north star)
+## Phase 3 — Hedges and differentiators (P2)
 
-The only version where a non-developer gets it with literally one tap: a **shared, official
-bot** (no BotFather step at all) backed by a multi-tenant service.
+Things platform vendors are unlikely to build.
 
-- [ ] Architecture doc: one public bot → router → per-user isolated workspace
-      (container / Firecracker VM / per-user VPS), per-user session + state storage.
-- [ ] Per-user isolation and resource limits (CPU, disk, network egress, job count).
-- [ ] Billing: BYOK (user's API key) first; then our own plans with usage-based limits.
-- [ ] Workspace persistence + backups; export/delete-my-data command.
-- [ ] Abuse controls: rate limits, spend caps, kill switch.
-- [ ] "Bring your own bot" option kept for power users who want their own token/branding.
-- [ ] Legal: ToS, privacy policy, data processing — required before taking anyone's money.
-
-## Phase 4 — Differentiators (P2)
-
-Things official clients are unlikely to build, ranked by expected pull.
-
-- [ ] **Approve dangerous actions with buttons** — e.g. "agent wants to `git push --force` →
-      Allow / Deny", instead of blanket bypass permissions.
-- [ ] **Telegram Mini App dashboard** — sessions, background jobs, cost per topic, settings
-      without JSON, diff viewer for the last turn.
 - [ ] **Multiple agent backends** — Codex CLI, Gemini CLI, opencode behind the same bridge.
-      Biggest single hedge against platform risk.
-- [ ] **Scheduled tasks UI** — "every morning at 9 check X and send a summary", managed from
-      the chat.
-- [ ] **Team / group mode** — the agent lives in a team's group chat, a topic per project,
-      roles (who may run what), shared budget, per-user cost attribution.
-- [ ] Project templates / skills gallery for non-developers (inbox triage, price watcher,
-      daily digest, research assistant).
-- [ ] Integrations via MCP presets: Gmail, Google Calendar, Notion, GitHub — one-tap connect.
+      The single biggest hedge against Anthropic shipping the obvious version.
+- [ ] **Positioning for blocked environments**: Claude Code from your phone where the org
+      policy disables `--channels` (already the bridge's origin story — make it a headline for
+      the enterprise segment).
+- [ ] **Mobile review console**: approve/deny buttons + readable diff viewer (Telegram Mini
+      App or rendered images) — "review and ship on the go".
+- [ ] **Team mode**: the agent in a team's group chat, topic per project, roles (who may run
+      what), shared budget, audit per user. Self-hosted. The most likely paid segment.
+- [ ] Scheduled tasks managed from the chat ("every morning check X and send a summary").
+- [ ] Personal automation recipes for power users who need a real logged-in browser:
+      marketplace monitoring, price watching, form filling (e.g. the Allegro flow).
 
-## Strategic directions
+## Deferred — hosted / one-tap for everyone
 
-Decide after Phase 0 based on who actually shows up. Not mutually exclusive, but focus wins.
+Hosted multi-tenant ("press /start on an official bot, done") contradicts local-first, is
+expensive and risky to run solo, and competes head-on with Anthropic/OpenAI/Telegram itself.
+Revisit only if Phase 0 shows clear demand from non-developers. Optional "deploy to your own
+VPS" (Docker image, cloud-init) can live here too if users ask for it.
 
-1. **Open-source dev tool** — Claude Code power users who want mobile control. Realistic
-   ceiling: a few thousand users. Pays in reputation/audience, not money. Lowest effort.
-2. **Personal agent for everyone** — Phase 3 at consumer scale. Huge audience (Telegram, esp.
-   CIS), but crowded (OpenClaw-style agents, OpenAI/Anthropic apps, Telegram's own AI) and
-   expensive to run. Hard solo.
-3. **AI teammate in team chats** — agencies/studios/small teams that already work in Telegram.
-   Smaller audience, but each team can pay $20-200/month, and big platforms are unlikely to
-   chase this regional niche. Most business-like option.
+## Review findings (2026-10-29)
 
-Signals to watch: teams asking for group-chat features → 3. Many non-dev users stuck at setup
-→ 2. Mostly developers starring and filing PRs → 1.
+Four independent critical reviews (consumer need, security/trust, competition/moat, growth).
+Consensus:
+
+- The average person doesn't need this; ChatGPT/Gemini apps cover one-off tasks. Real need is
+  in developers, enterprise devs blocked from official channels, and automation power users.
+- "Local-first" is not a selling point by itself — every Claude Code user is already local.
+  It only becomes one with a containment story (Phase 2).
+- Chat ↔ agent, streaming, voice and files will be commoditized by the platforms. What
+  survives: agent-agnosticism, Telegram-native depth (topics, groups, teams), and domain
+  workflows the platforms won't build.
+- 2 stars is a distribution problem, not a feature problem. Stop adding features until the
+  existing ones have been shown to people.
+- Pick one north star: the earlier "runs on a server" and "local-first" were contradictory.
+  Local-first won.
 
 ## Idea backlog
 
 Unsorted. Promote into a phase with a priority when it earns it.
 
-- [ ] Share a topic's transcript as a public link (read-only) — good for demos and support.
+- [ ] Share a topic's transcript as a public read-only link (demos, support).
 - [ ] Weekly cost / activity digest per bot.
-- [ ] Mobile-friendly diff rendering as images for long diffs.
 - [ ] Localisation of bot UI strings (RU / EN at minimum).
-- [ ] Referral / invite flow for the hosted version.
+- [ ] Wake-on-LAN / "wake my Mac" helper for when the machine sleeps.
