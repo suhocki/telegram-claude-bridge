@@ -67,7 +67,6 @@ export function buildBridgeLaunchAgentPlist({
   logPath,
   pathEnv,
   home,
-  apiKey,
 }) {
   if (!nodePath) throw new Error('nodePath is required')
   if (!bridgeScriptPath) throw new Error('bridgeScriptPath is required')
@@ -76,8 +75,7 @@ export function buildBridgeLaunchAgentPlist({
   const env = {}
   if (pathEnv) env.PATH = pathEnv
   if (home) env.HOME = home
-  // launchd doesn't source ~/.zshrc, so without this `claude` falls back to subscription login.
-  if (apiKey) env.ANTHROPIC_API_KEY = apiKey
+  // ANTHROPIC_API_KEY is deliberately not written here: bridge.mjs reads it from the macOS Keychain at startup.
 
   return buildLaunchAgentPlist({
     label,

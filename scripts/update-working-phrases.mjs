@@ -5,6 +5,13 @@ import { writeFileSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
+import { resolveAnthropicApiKey } from '../keychain-key.mjs'
+
+// launchd gives this job no ANTHROPIC_API_KEY; take it from the Keychain so `claude` uses the API key.
+{
+  const apiKey = resolveAnthropicApiKey(process.env)
+  if (apiKey) process.env.ANTHROPIC_API_KEY = apiKey
+}
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const outputPath = path.join(repoRoot, 'working-phrases.json')

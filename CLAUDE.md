@@ -2,30 +2,15 @@
 
 ## Development workflow
 
-Every change (an issue from the GitHub tracker, a bugfix, whatever) goes through this loop:
+No PR or review loop (the user dropped it on 2026-11-20). For every change:
 
-1. Implement on a branch, with unit tests covering the new behavior and any other automated
-   checks that are feasible for the change (e.g. `node --check` syntax check, a lint pass if one
-   gets configured). Don't skip tests because the project is small — that's exactly when they're
-   cheap to add.
-2. Open a PR (`gh pr create`). Never push straight to `main`.
-3. Review the PR with a **fresh agent that did not write the code** — no shared context with the
-   implementation. Use the `code-review` skill with `--comment` so findings land as inline PR
-   comments, not just prose. Use a high/max effort level for this first pass on a new or
-   architecturally significant change.
-4. Fix what the review raises, push, re-review. Repeat steps 3-4 until only minor/nit-level
-   comments remain (or none at all) — but drop to a **low/medium** effort level for re-review
-   rounds on the same PR once the first pass already caught the significant issues; re-running a
-   full high/max multi-agent sweep after every small follow-up commit has diminishing returns
-   (2026-09-27: PR #113 took 6 full high-effort rounds to land a fairly small UX change — the
-   first 1-2 caught real bugs, the rest mostly found dormant-in-production or nit-level issues).
-   Escalate back to a heavier level only if a lighter round itself turns up something substantial.
-5. Merge it yourself once review is clean (`gh pr merge --merge --delete-branch`) — the user
-   explicitly authorized self-merge in this repo (2026-07-29, reconfirmed 2026-07-30,
-   2026-08-06/2026-08-16, and again 2026-08-23 after Claude wrongly deferred the merge to the
-   user on PR #74 despite this section). Just do it — don't ask first, don't hand the PR back
-   for the user to press merge. This repo has no deploy-on-merge step of its own (a bot restart
-   is a separate manual `launchctl kickstart`), so merging doesn't push anything live by itself.
+1. Implement it with unit tests for the new behavior, plus `node --check` on touched files.
+2. Run `npm test`. If everything passes and the change is verified, commit and push straight to `main`.
+3. Restart the affected bots if needed (`launchctl kickstart -k gui/$UID/<label>`). If something breaks,
+   the user notices quickly and asks for a fix as a separate task.
+
+Restarting `com.tgbridge.tldr` from a turn that runs inside the tldr bot kills that turn too. Do it
+through a delayed bridge job, or reply first.
 
 ## Testing
 
@@ -55,6 +40,16 @@ To restart after editing the config or pulling new code:
 ```
 launchctl kickstart -k gui/$UID/com.tgbridge.tldr
 ```
+
+The Anthropic API key is not in the plist. `bridge.mjs` reads it at startup from the macOS
+Keychain item `anthropic-api-key` (override the name with `ANTHROPIC_API_KEY_KEYCHAIN_SERVICE`;
+an env var that is already set wins). To set or rotate it:
+
+```
+security add-generic-password -U -a "$USER" -s anthropic-api-key -w
+```
+
+then kickstart every bot.
 
 For a second bot/project, repeat with a different label, e.g. `com.tgbridge.ig` and
 `ig.config.json`.

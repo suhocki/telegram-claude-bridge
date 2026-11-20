@@ -21,6 +21,7 @@ import { spawn } from 'node:child_process'
 import path from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
+import { resolveAnthropicApiKey } from './keychain-key.mjs'
 import {
   sanitizeAttr,
   createKeyedQueue,
@@ -223,6 +224,13 @@ import {
   extractFinishedSubagentIds,
 } from './stream-progress.mjs'
 import { loadWorkingPhrases, pickWorkingPhrase, todayDateString } from './working-phrases.mjs'
+
+
+// The launchd plist no longer carries the key; read it from the macOS Keychain so child `claude` runs inherit it.
+{
+  const apiKey = resolveAnthropicApiKey(process.env)
+  if (apiKey) process.env.ANTHROPIC_API_KEY = apiKey
+}
 
 const configPath = process.argv[2]
 if (!configPath) {
@@ -871,7 +879,7 @@ function hasOAuthLogin() {
   }
 }
 
-// Only checks the switching bot's own process env, even though the switch itself is global — accepted because every com.tgbridge.* launchd plist is generated from the same ANTHROPIC_API_KEY, so they can't actually diverge in this deployment.
+// Only checks the switching bot's own process env, even though the switch itself is global — accepted because every bot reads the same Keychain item at startup, so they can't actually diverge in this deployment.
 const AUTH_MODE_PREREQUISITES = {
   subscription: () =>
     hasOAuthLogin() ? null : '⚠️ no Claude subscription (OAuth) login found on this machine — run `claude login` first, then try again.',

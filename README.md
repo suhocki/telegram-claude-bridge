@@ -167,7 +167,8 @@ checkmarking (✅) the currently active choice. Tapping a model/effort button th
 already checked clears just that field back to the CLI default; tapping a connection
 button switches every bot's global auth mode (same effect as the old `/subscription`/
 `/apikey` commands) and is rejected with an alert if its prerequisite isn't met (no OAuth
-login for subscription, no `ANTHROPIC_API_KEY` for API key).
+login for subscription, no `ANTHROPIC_API_KEY` for API key). The bridge reads the key from the macOS
+Keychain item `anthropic-api-key` at startup, so it is never written into the launchd plist.
 
 A bot configured with `voiceReply.provider: 'fish'` (the default) gets a fourth row:
 `🎙️ Voice: <current voice>`. Tapping it opens a new message listing Fish Audio's voice

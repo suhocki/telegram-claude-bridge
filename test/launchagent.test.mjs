@@ -159,8 +159,8 @@ test('buildBridgeLaunchAgentPlist: includes PATH/HOME env only when provided', (
   assert.doesNotMatch(withoutEnv, /EnvironmentVariables/)
 })
 
-test('buildBridgeLaunchAgentPlist: includes ANTHROPIC_API_KEY only when apiKey is provided', () => {
-  const withKey = buildBridgeLaunchAgentPlist({
+test('buildBridgeLaunchAgentPlist: never writes ANTHROPIC_API_KEY into the plist, even if apiKey is passed', () => {
+  const plist = buildBridgeLaunchAgentPlist({
     label: 'com.tgbridge.tldr',
     nodePath: '/n',
     bridgeScriptPath: '/b',
@@ -169,17 +169,7 @@ test('buildBridgeLaunchAgentPlist: includes ANTHROPIC_API_KEY only when apiKey i
     logPath: '/l',
     apiKey: 'sk-ant-api03-secret',
   })
-  assert.match(withKey, /<key>ANTHROPIC_API_KEY<\/key>\s*<string>sk-ant-api03-secret<\/string>/)
-
-  const withoutKey = buildBridgeLaunchAgentPlist({
-    label: 'com.tgbridge.tldr',
-    nodePath: '/n',
-    bridgeScriptPath: '/b',
-    configPath: '/c',
-    workingDirectory: '/repo',
-    logPath: '/l',
-  })
-  assert.doesNotMatch(withoutKey, /ANTHROPIC_API_KEY/)
+  assert.doesNotMatch(plist, /ANTHROPIC_API_KEY|sk-ant-/)
 })
 
 test('buildCalendarLaunchAgentPlist: throws when a required field is missing or hour/minute are out of range', () => {

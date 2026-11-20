@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { writeFileSync, chmodSync } from 'node:fs'
 import path from 'node:path'
+import { resolveAnthropicApiKey } from '../keychain-key.mjs'
 import { fileURLToPath } from 'node:url'
 import { buildCalendarLaunchAgentPlist } from '../launchagent.mjs'
 
@@ -14,8 +15,8 @@ if (!home) {
   console.error('HOME is not set in the environment')
   process.exit(1)
 }
-if (!process.env.ANTHROPIC_API_KEY) {
-  console.error('ANTHROPIC_API_KEY is not set in the environment (the generated agent would fall back to the Claude Code subscription login)')
+if (!resolveAnthropicApiKey(process.env)) {
+  console.error('No Anthropic API key: add it to the Keychain first:\n  security add-generic-password -U -a "$USER" -s anthropic-api-key -w')
   process.exit(1)
 }
 const logPath = path.join(home, 'Library', 'Logs', 'telegram-bridge-working-phrases.log')
@@ -27,7 +28,7 @@ const plist = buildCalendarLaunchAgentPlist({
   logPath,
   hour: 6,
   minute: 0,
-  env: { PATH: process.env.PATH, HOME: home, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY },
+  env: { PATH: process.env.PATH, HOME: home },
 })
 
 if (outputArg) {
