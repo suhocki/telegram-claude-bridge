@@ -743,8 +743,9 @@ export function buildFfmpegConvertArgs(inputPath, outputWavPath) {
   return ['-y', '-i', inputPath, '-ar', '16000', '-ac', '1', outputWavPath]
 }
 
+// No '-nt': with large-v3-turbo it made long Russian voice notes lose ~40% of words (284 vs 471 on a 6.5 min note). The .txt output has no timestamps either way.
 export function buildWhisperArgs(wavPath, modelPath, language, outputPrefix) {
-  return ['-m', modelPath, '-f', wavPath, '-l', language || DEFAULT_WHISPER_LANGUAGE, '-otxt', '-of', outputPrefix, '-nt']
+  return ['-m', modelPath, '-f', wavPath, '-l', language || DEFAULT_WHISPER_LANGUAGE, '-otxt', '-of', outputPrefix]
 }
 
 export function parseWhisperTranscript(raw) {

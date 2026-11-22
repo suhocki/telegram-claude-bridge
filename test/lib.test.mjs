@@ -1715,9 +1715,9 @@ test('buildFfmpegConvertArgs: converts to 16kHz mono wav, overwriting existing o
   assert.deepEqual(buildFfmpegConvertArgs('/in.oga', '/out.wav'), ['-y', '-i', '/in.oga', '-ar', '16000', '-ac', '1', '/out.wav'])
 })
 
-test('buildWhisperArgs: builds whisper-cli args with no-timestamps text output', () => {
+test('buildWhisperArgs: builds whisper-cli args with text output and without -nt (it drops words)', () => {
   assert.deepEqual(buildWhisperArgs('/tmp/a.wav', '/models/m.bin', 'ru', '/tmp/a'), [
-    '-m', '/models/m.bin', '-f', '/tmp/a.wav', '-l', 'ru', '-otxt', '-of', '/tmp/a', '-nt',
+    '-m', '/models/m.bin', '-f', '/tmp/a.wav', '-l', 'ru', '-otxt', '-of', '/tmp/a',
   ])
 })
 
