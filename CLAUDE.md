@@ -93,3 +93,7 @@ session — only the bot's own token (send/receive as the bot). A true end-to-en
 sends a message -> bot processes -> reply arrives) requires the operator to actually send a
 message from their own Telegram client; an agent can then verify the round-trip via the bridge's
 log/state files, but cannot originate the "incoming user message" side itself.
+
+## Lesson: chaining jobs
+
+To make job B wait for job A, do not `pgrep -f <prompt-file-name>`: job commands use `claude -p "$(cat file)"`, so the file name is not in any process command line and B starts at once. Wait on a marker file that A writes at the end (`... ; touch state/jobs/<proj>/A.done`) instead.
